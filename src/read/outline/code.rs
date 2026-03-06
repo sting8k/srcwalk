@@ -85,10 +85,18 @@ fn node_to_entry(
         | "method_declaration"
         | "constructor_declaration"
         | "init_declaration"
-        | "deinit_declaration" => {
+        | "deinit_declaration"
+        | "protocol_function_declaration" => {
             let name = find_child_text(node, "name", lines)
                 .or_else(|| find_child_text(node, "identifier", lines))
-                .unwrap_or_else(|| "<anonymous>".into());
+                .unwrap_or_else(|| {
+                    // Swift deinit has no name field — use the node kind as name
+                    if kind_str == "deinit_declaration" {
+                        "deinit".into()
+                    } else {
+                        "<anonymous>".into()
+                    }
+                });
             let sig = extract_signature(node, lines);
             (OutlineKind::Function, name, Some(sig))
         }
@@ -153,8 +161,8 @@ fn node_to_entry(
             (OutlineKind::Variable, name, None)
         }
 
-        // C# properties
-        "property_declaration" => {
+        // Properties (C#, Swift)
+        "property_declaration" | "protocol_property_declaration" => {
             let name = find_child_text(node, "name", lines).unwrap_or_else(|| "<property>".into());
             let sig = extract_signature(node, lines);
             (OutlineKind::Function, name, Some(sig))

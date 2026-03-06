@@ -41,6 +41,10 @@ fn sibling_query_str(lang: Lang) -> Option<&'static str> {
         Lang::Go => Some(
             "(selector_expression operand: (identifier) @recv field: (field_identifier) @ref)\n",
         ),
+        Lang::CSharp => Some(concat!(
+            "(member_access_expression expression: (this_expression) name: (identifier) @ref)\n",
+            "(invocation_expression function: (member_access_expression expression: (this_expression) name: (identifier) @ref))\n",
+        )),
         _ => None,
     }
 }

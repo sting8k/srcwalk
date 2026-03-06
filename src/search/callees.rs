@@ -62,6 +62,10 @@ pub(crate) fn callee_query_str(lang: Lang) -> Option<&'static str> {
         Lang::Ruby => Some(
             "(call method: (identifier) @callee)\n",
         ),
+        Lang::CSharp => Some(concat!(
+            "(invocation_expression function: (identifier) @callee)\n",
+            "(invocation_expression function: (member_access_expression name: (identifier) @callee))\n",
+        )),
         _ => None,
     }
 }

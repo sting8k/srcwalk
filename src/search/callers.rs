@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use streaming_iterator::StreamingIterator;
 
@@ -36,7 +36,8 @@ pub struct CallerMatch {
     /// Line range of the calling function (for expand).
     pub caller_range: Option<(u32, u32)>,
     /// File content, already read during `find_callers` — avoids re-reading during expand.
-    pub content: String,
+    /// Shared across all call sites in the same file via reference counting.
+    pub content: Arc<String>,
 }
 
 /// Find all call sites of a target symbol across the codebase using tree-sitter.
@@ -71,11 +72,16 @@ pub fn find_callers(
 
             let path = entry.path();
 
-            // Skip oversized files
-            if let Ok(meta) = std::fs::metadata(path) {
-                if meta.len() > 500_000 {
-                    return ignore::WalkState::Continue;
-                }
+            // Single metadata call: check size and capture mtime together
+            let (file_len, mtime) = match std::fs::metadata(path) {
+                Ok(meta) => (
+                    meta.len(),
+                    meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                ),
+                Err(_) => return ignore::WalkState::Continue,
+            };
+            if file_len > 500_000 {
+                return ignore::WalkState::Continue;
             }
 
             // Single read: read file once, use buffer for both check and parse
@@ -84,9 +90,6 @@ pub fn find_callers(
             };
 
             // Bloom pre-filter: skip if target is definitely not in file
-            let mtime = std::fs::metadata(path)
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             if !bloom.contains(path, mtime, &content, target) {
                 return ignore::WalkState::Continue;
             }
@@ -138,15 +141,6 @@ fn find_callers_treesitter(
         return Vec::new();
     };
 
-    // Compile the query
-    let Ok(query) = tree_sitter::Query::new(ts_lang, query_str) else {
-        return Vec::new();
-    };
-
-    let Some(callee_idx) = query.capture_index_for_name("callee") else {
-        return Vec::new();
-    };
-
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(ts_lang).is_err() {
         return Vec::new();
@@ -158,56 +152,69 @@ fn find_callers_treesitter(
 
     let content_bytes = content.as_bytes();
     let lines: Vec<&str> = content.lines().collect();
-    let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), content_bytes);
 
-    let mut callers = Vec::new();
+    // One Arc per file — all call sites share the same allocation.
+    let shared_content: Arc<String> = Arc::new(content.to_string());
 
-    while let Some(m) = matches.next() {
-        for cap in m.captures {
-            if cap.index != callee_idx {
-                continue;
-            }
+    let Some(callers) = super::callees::with_callee_query(ts_lang, query_str, |query| {
+        let Some(callee_idx) = query.capture_index_for_name("callee") else {
+            return Vec::new();
+        };
 
-            // Check if the captured text matches our target symbol
-            let Ok(text) = cap.node.utf8_text(content_bytes) else {
-                continue;
-            };
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), content_bytes);
+        let mut callers = Vec::new();
 
-            if text != target {
-                continue;
-            }
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                if cap.index != callee_idx {
+                    continue;
+                }
 
-            // Found a call site! Now walk up to find the calling function
-            let line = cap.node.start_position().row as u32 + 1;
+                // Check if the captured text matches our target symbol
+                let Ok(text) = cap.node.utf8_text(content_bytes) else {
+                    continue;
+                };
 
-            // Get the call text (the whole call expression, not just the callee)
-            let call_node = cap.node.parent().unwrap_or(cap.node);
-            let same_line = call_node.start_position().row == call_node.end_position().row;
-            let call_text: String = if same_line {
-                let row = call_node.start_position().row;
-                if row < lines.len() {
-                    lines[row].trim().to_string()
+                if text != target {
+                    continue;
+                }
+
+                // Found a call site! Now walk up to find the calling function
+                let line = cap.node.start_position().row as u32 + 1;
+
+                // Get the call text (the whole call expression, not just the callee)
+                let call_node = cap.node.parent().unwrap_or(cap.node);
+                let same_line = call_node.start_position().row == call_node.end_position().row;
+                let call_text: String = if same_line {
+                    let row = call_node.start_position().row;
+                    if row < lines.len() {
+                        lines[row].trim().to_string()
+                    } else {
+                        text.to_string()
+                    }
                 } else {
                     text.to_string()
-                }
-            } else {
-                text.to_string()
-            };
+                };
 
-            // Walk up the tree to find the enclosing function
-            let (calling_function, caller_range) = find_enclosing_function(cap.node, &lines);
+                // Walk up the tree to find the enclosing function
+                let (calling_function, caller_range) = find_enclosing_function(cap.node, &lines);
 
-            callers.push(CallerMatch {
-                path: path.to_path_buf(),
-                line,
-                calling_function,
-                call_text,
-                caller_range,
-                content: content.to_string(),
-            });
+                callers.push(CallerMatch {
+                    path: path.to_path_buf(),
+                    line,
+                    calling_function,
+                    call_text,
+                    caller_range,
+                    content: Arc::clone(&shared_content),
+                });
+            }
         }
-    }
+
+        callers
+    }) else {
+        return Vec::new();
+    };
 
     callers
 }
@@ -244,11 +251,16 @@ fn find_callers_batch(
 
             let path = entry.path();
 
-            // Skip oversized files
-            if let Ok(meta) = std::fs::metadata(path) {
-                if meta.len() > 500_000 {
-                    return ignore::WalkState::Continue;
-                }
+            // Single metadata call: check size and capture mtime together
+            let (file_len, mtime) = match std::fs::metadata(path) {
+                Ok(meta) => (
+                    meta.len(),
+                    meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                ),
+                Err(_) => return ignore::WalkState::Continue,
+            };
+            if file_len > 500_000 {
+                return ignore::WalkState::Continue;
             }
 
             // Single read: read file once, use buffer for both check and parse
@@ -257,9 +269,6 @@ fn find_callers_batch(
             };
 
             // Bloom pre-filter: skip if none of the targets are definitely in the file
-            let mtime = std::fs::metadata(path)
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             if !targets
                 .iter()
                 .any(|t| bloom.contains(path, mtime, &content, t))
@@ -319,15 +328,6 @@ fn find_callers_treesitter_batch(
         return Vec::new();
     };
 
-    // Compile the query
-    let Ok(query) = tree_sitter::Query::new(ts_lang, query_str) else {
-        return Vec::new();
-    };
-
-    let Some(callee_idx) = query.capture_index_for_name("callee") else {
-        return Vec::new();
-    };
-
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(ts_lang).is_err() {
         return Vec::new();
@@ -339,61 +339,74 @@ fn find_callers_treesitter_batch(
 
     let content_bytes = content.as_bytes();
     let lines: Vec<&str> = content.lines().collect();
-    let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), content_bytes);
 
-    let mut callers = Vec::new();
+    // One Arc per file — all call sites share the same allocation.
+    let shared_content: Arc<String> = Arc::new(content.to_string());
 
-    while let Some(m) = matches.next() {
-        for cap in m.captures {
-            if cap.index != callee_idx {
-                continue;
-            }
+    let Some(callers) = super::callees::with_callee_query(ts_lang, query_str, |query| {
+        let Some(callee_idx) = query.capture_index_for_name("callee") else {
+            return Vec::new();
+        };
 
-            // Check if the captured text matches any of our target symbols
-            let Ok(text) = cap.node.utf8_text(content_bytes) else {
-                continue;
-            };
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), content_bytes);
+        let mut callers = Vec::new();
 
-            if !targets.contains(text) {
-                continue;
-            }
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                if cap.index != callee_idx {
+                    continue;
+                }
 
-            let matched_target = text.to_string();
+                // Check if the captured text matches any of our target symbols
+                let Ok(text) = cap.node.utf8_text(content_bytes) else {
+                    continue;
+                };
 
-            // Found a call site! Now walk up to find the calling function
-            let line = cap.node.start_position().row as u32 + 1;
+                if !targets.contains(text) {
+                    continue;
+                }
 
-            // Get the call text (the whole call expression, not just the callee)
-            let call_node = cap.node.parent().unwrap_or(cap.node);
-            let same_line = call_node.start_position().row == call_node.end_position().row;
-            let call_text: String = if same_line {
-                let row = call_node.start_position().row;
-                if row < lines.len() {
-                    lines[row].trim().to_string()
+                let matched_target = text.to_string();
+
+                // Found a call site! Now walk up to find the calling function
+                let line = cap.node.start_position().row as u32 + 1;
+
+                // Get the call text (the whole call expression, not just the callee)
+                let call_node = cap.node.parent().unwrap_or(cap.node);
+                let same_line = call_node.start_position().row == call_node.end_position().row;
+                let call_text: String = if same_line {
+                    let row = call_node.start_position().row;
+                    if row < lines.len() {
+                        lines[row].trim().to_string()
+                    } else {
+                        matched_target.clone()
+                    }
                 } else {
                     matched_target.clone()
-                }
-            } else {
-                matched_target.clone()
-            };
+                };
 
-            // Walk up the tree to find the enclosing function
-            let (calling_function, caller_range) = find_enclosing_function(cap.node, &lines);
+                // Walk up the tree to find the enclosing function
+                let (calling_function, caller_range) = find_enclosing_function(cap.node, &lines);
 
-            callers.push((
-                matched_target,
-                CallerMatch {
-                    path: path.to_path_buf(),
-                    line,
-                    calling_function,
-                    call_text,
-                    caller_range,
-                    content: content.to_string(),
-                },
-            ));
+                callers.push((
+                    matched_target,
+                    CallerMatch {
+                        path: path.to_path_buf(),
+                        line,
+                        calling_function,
+                        call_text,
+                        caller_range,
+                        content: Arc::clone(&shared_content),
+                    },
+                ));
+            }
         }
-    }
+
+        callers
+    }) else {
+        return Vec::new();
+    };
 
     callers
 }

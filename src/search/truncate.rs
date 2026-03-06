@@ -81,14 +81,9 @@ fn score_line(trimmed: &str, line_num: u32, start: u32, end: u32) -> u32 {
         score = score.max(10);
     }
 
-    // Function calls: contains `(` but not just simple assignment without call
-    if trimmed.contains('(') && !is_plain_assignment(trimmed) {
+    // Function calls: contains `(`
+    if trimmed.contains('(') {
         score = score.max(10);
-    }
-
-    // Assignment with function call on RHS (score 5)
-    if trimmed.contains('=') && trimmed.contains('(') {
-        score = score.max(5);
     }
 
     // Struct/map construction: ends with `{` but isn't just an opening brace
@@ -147,11 +142,6 @@ fn is_error_handling(trimmed: &str) -> bool {
         || trimmed.contains("panic!(")
         || trimmed.contains("bail!(")
         || trimmed.contains("anyhow!(")
-}
-
-/// Returns `true` if the line is a plain assignment with no function call.
-fn is_plain_assignment(trimmed: &str) -> bool {
-    trimmed.contains('=') && !trimmed.contains('(')
 }
 
 /// Returns `true` if the line starts with a variable declaration keyword.

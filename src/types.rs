@@ -84,8 +84,6 @@ impl std::fmt::Display for ViewMode {
 pub struct Match {
     pub path: PathBuf,
     pub line: u32,
-    #[allow(dead_code)]
-    pub column: u32,
     pub text: String,
     pub is_definition: bool,
     pub exact: bool,
@@ -130,8 +128,6 @@ pub struct OutlineEntry {
 pub enum OutlineKind {
     Import,
     Function,
-    #[allow(dead_code)]
-    Method,
     Class,
     Struct,
     Interface,
@@ -148,6 +144,12 @@ pub enum OutlineKind {
     TestSuite,
     #[allow(dead_code)]
     TestCase,
+}
+
+/// Detect test files by path patterns.
+pub(crate) fn is_test_file(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy();
+    s.contains(".test.") || s.contains(".spec.") || s.contains("__tests__/")
 }
 
 /// Tokens ≈ bytes / 4. Ceiling division, no float.

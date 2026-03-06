@@ -22,7 +22,7 @@ pub fn generate(
     let max_lines = if capped { OUTLINE_CAP } else { usize::MAX };
 
     // Test files get special treatment regardless of language
-    if is_test_file(path) {
+    if crate::types::is_test_file(path) {
         if let FileType::Code(lang) = file_type {
             if let Some(outline) = test_file::outline(content, lang, max_lines) {
                 return outline;
@@ -38,10 +38,4 @@ pub fn generate(
         FileType::Log => fallback::log_view(content),
         FileType::Other => fallback::head_tail(content),
     }
-}
-
-/// Detect test files by path patterns.
-fn is_test_file(path: &Path) -> bool {
-    let s = path.to_string_lossy();
-    s.contains(".test.") || s.contains(".spec.") || s.contains("__tests__/")
 }

@@ -52,14 +52,14 @@ pub fn read_file(
 
     let byte_len = meta.len();
 
-    // Section param → return those lines verbatim, any size
-    if let Some(range) = section {
-        return read_section(path, range, edit_mode);
-    }
-
     // Empty check before mmap — mmap on 0-byte file may fail on some platforms
     if byte_len == 0 {
         return Ok(format::file_header(path, 0, 0, ViewMode::Empty));
+    }
+
+    // Section param → return those lines verbatim, any size
+    if let Some(range) = section {
+        return read_section(path, range, edit_mode);
     }
 
     // Binary detection

@@ -9,7 +9,6 @@ use std::sync::Mutex;
 pub struct Session {
     reads: AtomicUsize,
     searches: AtomicUsize,
-    maps: AtomicUsize,
     symbols: Mutex<HashMap<String, usize>>, // query → search count
     dir_hits: Mutex<HashMap<String, usize>>, // dir → count
     expanded: Mutex<HashSet<String>>,       // "path:line" → expanded status
@@ -20,7 +19,6 @@ impl Session {
         Session {
             reads: AtomicUsize::new(0),
             searches: AtomicUsize::new(0),
-            maps: AtomicUsize::new(0),
             symbols: Mutex::new(HashMap::new()),
             dir_hits: Mutex::new(HashMap::new()),
             expanded: Mutex::new(HashSet::new()),
@@ -41,11 +39,6 @@ impl Session {
         *syms.entry(query.to_string()).or_insert(0) += 1;
     }
 
-    #[allow(dead_code)] // Map disabled in v0.3.2
-    pub fn record_map(&self) {
-        self.maps.fetch_add(1, Ordering::Relaxed);
-    }
-
     fn record_dir(&self, path: &Path) {
         if let Some(dir) = path.parent() {
             let key = dir.to_string_lossy().to_string();
@@ -60,9 +53,8 @@ impl Session {
     pub fn summary(&self) -> String {
         let reads = self.reads.load(Ordering::Relaxed);
         let searches = self.searches.load(Ordering::Relaxed);
-        let maps = self.maps.load(Ordering::Relaxed);
 
-        let mut out = format!("Files read: {reads} | Searches: {searches} | Maps: {maps}");
+        let mut out = format!("Files read: {reads} | Searches: {searches}");
 
         // Top symbols
         let syms = self
@@ -102,7 +94,6 @@ impl Session {
     pub fn reset(&self) {
         self.reads.store(0, Ordering::Relaxed);
         self.searches.store(0, Ordering::Relaxed);
-        self.maps.store(0, Ordering::Relaxed);
         self.symbols
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

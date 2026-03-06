@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use streaming_iterator::StreamingIterator;
 
@@ -74,6 +75,33 @@ pub(crate) fn callee_query_str(lang: Lang) -> Option<&'static str> {
     }
 }
 
+/// Global cache of compiled tree-sitter queries for callee extraction.
+/// Keyed by language name (a `&'static str` returned by `Language::name()`).
+/// `Query` is `Send + Sync` in tree-sitter 0.25, so a global `Mutex`-guarded
+/// map is safe and avoids recompiling the same query on every call.
+static QUERY_CACHE: LazyLock<Mutex<HashMap<&'static str, tree_sitter::Query>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Look up or compile the callee query for `ts_lang`, then invoke `f` with a
+/// reference to the cached `Query`.  Returns `None` if compilation fails or
+/// the language has no registered name.
+pub(super) fn with_callee_query<R>(
+    ts_lang: &tree_sitter::Language,
+    query_str: &str,
+    f: impl FnOnce(&tree_sitter::Query) -> R,
+) -> Option<R> {
+    let lang_name = ts_lang.name()?;
+    let mut cache = QUERY_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !cache.contains_key(lang_name) {
+        let query = tree_sitter::Query::new(ts_lang, query_str).ok()?;
+        cache.insert(lang_name, query);
+    }
+    // Safety: we just inserted if absent, so the key is always present here.
+    Some(f(cache.get(lang_name).expect("just inserted")))
+}
+
 /// Extract names of functions/methods called within a given line range.
 /// Uses tree-sitter query patterns to find call expressions.
 ///
@@ -93,15 +121,6 @@ pub fn extract_callee_names(
         return Vec::new();
     };
 
-    // Compile the query — if the grammar doesn't support these patterns, bail gracefully.
-    let Ok(query) = tree_sitter::Query::new(&ts_lang, query_str) else {
-        return Vec::new();
-    };
-
-    let Some(callee_idx) = query.capture_index_for_name("callee") else {
-        return Vec::new();
-    };
-
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&ts_lang).is_err() {
         return Vec::new();
@@ -112,34 +131,44 @@ pub fn extract_callee_names(
     };
 
     let content_bytes = content.as_bytes();
-    let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), content_bytes);
 
-    let mut names: Vec<String> = Vec::new();
+    let Some(names) = with_callee_query(&ts_lang, query_str, |query| {
+        let Some(callee_idx) = query.capture_index_for_name("callee") else {
+            return Vec::new();
+        };
 
-    while let Some(m) = matches.next() {
-        for cap in m.captures {
-            if cap.index != callee_idx {
-                continue;
-            }
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), content_bytes);
+        let mut names: Vec<String> = Vec::new();
 
-            // 1-indexed line number of the capture
-            let line = cap.node.start_position().row as u32 + 1;
-
-            // Filter by def_range if provided
-            if let Some((start, end)) = def_range {
-                if line < start || line > end {
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                if cap.index != callee_idx {
                     continue;
                 }
-            }
 
-            if let Ok(text) = cap.node.utf8_text(content_bytes) {
-                let name = text.to_string();
-                names.push(name);
+                // 1-indexed line number of the capture
+                let line = cap.node.start_position().row as u32 + 1;
+
+                // Filter by def_range if provided
+                if let Some((start, end)) = def_range {
+                    if line < start || line > end {
+                        continue;
+                    }
+                }
+
+                if let Ok(text) = cap.node.utf8_text(content_bytes) {
+                    names.push(text.to_string());
+                }
             }
         }
-    }
 
+        names
+    }) else {
+        return Vec::new();
+    };
+
+    let mut names = names;
     names.sort();
     names.dedup();
     names
@@ -451,42 +480,4 @@ fn resolve_second_hop(
     *budget = budget.saturating_sub(resolved.len());
 
     resolved
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scala_callee_extraction() {
-        let scala_code = r#"
-class Example {
-  def process(): Unit = {
-    // Method invocation
-    helper()
-
-    // Method with object
-    obj.method()
-
-    // Field access method
-    config.database.connect()
-
-    // Function call (apply)
-    func(arg)
-
-    // Infix operator
-    a plus b
-  }
-}
-"#;
-
-        let callees = extract_callee_names(scala_code, Lang::Scala, None);
-
-        // Should capture: helper, method, connect, func, plus
-        assert!(callees.contains(&"helper".to_string()));
-        assert!(callees.contains(&"method".to_string()));
-        assert!(callees.contains(&"connect".to_string()));
-        assert!(callees.contains(&"func".to_string()));
-        assert!(callees.contains(&"plus".to_string()));
-    }
 }

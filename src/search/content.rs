@@ -78,7 +78,6 @@ pub fn search(
                     file_matches.push(Match {
                         path: path.to_path_buf(),
                         line: line_num as u32,
-                        column: 0,
                         text: line.trim_end().to_string(),
                         is_definition: false,
                         exact: false,

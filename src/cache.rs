@@ -1,18 +1,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::SystemTime;
 
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 
-/// Cached outline entry with insertion timestamp for TTL-based eviction.
+/// Cached outline entry.
 struct CacheEntry {
     outline: Arc<str>,
-    inserted_at: Instant,
 }
 
 /// Outline cache keyed by (canonical path, mtime). If the file changes,
-/// mtime changes, old entry is never hit, gets evicted on next prune.
+/// mtime changes and the old entry is never hit again.
 ///
 /// Value is `Arc<str>` — inline string data in the Arc allocation,
 /// one less indirection than `Arc<String>`.
@@ -48,16 +47,9 @@ impl OutlineCache {
                 let outline: Arc<str> = compute().into();
                 e.insert(CacheEntry {
                     outline: Arc::clone(&outline),
-                    inserted_at: Instant::now(),
                 });
                 outline
             }
         }
-    }
-
-    /// Evict entries that were cached more than `max_age` ago.
-    pub fn prune(&self, max_age: Duration) {
-        let cutoff = Instant::now().checked_sub(max_age).unwrap();
-        self.entries.retain(|_, entry| entry.inserted_at > cutoff);
     }
 }

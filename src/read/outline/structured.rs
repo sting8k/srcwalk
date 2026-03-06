@@ -60,7 +60,7 @@ fn walk_json(
                                 .join(", ");
                             let suffix = if inner.len() > 5 { ", ..." } else { "" };
                             lines.push(format!(
-                                "{key}: {{{} keys}} [{key_list}{suffix}]",
+                                "{full_key}: {{{} keys}} [{key_list}{suffix}]",
                                 inner.len()
                             ));
                         } else {
@@ -74,12 +74,12 @@ fn walk_json(
                             let first = truncate_json_value(&arr[0], 40);
                             format!("[{} items] [{first}]", arr.len())
                         };
-                        lines.push(format!("{key}: {preview}"));
+                        lines.push(format!("{full_key}: {preview}"));
                     }
                     _ => {
                         let val_str = truncate_json_value(val, 40);
                         let type_name = json_type_name(val);
-                        lines.push(format!("{key}: {val_str} ({type_name})"));
+                        lines.push(format!("{full_key}: {val_str} ({type_name})"));
                     }
                 }
             }

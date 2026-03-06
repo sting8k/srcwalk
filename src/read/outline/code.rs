@@ -165,7 +165,7 @@ fn node_to_entry(
         "property_declaration" | "protocol_property_declaration" => {
             let name = find_child_text(node, "name", lines).unwrap_or_else(|| "<property>".into());
             let sig = extract_signature(node, lines);
-            (OutlineKind::Function, name, Some(sig))
+            (OutlineKind::Property, name, Some(sig))
         }
 
         // Imports — collect as a group
@@ -361,6 +361,8 @@ fn format_entries(
 ) -> String {
     let mut out = Vec::new();
     let mut import_groups: Vec<&str> = Vec::new();
+    // Track the start line of the first import in the current group.
+    let mut import_group_start: u32 = 1;
 
     for entry in entries {
         if out.len() >= max_lines {
@@ -369,13 +371,16 @@ fn format_entries(
 
         match entry.kind {
             OutlineKind::Import => {
+                if import_groups.is_empty() {
+                    import_group_start = entry.start_line;
+                }
                 import_groups.push(&entry.name);
                 continue;
             }
             _ => {
                 // Flush any accumulated imports
                 if !import_groups.is_empty() {
-                    out.push(format_imports(&import_groups, entries.first()));
+                    out.push(format_imports(&import_groups, import_group_start));
                     import_groups.clear();
                 }
             }
@@ -410,7 +415,7 @@ fn format_entries(
 
     // Flush trailing imports
     if !import_groups.is_empty() {
-        out.push(format_imports(&import_groups, entries.first()));
+        out.push(format_imports(&import_groups, import_group_start));
     }
 
     out.join("\n")
@@ -418,8 +423,7 @@ fn format_entries(
 
 /// Format a collapsed import summary grouped by source with counts.
 /// Spec format: `imports: react(4), express(2), @/lib(3)`
-fn format_imports(imports: &[&str], first_entry: Option<&OutlineEntry>) -> String {
-    let start = first_entry.map_or(1, |e| e.start_line);
+fn format_imports(imports: &[&str], start: u32) -> String {
     let count = imports.len();
 
     // Extract source modules and count occurrences
@@ -527,7 +531,6 @@ fn format_entry(entry: &OutlineEntry, indent: usize, lang: Lang) -> String {
                 "fn"
             }
         }
-        OutlineKind::Method => "method",
         OutlineKind::Class => "class",
         OutlineKind::Struct => "struct",
         OutlineKind::Interface => {

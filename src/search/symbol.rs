@@ -228,7 +228,6 @@ fn walk_for_definitions(
                 defs.push(Match {
                     path: path.to_path_buf(),
                     line: line_num,
-                    column: node.start_position().column as u32,
                     text: line_text.to_string(),
                     is_definition: true,
                     exact: true,
@@ -260,7 +259,6 @@ fn walk_for_definitions(
                     defs.push(Match {
                         path: path.to_path_buf(),
                         line: line_num,
-                        column: node.start_position().column as u32,
                         text: line_text.to_string(),
                         is_definition: true,
                         exact: true,
@@ -289,7 +287,6 @@ fn walk_for_definitions(
                 defs.push(Match {
                     path: path.to_path_buf(),
                     line: line_num,
-                    column: node.start_position().column as u32,
                     text: line_text.to_string(),
                     is_definition: true,
                     exact: true,
@@ -339,7 +336,6 @@ fn find_defs_heuristic_buf(
             defs.push(Match {
                 path: path.to_path_buf(),
                 line: (i + 1) as u32,
-                column: 0,
                 text: line.trim_end().to_string(),
                 is_definition: true,
                 exact: true,
@@ -409,7 +405,6 @@ fn find_usages(
                     file_matches.push(Match {
                         path: path.to_path_buf(),
                         line: line_num as u32,
-                        column: 0,
                         text: line.trim_end().to_string(),
                         is_definition: false,
                         exact: line.contains(query),

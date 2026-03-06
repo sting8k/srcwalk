@@ -30,6 +30,9 @@ pub fn sort(matches: &mut [Match], query: &str, scope: &Path, context: Option<&P
     // Cache package roots for match paths — avoids repeated stat walks
     let mut pkg_cache: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
 
+    // Capture now once so the sort comparator does not call SystemTime::now() O(n log n) times.
+    let now = SystemTime::now();
+
     matches.sort_by(|a, b| {
         let sa = score(
             a,
@@ -38,6 +41,7 @@ pub fn sort(matches: &mut [Match], query: &str, scope: &Path, context: Option<&P
             ctx_parent,
             ctx_pkg_root.as_ref(),
             &mut pkg_cache,
+            now,
         );
         let sb = score(
             b,
@@ -46,6 +50,7 @@ pub fn sort(matches: &mut [Match], query: &str, scope: &Path, context: Option<&P
             ctx_parent,
             ctx_pkg_root.as_ref(),
             &mut pkg_cache,
+            now,
         );
         sb.cmp(&sa)
             .then_with(|| a.path.cmp(&b.path))
@@ -61,6 +66,7 @@ fn score(
     ctx_parent: Option<&Path>,
     ctx_pkg_root: Option<&PathBuf>,
     pkg_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
+    now: SystemTime,
 ) -> i32 {
     let mut s = 0i32;
 
@@ -72,7 +78,7 @@ fn score(
     }
 
     s += scope_proximity(&m.path, scope) as i32;
-    s += recency(m.mtime) as i32;
+    s += recency(m.mtime, now) as i32;
 
     if m.file_lines > 0 && m.file_lines < 200 {
         s += 50;
@@ -177,11 +183,8 @@ fn is_vendor_path(path: &Path) -> bool {
 }
 
 /// 0-100, newer = higher. Files modified within the last hour get max score.
-fn recency(mtime: SystemTime) -> u32 {
-    let age = SystemTime::now()
-        .duration_since(mtime)
-        .unwrap_or_default()
-        .as_secs();
+fn recency(mtime: SystemTime, now: SystemTime) -> u32 {
+    let age = now.duration_since(mtime).unwrap_or_default().as_secs();
 
     match age {
         0..=3_600 => 100,          // last hour

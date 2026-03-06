@@ -403,19 +403,6 @@ fn tool_files(args: &Value, cache: &OutlineCache) -> Result<String, String> {
     Ok(apply_budget(output, budget))
 }
 
-#[allow(dead_code)] // Map disabled in v0.3.2 — kept for potential re-enable
-fn tool_map(args: &Value, cache: &OutlineCache, session: &Session) -> Result<String, String> {
-    let scope = resolve_scope(args);
-    let depth = args
-        .get("depth")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(3) as usize;
-    let budget = args.get("budget").and_then(serde_json::Value::as_u64);
-
-    session.record_map();
-    Ok(crate::map::generate(&scope, depth, budget, cache))
-}
-
 fn tool_session(args: &Value, session: &Session) -> Result<String, String> {
     let action = args
         .get("action")

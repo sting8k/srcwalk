@@ -74,6 +74,7 @@ fn score(
     }
 
     s += query_intent_boost(m, query);
+    s += multi_word_boost(m, query);
     s += scope_proximity(&m.path, scope) as i32;
     s += recency(m.mtime, now) as i32;
 
@@ -88,6 +89,7 @@ fn score(
     s += basename_boost(&m.path, query);
     s += exported_api_boost(m);
     s += non_code_penalty(&m.path);
+    s -= incidental_text_penalty(m, query);
 
     if is_test_file(&m.path) && !looks_like_test_query(query) {
         s -= 120;
@@ -278,6 +280,69 @@ fn fixture_penalty(m: &Match) -> i32 {
         }
     }
     score
+}
+
+fn incidental_text_penalty(m: &Match, query: &str) -> i32 {
+    if m.is_definition {
+        return 0;
+    }
+
+    let text = m.text.trim();
+    let q_lower = query.to_ascii_lowercase();
+
+    let is_comment = text.starts_with("//")
+        || text.starts_with('#')
+        || text.starts_with("/*")
+        || text.starts_with('*')
+        || text.starts_with("<!--");
+
+    if is_comment {
+        return 150;
+    }
+
+    let is_string_only = {
+        let t_lower = text.to_ascii_lowercase();
+        let Some(pos) = t_lower.find(&q_lower) else {
+            return 0;
+        };
+        let before = &text[..pos];
+        let quote_count = before.chars().filter(|&c| c == '"' || c == '\'').count();
+        quote_count % 2 == 1
+    };
+
+    if is_string_only {
+        return 120;
+    }
+
+    0
+}
+
+fn multi_word_boost(m: &Match, query: &str) -> i32 {
+    if !query.contains(' ') {
+        return 0;
+    }
+
+    let words: Vec<&str> = query.split_whitespace().collect();
+    if words.len() < 2 {
+        return 0;
+    }
+
+    let path_lower = m.path.to_string_lossy().to_ascii_lowercase();
+    let text_lower = m.text.to_ascii_lowercase();
+    let haystack = format!("{} {}", path_lower, text_lower);
+
+    let matched = words
+        .iter()
+        .filter(|w| haystack.contains(&w.to_ascii_lowercase()))
+        .count();
+
+    if matched == words.len() {
+        300
+    } else if matched >= words.len() - 1 {
+        120
+    } else {
+        0
+    }
 }
 
 fn non_code_penalty(path: &Path) -> i32 {

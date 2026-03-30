@@ -146,7 +146,7 @@ fn multi_word_concept_search(
 ) -> Result<String, error::TilthError> {
     // Try exact phrase match first
     let mut content_result = search::search_content_raw(text, scope)?;
-    content_result.query.clone_from(&text.to_string());
+    content_result.query = text.to_string();
     if content_result.total_found > 0 {
         return search::format_raw_result(&content_result, cache);
     }
@@ -171,7 +171,7 @@ fn multi_word_concept_search(
     };
 
     let mut relaxed_result = search::search_regex_raw(&relaxed, scope)?;
-    relaxed_result.query.clone_from(&text.to_string());
+    relaxed_result.query = text.to_string();
     if relaxed_result.total_found > 0 {
         return search::format_raw_result(&relaxed_result, cache);
     }

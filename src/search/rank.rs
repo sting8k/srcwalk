@@ -410,11 +410,9 @@ fn looks_like_test_query(query: &str) -> bool {
 
 fn shared_prefix_depth(a: &Path, b: &Path) -> usize {
     a.components()
-        .zip(b.components())
-        .take_while(|(left, right)| match (left, right) {
-            (Component::Normal(l), Component::Normal(r)) => l == r,
-            _ => false,
-        })
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .zip(b.components().filter(|c| matches!(c, Component::Normal(_))))
+        .take_while(|(l, r)| l == r)
         .count()
 }
 

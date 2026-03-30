@@ -23,6 +23,11 @@ use serde_json::{json, Value};
 //   kiro:           ~/.kiro/settings/mcp.json                  (user scope)
 //   kilo-code:      <globalStorage>/kilocode.kilo-code/...     (user scope)
 //   cline:          <globalStorage>/saoudrizwan.claude-dev/... (user scope)
+//   roo-code:       <globalStorage>/rooveterinaryinc.roo-cline/... (user scope)
+//   trae:           .trae/mcp.json                             (project scope)
+//   qwen-code:      ~/.qwen/settings.json                     (user scope)
+//   crush:          ~/.config/crush/crush.json                 (user scope)
+//   pi:             ~/.pi/agent/mcp.json                       (user scope)
 const SUPPORTED_HOSTS: &[&str] = &[
     "claude-code",
     "cursor",
@@ -41,6 +46,11 @@ const SUPPORTED_HOSTS: &[&str] = &[
     "kiro",
     "kilo-code",
     "cline",
+    "roo-code",
+    "trae",
+    "qwen-code",
+    "crush",
+    "pi",
 ];
 
 /// The tilth server entry as JSON, for hosts that use JSON config.
@@ -349,6 +359,54 @@ fn resolve_host(host: &str) -> Result<HostInfo, String> {
                 servers_key: "mcpServers",
             },
             note: None,
+        }),
+
+        // Roo Code (VS Code extension): globalStorage → mcpServers
+        // Verified from official docs: https://docs.roocode.com/features/mcp/using-mcp-in-roo
+        "roo-code" => Ok(HostInfo {
+            path: vscode_global_storage_path("rooveterinaryinc.roo-cline", "mcp_settings.json")?,
+            format: ConfigFormat::Json {
+                servers_key: "mcpServers",
+            },
+            note: None,
+        }),
+
+        // Trae project scope: .trae/mcp.json → mcpServers
+        // Verified from official docs: https://docs.trae.ai/ide/add-mcp-servers
+        "trae" => Ok(HostInfo {
+            path: PathBuf::from(".trae/mcp.json"),
+            format: ConfigFormat::Json {
+                servers_key: "mcpServers",
+            },
+            note: Some("Project scope — run from your project root."),
+        }),
+
+        // Qwen Code user scope: ~/.qwen/settings.json → mcpServers
+        // Verified from official docs: https://qwenlm.github.io/qwen-code-docs/en/users/features/mcp/
+        "qwen-code" => Ok(HostInfo {
+            path: home.join(".qwen/settings.json"),
+            format: ConfigFormat::Json {
+                servers_key: "mcpServers",
+            },
+            note: Some("User scope — available in all projects."),
+        }),
+
+        // Crush user scope: ~/.config/crush/crush.json → mcp (NOT mcpServers)
+        // Verified from official docs: https://github.com/charmbracelet/crush
+        "crush" => Ok(HostInfo {
+            path: home.join(".config/crush/crush.json"),
+            format: ConfigFormat::Json { servers_key: "mcp" },
+            note: Some("User scope — available in all projects."),
+        }),
+
+        // Pi coding agent user scope: ~/.pi/agent/mcp.json → mcpServers
+        // Verified from: https://github.com/badlogic/pi-mono/issues/563
+        "pi" => Ok(HostInfo {
+            path: home.join(".pi/agent/mcp.json"),
+            format: ConfigFormat::Json {
+                servers_key: "mcpServers",
+            },
+            note: Some("User scope — available in all projects."),
         }),
 
         _ => Err(format!(
@@ -708,6 +766,102 @@ mod tests {
                 assert_eq!(servers_key, "mcpServers");
             }
             ConfigFormat::Toml => panic!("cline should use JSON format, not TOML"),
+        }
+    }
+
+    #[test]
+    fn roo_code_resolve_host() {
+        let info = resolve_host("roo-code").expect("roo-code should resolve");
+        let path_str = info.path.to_string_lossy();
+        assert!(
+            path_str.contains("rooveterinaryinc.roo-cline")
+                && path_str.contains("mcp_settings.json"),
+            "path should contain rooveterinaryinc.roo-cline and mcp_settings.json, got: {path_str}",
+        );
+        match info.format {
+            ConfigFormat::Json { servers_key } => {
+                assert_eq!(servers_key, "mcpServers");
+            }
+            ConfigFormat::Toml => panic!("roo-code should use JSON format, not TOML"),
+        }
+    }
+
+    #[test]
+    fn trae_resolve_host() {
+        let info = resolve_host("trae").expect("trae should resolve");
+        assert!(
+            info.path.ends_with(".trae/mcp.json"),
+            "path should end with .trae/mcp.json, got: {}",
+            info.path.display()
+        );
+        match info.format {
+            ConfigFormat::Json { servers_key } => {
+                assert_eq!(servers_key, "mcpServers");
+            }
+            ConfigFormat::Toml => panic!("trae should use JSON format, not TOML"),
+        }
+        assert_eq!(
+            info.note,
+            Some("Project scope — run from your project root.")
+        );
+    }
+
+    #[test]
+    fn qwen_code_resolve_host() {
+        let info = resolve_host("qwen-code").expect("qwen-code should resolve");
+        assert!(
+            info.path.ends_with(".qwen/settings.json"),
+            "path should end with .qwen/settings.json, got: {}",
+            info.path.display()
+        );
+        match info.format {
+            ConfigFormat::Json { servers_key } => {
+                assert_eq!(servers_key, "mcpServers");
+            }
+            ConfigFormat::Toml => panic!("qwen-code should use JSON format, not TOML"),
+        }
+    }
+
+    #[test]
+    fn crush_resolve_host() {
+        let info = resolve_host("crush").expect("crush should resolve");
+        assert!(
+            info.path.ends_with(".config/crush/crush.json"),
+            "path should end with .config/crush/crush.json, got: {}",
+            info.path.display()
+        );
+        match info.format {
+            ConfigFormat::Json { servers_key } => {
+                assert_eq!(servers_key, "mcp");
+            }
+            ConfigFormat::Toml => panic!("crush should use JSON format, not TOML"),
+        }
+    }
+
+    #[test]
+    fn crush_uses_mcp_not_mcp_servers() {
+        let mut config = json!({});
+        let entry = json!({"command": "tilth", "args": ["--mcp"]});
+        upsert_json_server(&mut config, "mcp", entry).unwrap();
+
+        assert!(config.get("mcp").is_some());
+        assert!(config.get("mcpServers").is_none());
+        assert_eq!(config["mcp"]["tilth"]["command"], json!("tilth"));
+    }
+
+    #[test]
+    fn pi_resolve_host() {
+        let info = resolve_host("pi").expect("pi should resolve");
+        assert!(
+            info.path.ends_with(".pi/agent/mcp.json"),
+            "path should end with .pi/agent/mcp.json, got: {}",
+            info.path.display()
+        );
+        match info.format {
+            ConfigFormat::Json { servers_key } => {
+                assert_eq!(servers_key, "mcpServers");
+            }
+            ConfigFormat::Toml => panic!("pi should use JSON format, not TOML"),
         }
     }
 

@@ -325,10 +325,12 @@ fn incidental_text_penalty(m: &Match, query: &str) -> i32 {
 
     // Check if query only appears in a trailing comment (after //)
     // Skip false positives: :// is a URL scheme separator, not a comment
+    // Skip // at start of line — that's a full-line comment, not trailing
     let t_lower = text.to_ascii_lowercase();
     if let Some(slash_pos) = t_lower.find("//") {
         let is_url = slash_pos > 0 && t_lower.as_bytes()[slash_pos - 1] == b':';
-        if !is_url
+        if slash_pos > 0
+            && !is_url
             && t_lower[slash_pos..].contains(&q_lower)
             && !t_lower[..slash_pos].contains(&q_lower)
         {

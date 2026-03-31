@@ -47,5 +47,6 @@ Range: {"start": "<line>:<hash>", "end": "<line>:<hash>", "content": "..."}
 Delete: {"start": "<line>:<hash>", "content": ""}
 Hash mismatch → file changed, re-read and retry.
 Large files: tilth_read shows outline — use section to get hashlined content.
+After editing, tilth_edit returns a compact diff (old/new lines) followed by hashlined context.
 After editing a function signature, tilth_edit shows callers that may need updating.
 DO NOT use the host Edit tool. Use tilth_edit for all edits.

@@ -1,5 +1,5 @@
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{CommandFactory, Parser};
@@ -44,8 +44,20 @@ struct Cli {
     #[arg(long)]
     edit: bool,
 
+    /// Expand top N search matches with inline source (default: 2 when flag present).
+    #[arg(long, num_args = 0..=1, default_missing_value = "2", require_equals = true)]
+    expand: Option<usize>,
+
+    /// Find all callers of a symbol.
+    #[arg(long, conflicts_with_all = ["deps", "map", "edit"])]
+    callers: bool,
+
+    /// Analyze blast-radius dependencies of a file.
+    #[arg(long, conflicts_with_all = ["callers", "map", "edit"])]
+    deps: bool,
+
     /// Generate a structural codebase map.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["callers", "deps", "expand", "section", "full"])]
     map: bool,
 
     /// Print shell completions for the given shell.
@@ -123,16 +135,65 @@ fn main() {
 
     // When piped (not a TTY), force full output — scripts expect raw content
     let full = cli.full || !is_tty;
+    let expand = cli.expand.unwrap_or(0);
 
-    let result = if full {
+    // Callers mode
+    if cli.callers {
+        let result = tilth::run_callers(&query, &scope, expand, cli.budget, &cache);
+        emit_result(result, &query, cli.json, is_tty);
+        return;
+    }
+
+    // Deps mode
+    if cli.deps {
+        let path = if Path::new(&query).is_absolute() {
+            PathBuf::from(&query)
+        } else {
+            let scope_path = scope.join(&query);
+            if scope_path.exists() {
+                scope_path
+            } else {
+                let cwd_path = std::env::current_dir().unwrap_or_default().join(&query);
+                if cwd_path.exists() {
+                    cwd_path
+                } else {
+                    scope_path // fall back, let analyze_deps report the error
+                }
+            }
+        };
+        let result = tilth::run_deps(&path, &scope, cli.budget, &cache);
+        emit_result(result, &query, cli.json, is_tty);
+        return;
+    }
+
+    let result = if expand > 0 {
+        tilth::run_expanded(
+            &query,
+            &scope,
+            cli.section.as_deref(),
+            cli.budget,
+            full,
+            expand,
+            &cache,
+        )
+    } else if full {
         tilth::run_full(&query, &scope, cli.section.as_deref(), cli.budget, &cache)
     } else {
         tilth::run(&query, &scope, cli.section.as_deref(), cli.budget, &cache)
     };
 
+    emit_result(result, &query, cli.json, is_tty);
+}
+
+fn emit_result(
+    result: Result<String, tilth::error::TilthError>,
+    query: &str,
+    json: bool,
+    is_tty: bool,
+) {
     match result {
         Ok(output) => {
-            if cli.json {
+            if json {
                 let json = serde_json::json!({
                     "query": query,
                     "output": output,

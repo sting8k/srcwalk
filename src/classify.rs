@@ -192,7 +192,7 @@ fn has_regex_metachar(s: &str) -> bool {
 
 /// Identifier check without regex: first byte is [a-zA-Z_$@],
 /// rest are [a-zA-Z0-9_$\.\-]. Tight loop over bytes.
-fn is_identifier(s: &str) -> bool {
+pub fn is_identifier(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.is_empty() {
         return false;

@@ -266,6 +266,20 @@ pub fn search_content_expanded(
     format_search_result(&result, cache, Some(session), &bloom, expand)
 }
 
+/// Expanded regex search — takes raw pattern, no slash wrapping needed.
+pub fn search_regex_expanded(
+    pattern: &str,
+    scope: &Path,
+    cache: &OutlineCache,
+    session: &Session,
+    expand: usize,
+    context: Option<&Path>,
+) -> Result<String, TilthError> {
+    let result = content::search(pattern, scope, true, context)?;
+    let bloom = crate::index::bloom::BloomFilterCache::new();
+    format_search_result(&result, cache, Some(session), &bloom, expand)
+}
+
 /// Raw symbol search — returns structured result for programmatic inspection.
 pub fn search_symbol_raw(query: &str, scope: &Path) -> Result<SearchResult, TilthError> {
     symbol::search(query, scope, None)

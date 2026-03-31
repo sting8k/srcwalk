@@ -222,30 +222,30 @@ fn run_query_expanded(
         QueryType::Concept(text) if text.contains(' ') => {
             search::search_content_expanded(text, scope, cache, &ctx.session, ctx.expand, None)
         }
-        QueryType::Concept(text) | QueryType::Fallthrough(text) => {
-            // --expand: go straight to expanded symbol search, intentionally
-            // bypassing the definitions>0 / content fallback cascade in
-            // single_query_search. The expanded variant already provides
-            // richer results with inline source, making the cascade redundant.
-            search::search_symbol_expanded(
-                text,
-                scope,
-                cache,
-                &ctx.session,
-                &ctx.sym_index,
-                &ctx.bloom,
-                ctx.expand,
-                None,
-            )
-        }
+        // Single-word Concept and Fallthrough share the same expanded path:
+        // both go straight to symbol_expanded, intentionally bypassing the
+        // definitions>0 / content fallback cascade in single_query_search.
+        // The expanded variant already provides richer results with inline source.
+        QueryType::Concept(text) | QueryType::Fallthrough(text) => search::search_symbol_expanded(
+            text,
+            scope,
+            cache,
+            &ctx.session,
+            &ctx.sym_index,
+            &ctx.bloom,
+            ctx.expand,
+            None,
+        ),
         QueryType::Content(text) => {
             search::search_content_expanded(text, scope, cache, &ctx.session, ctx.expand, None)
         }
         QueryType::Regex(pattern) => {
             search::search_regex_expanded(pattern, scope, cache, &ctx.session, ctx.expand, None)
         }
-        // FilePath/Glob never reach here (gated by should_use_expanded)
-        _ => unreachable!("non-search query type in expanded path"),
+        // FilePath/Glob never reach here (gated by use_expanded)
+        QueryType::FilePath(_) | QueryType::Glob(_) => {
+            unreachable!("non-search query type in expanded path")
+        }
     }
 }
 
@@ -272,7 +272,9 @@ fn run_query_basic(
             single_query_search(text, scope, cache, false)
         }
         // FilePath/Glob never reach here
-        _ => unreachable!("non-search query type in basic path"),
+        QueryType::FilePath(_) | QueryType::Glob(_) => {
+            unreachable!("non-search query type in basic path")
+        }
     }
 }
 

@@ -64,9 +64,13 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["map", "full", "expand", "section", "edit"])]
     files: bool,
 
-    /// Max results for callers search (default: 25).
+    /// Max results to display (default: 25). Applies to search, callers, content.
     #[arg(long, value_name = "N")]
     limit: Option<usize>,
+
+    /// Skip N results (for pagination). Use with --limit.
+    #[arg(long, value_name = "N", default_value = "0")]
+    offset: usize,
 
     /// Print shell completions for the given shell.
     #[arg(long, value_name = "SHELL")]
@@ -147,7 +151,7 @@ fn main() {
 
     // Callers mode
     if cli.callers {
-        let result = tilth::run_callers(&query, &scope, expand, cli.budget, cli.limit, &cache);
+        let result = tilth::run_callers(&query, &scope, expand, cli.budget, cli.limit.or(Some(25)), &cache);
         emit_result(result, &query, cli.json, is_tty);
         return;
     }
@@ -189,12 +193,14 @@ fn main() {
             cli.budget,
             full,
             expand,
+            cli.limit.or(Some(25)),
+            cli.offset,
             &cache,
         )
     } else if full {
-        tilth::run_full(&query, &scope, cli.section.as_deref(), cli.budget, &cache)
+        tilth::run_full(&query, &scope, cli.section.as_deref(), cli.budget, cli.limit.or(Some(25)), cli.offset, &cache)
     } else {
-        tilth::run(&query, &scope, cli.section.as_deref(), cli.budget, &cache)
+        tilth::run(&query, &scope, cli.section.as_deref(), cli.budget, cli.limit.or(Some(25)), cli.offset, &cache)
     };
 
     emit_result(result, &query, cli.json, is_tty);

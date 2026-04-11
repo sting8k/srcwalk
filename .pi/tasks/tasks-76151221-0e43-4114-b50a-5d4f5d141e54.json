@@ -1,48 +1,87 @@
 {
-  "nextId": 14,
+  "nextId": 19,
   "tasks": [
     {
-      "id": "11",
-      "subject": "F6.1: Add type/constructor reference queries to callee_query_str",
-      "description": "Add tree-sitter queries for constructor calls, extends/implements, type annotations, struct literals to callee_query_str for all supported languages. Keep existing @callee capture name.",
+      "id": "14",
+      "subject": "Refactor search functions to accept limit/offset params",
+      "description": "Change symbol::search, content::search to accept limit: Option<usize>, offset: usize. Remove hardcoded MAX_MATCHES truncation. Raise EARLY_QUIT to WALKER_SAFETY_LIMIT=5000. SearchResult gets has_more, offset fields.",
       "status": "completed",
-      "activeForm": "Adding type reference queries",
+      "activeForm": "Refactoring search params",
       "metadata": {},
       "blocks": [
-        "13"
+        "15",
+        "16",
+        "17",
+        "18"
       ],
       "blockedBy": [],
-      "createdAt": 1775917401017,
-      "updatedAt": 1775917674921
+      "createdAt": 1775919539808,
+      "updatedAt": 1775919889660
     },
     {
-      "id": "12",
-      "subject": "F6.2: Raise caller caps + add --limit flag",
-      "description": "Raise MAX_MATCHES and EARLY_QUIT_THRESHOLD. Add --limit N flag to CLI.",
+      "id": "15",
+      "subject": "Add --offset flag to CLI, update --limit to apply globally",
+      "description": "Add --offset N to main.rs. Make --limit work for all search modes (not just callers). Default limit=25 for search, None for --files mode. Pass through to search functions.",
       "status": "completed",
-      "activeForm": "Raising caller caps",
+      "activeForm": "Adding CLI flags",
       "metadata": {},
       "blocks": [
-        "13"
+        "18"
       ],
-      "blockedBy": [],
-      "createdAt": 1775917401017,
-      "updatedAt": 1775917866266
+      "blockedBy": [
+        "14"
+      ],
+      "createdAt": 1775919539809,
+      "updatedAt": 1775920288489
     },
     {
-      "id": "13",
-      "subject": "F6.3: Build, test, assess noise",
-      "description": "Build release, test on ghidra (ProgramDB callers) and CLIProxyAPIPlus to assess noise vs coverage improvement.",
+      "id": "16",
+      "subject": "Update MCP to pass limit/offset from tool params",
+      "description": "Add limit and offset optional params to tilth_search MCP tool. Pass through to search functions.",
+      "status": "completed",
+      "activeForm": "Updating MCP params",
+      "metadata": {},
+      "blocks": [
+        "18"
+      ],
+      "blockedBy": [
+        "14"
+      ],
+      "createdAt": 1775919539809,
+      "updatedAt": 1775920288489
+    },
+    {
+      "id": "17",
+      "subject": "Update --files mode to use no cap by default",
+      "description": "run_files() passes limit=None so it scans everything. Output is just paths, very small per match.",
+      "status": "completed",
+      "activeForm": "Fixing --files mode",
+      "metadata": {},
+      "blocks": [
+        "18"
+      ],
+      "blockedBy": [
+        "14"
+      ],
+      "createdAt": 1775919539809,
+      "updatedAt": 1775920288490
+    },
+    {
+      "id": "18",
+      "subject": "Test pagination on all 7 repos",
+      "description": "Build release, run local_tests, manual test limit/offset/--files on ghidra and PrestaShop to verify no cutoff.",
       "status": "in_progress",
-      "activeForm": "Testing callers on real repos",
+      "activeForm": "Testing pagination",
       "metadata": {},
       "blocks": [],
       "blockedBy": [
-        "11",
-        "12"
+        "14",
+        "15",
+        "16",
+        "17"
       ],
-      "createdAt": 1775917401017,
-      "updatedAt": 1775917866267
+      "createdAt": 1775919539809,
+      "updatedAt": 1775920288490
     }
   ]
 }

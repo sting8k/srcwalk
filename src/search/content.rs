@@ -11,9 +11,10 @@ use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
 
-const MAX_MATCHES: usize = 10;
-const EARLY_QUIT_THRESHOLD: usize = MAX_MATCHES * 3;
+const WALKER_SAFETY_LIMIT: usize = 5000;
 const MAX_SEARCH_FILE_SIZE: u64 = 500_000;
+
+/// Default display limit when caller does not specify one.
 
 /// Content search using ripgrep crates. Literal by default, regex if `is_regex`.
 pub fn search(
@@ -21,6 +22,8 @@ pub fn search(
     scope: &Path,
     is_regex: bool,
     context: Option<&Path>,
+    limit: Option<usize>,
+    offset: usize,
 ) -> Result<SearchResult, TilthError> {
     let matcher = if is_regex {
         RegexMatcher::new(pattern)
@@ -45,7 +48,7 @@ pub fn search(
         let total_found = &total_found;
 
         Box::new(move |entry| {
-            if total_found.load(Ordering::Relaxed) >= EARLY_QUIT_THRESHOLD {
+            if total_found.load(Ordering::Relaxed) >= WALKER_SAFETY_LIMIT {
                 return ignore::WalkState::Quit;
             }
 
@@ -100,7 +103,7 @@ pub fn search(
                 all.extend(file_matches);
             }
 
-            if total_found.load(Ordering::Relaxed) >= EARLY_QUIT_THRESHOLD {
+            if total_found.load(Ordering::Relaxed) >= WALKER_SAFETY_LIMIT {
                 ignore::WalkState::Quit
             } else {
                 ignore::WalkState::Continue
@@ -108,13 +111,24 @@ pub fn search(
         })
     });
 
-    let total = total_found.load(Ordering::Relaxed);
+    let _total_raw = total_found.load(Ordering::Relaxed);
     let mut all_matches = matches
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     rank::sort(&mut all_matches, pattern, scope, context);
-    all_matches.truncate(MAX_MATCHES);
+
+    let total = all_matches.len();
+    let display_limit = limit.unwrap_or(usize::MAX);
+
+    // Apply offset + limit pagination
+    if offset > 0 && offset < all_matches.len() {
+        all_matches = all_matches.split_off(offset);
+    } else if offset >= all_matches.len() {
+        all_matches.clear();
+    }
+    all_matches.truncate(display_limit);
+    let has_more = total > offset + display_limit;
 
     Ok(SearchResult {
         query: pattern.to_string(),
@@ -123,5 +137,7 @@ pub fn search(
         total_found: total,
         definitions: 0,
         usages: total,
+        has_more,
+        offset,
     })
 }

@@ -28,3 +28,6 @@ benchmark/fixtures/repos/
 benchmark/results/*.jsonl
 benchmark/results/*.md
 !benchmark/results/.gitkeep
+
+# Local tests
+local_tests/

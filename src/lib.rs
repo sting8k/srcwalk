@@ -51,23 +51,27 @@ pub fn run(
     scope: &Path,
     section: Option<&str>,
     budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    run_inner(query, scope, section, budget_tokens, false, 0, cache)
+    run_inner(query, scope, section, budget_tokens, false, 0, limit, offset, cache)
 }
 
-/// Full variant — forces full file output, bypassing smart views.
+/// Full variant -- forces full file output, bypassing smart views.
 pub fn run_full(
     query: &str,
     scope: &Path,
     section: Option<&str>,
     budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    run_inner(query, scope, section, budget_tokens, true, 0, cache)
+    run_inner(query, scope, section, budget_tokens, true, 0, limit, offset, cache)
 }
 
-/// Run with expanded search — inline source for top N matches.
+/// Run with expanded search -- inline source for top N matches.
 pub fn run_expanded(
     query: &str,
     scope: &Path,
@@ -75,9 +79,11 @@ pub fn run_expanded(
     budget_tokens: Option<u64>,
     full: bool,
     expand: usize,
+    limit: Option<usize>,
+    offset: usize,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    run_inner(query, scope, section, budget_tokens, full, expand, cache)
+    run_inner(query, scope, section, budget_tokens, full, expand, limit, offset, cache)
 }
 
 /// Find all callers of a symbol.
@@ -174,6 +180,8 @@ fn run_inner(
     budget_tokens: Option<u64>,
     full: bool,
     expand: usize,
+    limit: Option<usize>,
+    offset: usize,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
     let query_type = classify(query, scope);
@@ -243,9 +251,9 @@ fn run_inner(
                 bloom: index::bloom::BloomFilterCache::new(),
                 expand,
             };
-            run_query_expanded(&query_type, scope, cache, &ctx)?
+            run_query_expanded(&query_type, scope, cache, &ctx, limit, offset)?
         }
-        _ => run_query_basic(&query_type, scope, cache)?,
+        _ => run_query_basic(&query_type, scope, cache, limit, offset)?,
     };
 
     match budget_tokens {
@@ -261,6 +269,8 @@ fn run_query_expanded(
     scope: &Path,
     cache: &OutlineCache,
     ctx: &ExpandedCtx,
+    _limit: Option<usize>,
+    _offset: usize,
 ) -> Result<String, TilthError> {
     match query_type {
         QueryType::Symbol(name) => search::search_symbol_expanded(
@@ -309,6 +319,8 @@ fn run_query_basic(
     query_type: &QueryType,
     scope: &Path,
     cache: &OutlineCache,
+    _limit: Option<usize>,
+    _offset: usize,
 ) -> Result<String, TilthError> {
     match query_type {
         QueryType::Symbol(name) => search::search_symbol(name, scope, cache),

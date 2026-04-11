@@ -19,11 +19,10 @@ use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
 
-const MAX_MATCHES: usize = 10;
-/// Stop walking once we have this many raw definition matches.
-const EARLY_QUIT_THRESHOLD_DEFINITIONS: usize = 50;
-/// Stop walking once we have this many raw usage matches.
-const EARLY_QUIT_THRESHOLD_USAGES: usize = MAX_MATCHES * 3;
+const WALKER_SAFETY_LIMIT_DEFS: usize = 5000;
+const WALKER_SAFETY_LIMIT_USAGES: usize = 5000;
+
+/// Default display limit when caller does not specify one.
 
 /// Symbol search: find definitions via tree-sitter, usages via ripgrep, concurrently.
 /// Merge results, deduplicate, definitions first.
@@ -31,6 +30,8 @@ pub fn search(
     query: &str,
     scope: &Path,
     context: Option<&Path>,
+    limit: Option<usize>,
+    offset: usize,
 ) -> Result<SearchResult, TilthError> {
     // Compile regex once, share across both arms
     let word_pattern = format!(r"\b{}\b", regex_syntax::escape(query));
@@ -63,9 +64,18 @@ pub fn search(
 
     let total = merged.len();
     let usage_count = total - def_count;
+    let display_limit = limit.unwrap_or(usize::MAX);
 
     rank::sort(&mut merged, query, scope, context);
-    merged.truncate(MAX_MATCHES);
+
+    // Apply offset + limit pagination
+    if offset > 0 && offset < merged.len() {
+        merged = merged.split_off(offset);
+    } else if offset >= merged.len() {
+        merged.clear();
+    }
+    merged.truncate(display_limit);
+    let has_more = total > offset + display_limit;
 
     Ok(SearchResult {
         query: query.to_string(),
@@ -74,6 +84,8 @@ pub fn search(
         total_found: total,
         definitions: def_count,
         usages: usage_count,
+        has_more,
+        offset,
     })
 }
 
@@ -100,7 +112,7 @@ fn find_definitions(query: &str, scope: &Path) -> Result<Vec<Match>, TilthError>
 
         Box::new(move |entry| {
             // Early termination: enough definitions found
-            if found_count.load(Ordering::Relaxed) >= EARLY_QUIT_THRESHOLD_DEFINITIONS {
+            if found_count.load(Ordering::Relaxed) >= WALKER_SAFETY_LIMIT_DEFS {
                 return ignore::WalkState::Quit;
             }
 
@@ -372,7 +384,7 @@ fn find_usages(
 
         Box::new(move |entry| {
             // Early termination: enough usages found
-            if found_count.load(Ordering::Relaxed) >= EARLY_QUIT_THRESHOLD_USAGES {
+            if found_count.load(Ordering::Relaxed) >= WALKER_SAFETY_LIMIT_USAGES {
                 return ignore::WalkState::Quit;
             }
 

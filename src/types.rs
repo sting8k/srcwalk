@@ -116,6 +116,10 @@ pub struct SearchResult {
     pub total_found: usize,
     pub definitions: usize,
     pub usages: usize,
+    /// Whether more results exist beyond the current page.
+    pub has_more: bool,
+    /// Current offset (0-based) into the full result set.
+    pub offset: usize,
 }
 
 /// A single entry in a code outline.

@@ -16,9 +16,8 @@ use crate::read::outline::code::outline_language;
 use crate::session::Session;
 use crate::types::FileType;
 
-const MAX_MATCHES: usize = 25;
-/// Stop walking once we have this many raw matches. Generous headroom for dedup + ranking.
-const EARLY_QUIT_THRESHOLD: usize = 80;
+const WALKER_SAFETY_LIMIT: usize = 5000;
+/// Default display limit when caller does not specify one.
 /// Max unique caller functions to trace for 2nd hop. Above this = wide fan-out, skip.
 const IMPACT_FANOUT_THRESHOLD: usize = 10;
 /// Max 2nd-hop results to display.
@@ -58,7 +57,7 @@ pub fn find_callers(
 
         Box::new(move |entry| {
             // Early termination: enough callers found
-            if found_count.load(Ordering::Relaxed) >= EARLY_QUIT_THRESHOLD {
+            if found_count.load(Ordering::Relaxed) >= WALKER_SAFETY_LIMIT {
                 return ignore::WalkState::Quit;
             }
 
@@ -480,7 +479,7 @@ pub fn search_callers_expanded(
     context: Option<&Path>,
     limit: Option<usize>,
 ) -> Result<String, TilthError> {
-    let max_matches = limit.unwrap_or(MAX_MATCHES);
+    let max_matches = limit.unwrap_or(usize::MAX);
     let callers = find_callers(target, scope, bloom)?;
 
     if callers.is_empty() {

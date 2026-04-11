@@ -154,7 +154,7 @@ pub fn search_symbol(
     scope: &Path,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    let result = symbol::search(query, scope, None)?;
+    let result = symbol::search(query, scope, None, None, 0)?;
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, None, &bloom, 0)
 }
@@ -173,7 +173,7 @@ pub fn search_symbol_expanded(
     // Build will be triggered when the lookup path is wired in.
     let _ = index;
 
-    let result = symbol::search(query, scope, context)?;
+    let result = symbol::search(query, scope, context, None, 0)?;
     format_search_result(&result, cache, Some(session), bloom, expand)
 }
 
@@ -200,7 +200,7 @@ pub fn search_multi_symbol_expanded(
     let mut sections = Vec::with_capacity(queries.len());
 
     for query in queries {
-        let result = symbol::search(query, scope, context)?;
+        let result = symbol::search(query, scope, context, None, 0)?;
         let mut out = format::search_header(
             &result.query,
             &result.scope,
@@ -237,7 +237,7 @@ pub fn search_content(
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
-    let result = content::search(pattern, scope, is_regex, None)?;
+    let result = content::search(pattern, scope, is_regex, None, None, 0)?;
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, None, &bloom, 0)
 }
@@ -247,7 +247,7 @@ pub fn search_regex(
     scope: &Path,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    let result = content::search(pattern, scope, true, None)?;
+    let result = content::search(pattern, scope, true, None, None, 0)?;
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, None, &bloom, 0)
 }
@@ -261,7 +261,7 @@ pub fn search_content_expanded(
     context: Option<&Path>,
 ) -> Result<String, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
-    let result = content::search(pattern, scope, is_regex, context)?;
+    let result = content::search(pattern, scope, is_regex, context, None, 0)?;
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, Some(session), &bloom, expand)
 }
@@ -275,25 +275,25 @@ pub fn search_regex_expanded(
     expand: usize,
     context: Option<&Path>,
 ) -> Result<String, TilthError> {
-    let result = content::search(pattern, scope, true, context)?;
+    let result = content::search(pattern, scope, true, context, None, 0)?;
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, Some(session), &bloom, expand)
 }
 
 /// Raw symbol search — returns structured result for programmatic inspection.
 pub fn search_symbol_raw(query: &str, scope: &Path) -> Result<SearchResult, TilthError> {
-    symbol::search(query, scope, None)
+    symbol::search(query, scope, None, None, 0)
 }
 
 /// Raw content search — returns structured result for programmatic inspection.
 pub fn search_content_raw(query: &str, scope: &Path) -> Result<SearchResult, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
-    content::search(pattern, scope, is_regex, None)
+    content::search(pattern, scope, is_regex, None, None, 0)
 }
 
 /// Raw regex search — returns structured result for programmatic inspection.
 pub fn search_regex_raw(pattern: &str, scope: &Path) -> Result<SearchResult, TilthError> {
-    content::search(pattern, scope, true, None)
+    content::search(pattern, scope, true, None, None, 0)
 }
 
 /// Format a raw search result (symbol or content — both use the same pipeline).

@@ -220,10 +220,12 @@ pub fn search_multi_symbol_expanded(
             &mut out,
         );
         if result.total_found > result.matches.len() {
-            let omitted = result.total_found - result.matches.len();
+            let shown = result.matches.len();
+            let omitted = result.total_found - result.offset - shown;
+            let next_offset = result.offset + shown;
             let _ = write!(
                 out,
-                "\n\n... and {omitted} more matches. Narrow with scope."
+                "\n\n... and {omitted} more matches. Next page: offset={next_offset}."
             );
         }
         sections.push(out);
@@ -968,10 +970,12 @@ fn format_search_result(
     }
 
     if result.total_found > result.matches.len() {
-        let omitted = result.total_found - result.matches.len();
+        let shown = result.matches.len();
+        let omitted = result.total_found - result.offset - shown;
+        let next_offset = result.offset + shown;
         let _ = write!(
             out,
-            "\n\n... and {omitted} more matches. Narrow with scope."
+            "\n\n... and {omitted} more matches. Next page: offset={next_offset}. Use --files for full file list."
         );
     }
 

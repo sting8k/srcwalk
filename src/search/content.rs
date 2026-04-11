@@ -13,7 +13,6 @@ use grep_searcher::Searcher;
 
 const MAX_SEARCH_FILE_SIZE: u64 = 500_000;
 
-/// Default display limit when caller does not specify one.
 
 /// Content search using ripgrep crates. Literal by default, regex if `is_regex`.
 pub fn search(

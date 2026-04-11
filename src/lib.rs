@@ -28,7 +28,7 @@ pub(crate) mod search;
 pub(crate) mod session;
 pub(crate) mod types;
 
-/// Apply pagination (limit + offset) to a SearchResult in-place.
+/// Apply pagination (limit + offset) to a `SearchResult` in-place.
 fn paginate(result: &mut types::SearchResult, limit: Option<usize>, offset: usize) {
     if offset > 0 && offset < result.matches.len() {
         result.matches = result.matches.split_off(offset);

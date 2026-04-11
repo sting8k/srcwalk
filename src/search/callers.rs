@@ -553,6 +553,15 @@ pub fn search_callers_expanded(
         }
     }
 
+    if total > sorted_callers.len() {
+        let omitted = total - sorted_callers.len();
+        let next_limit = sorted_callers.len() + max_matches;
+        let _ = write!(
+            output,
+            "\n... and {omitted} more call sites. Next page: limit={next_limit}."
+        );
+    }
+
     // ── Adaptive 2nd-hop impact analysis ──
     // Use all_caller_names (pre-truncation) for the fan-out threshold check,
     // but search for callers of the full set to capture transitive impact.

@@ -20,7 +20,6 @@ use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
 
 
-/// Default display limit when caller does not specify one.
 
 /// Symbol search: find definitions via tree-sitter, usages via ripgrep, concurrently.
 /// Merge results, deduplicate, definitions first.

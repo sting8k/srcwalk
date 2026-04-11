@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::edit::Edit;
-use crate::read::detect_file_type;
-use crate::search::callees::get_outline_entries;
+use crate::lang::detect_file_type;
+use crate::lang::outline::get_outline_entries;
 use crate::search::callers::{find_callers_batch, CallerMatch};
 use crate::types::{is_test_file, FileType, OutlineEntry, OutlineKind};
 

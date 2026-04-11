@@ -21,6 +21,7 @@ pub mod error;
 pub(crate) mod format;
 pub mod index;
 pub mod install;
+pub(crate) mod lang;
 pub mod map;
 pub mod mcp;
 pub(crate) mod read;

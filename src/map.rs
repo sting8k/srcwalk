@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 
 use crate::cache::OutlineCache;
-use crate::read::{detect_file_type, outline};
+use crate::lang::detect_file_type;
+use crate::read::outline;
 use crate::types::{estimate_tokens, FileType};
 
 /// Generate a structural codebase map.

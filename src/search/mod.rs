@@ -9,7 +9,6 @@ pub mod rank;
 pub mod siblings;
 pub mod strip;
 pub mod symbol;
-pub mod treesitter;
 pub mod truncate;
 
 use std::collections::HashSet;
@@ -27,13 +26,7 @@ use crate::read;
 use crate::session::Session;
 use crate::types::{estimate_tokens, FileType, Match, SearchResult};
 
-/// Path relative to scope for cleaner output. Falls back to full path.
-fn rel(path: &Path, scope: &Path) -> String {
-    path.strip_prefix(scope)
-        .unwrap_or(path)
-        .display()
-        .to_string()
-}
+use crate::format::rel;
 
 // Directories that are always skipped — build artifacts, dependencies, VCS internals.
 // We skip these explicitly instead of relying on .gitignore so that locally-relevant
@@ -73,30 +66,6 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
 ];
 
 const EXPAND_FULL_FILE_THRESHOLD: u64 = 800;
-
-/// Walk up from `path` to find the nearest package manifest (Cargo.toml,
-/// package.json, go.mod, etc.). Returns the directory containing it.
-pub(crate) fn package_root(path: &Path) -> Option<&Path> {
-    const MANIFESTS: &[&str] = &[
-        "Cargo.toml",
-        "package.json",
-        "pyproject.toml",
-        "setup.py",
-        "go.mod",
-        "pom.xml",
-        "build.gradle",
-        "build.sbt",
-    ];
-    let mut dir = path;
-    loop {
-        for m in MANIFESTS {
-            if dir.join(m).exists() {
-                return Some(dir);
-            }
-        }
-        dir = dir.parent()?;
-    }
-}
 
 /// Build a parallel directory walker that searches ALL files except known junk directories.
 /// Does NOT respect .gitignore — ensures gitignored but locally-relevant files are found.
@@ -594,7 +563,7 @@ fn format_single_match(
                         }
                     }
 
-                    let file_type = crate::read::detect_file_type(&m.path);
+                    let file_type = crate::lang::detect_file_type(&m.path);
                     let mut skip_lines = strip::strip_noise(&content, &m.path, m.def_range);
 
                     if let Some((def_start, def_end)) = m.def_range {
@@ -677,7 +646,8 @@ fn format_single_match(
                             }
 
                             if let Some(def_range) = m.def_range {
-                                let entries = callees::get_outline_entries(&content, lang);
+                                let entries =
+                                    crate::lang::outline::get_outline_entries(&content, lang);
                                 if let Some(parent) = siblings::find_parent_entry(&entries, m.line)
                                 {
                                     let refs = siblings::extract_sibling_references(
@@ -846,7 +816,7 @@ fn basename_file_outline(
 
     // Read file and generate outline
     let content = std::fs::read_to_string(&matched_path).ok()?;
-    let file_type = crate::read::detect_file_type(&matched_path);
+    let file_type = crate::lang::detect_file_type(&matched_path);
     let mtime = std::fs::metadata(&matched_path)
         .and_then(|m| m.modified())
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
@@ -1136,7 +1106,7 @@ fn flush_gap_marker(kept: &mut Vec<String>, consecutive_skipped: &mut u32) {
 
 /// Get cached outline string for a file. Returns None for non-code or huge files.
 fn get_outline_str(path: &std::path::Path, cache: &OutlineCache) -> Option<std::sync::Arc<str>> {
-    let file_type = read::detect_file_type(path);
+    let file_type = crate::lang::detect_file_type(path);
     if !matches!(file_type, FileType::Code(_)) {
         return None;
     }
@@ -1538,6 +1508,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(tmp.path(), tmp.path().join("loop")).unwrap();
 
+        // Should complete without hanging — ignore crate detects the cycle via inode tracking
         let paths = walk_paths(tmp.path(), None);
         let names: Vec<&str> = paths
             .iter()
@@ -1567,6 +1538,7 @@ mod tests {
 
         let result =
             content::search("unique_symlink_test_symbol", tmp.path(), false, None, None).unwrap();
+        // Should find the symbol in both real/api.rs and linked/api.rs
         assert!(
             result.total_found >= 2,
             "expected symbol found via both real and symlinked paths, got {}",

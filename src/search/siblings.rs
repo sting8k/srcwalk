@@ -3,7 +3,7 @@ use std::sync::{LazyLock, Mutex};
 
 use streaming_iterator::StreamingIterator;
 
-use crate::read::outline::code::outline_language;
+use crate::lang::outline::outline_language;
 use crate::types::{Lang, OutlineEntry, OutlineKind};
 
 /// Global cache of compiled tree-sitter queries for sibling extraction.

@@ -418,9 +418,9 @@ fn shared_prefix_depth(a: &Path, b: &Path) -> usize {
         .count()
 }
 
-/// Re-export from parent module to keep rank.rs self-contained.
+/// Re-export from lang module to keep rank.rs self-contained.
 fn package_root(path: &Path) -> Option<&Path> {
-    super::package_root(path)
+    crate::lang::package_root(path)
 }
 
 /// Check if path contains a vendor directory component.

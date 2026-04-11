@@ -5,14 +5,14 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use super::file_metadata;
-use super::treesitter::{
+use crate::lang::treesitter::{
     definition_weight, extract_definition_name, extract_impl_trait, extract_impl_type,
     extract_implemented_interfaces, DEFINITION_KINDS,
 };
 
 use crate::error::TilthError;
-use crate::read::detect_file_type;
-use crate::read::outline::code::outline_language;
+use crate::lang::detect_file_type;
+use crate::lang::outline::outline_language;
 use crate::search::rank;
 use crate::types::{FileType, Match, SearchResult};
 use grep_regex::RegexMatcher;
@@ -501,8 +501,7 @@ pub(crate) fn dispatch_tool(tool: &str) -> Result<String, String> {
     }
 }
 "#;
-        let ts_lang =
-            crate::read::outline::code::outline_language(crate::types::Lang::Rust).unwrap();
+        let ts_lang = crate::lang::outline::outline_language(crate::types::Lang::Rust).unwrap();
 
         let defs = find_defs_treesitter(
             std::path::Path::new("test.rs"),

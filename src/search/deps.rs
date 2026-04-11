@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::OutlineCache;
 use crate::error::TilthError;
-use crate::read::detect_file_type;
+use crate::lang::detect_file_type;
+use crate::lang::outline::{extract_import_source, get_outline_entries};
 use crate::read::imports::{is_external, is_import_line, resolve_related_files_with_content};
-use crate::read::outline::code::extract_import_source;
-use crate::search::callees::{extract_callee_names, get_outline_entries, resolve_callees};
+use crate::search::callees::{extract_callee_names, resolve_callees};
 use crate::search::callers::find_callers_batch;
 use crate::types::{FileType, OutlineKind};
 

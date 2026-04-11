@@ -5,7 +5,7 @@ use std::sync::{LazyLock, Mutex};
 use streaming_iterator::StreamingIterator;
 
 use crate::cache::OutlineCache;
-use crate::read::outline::code::outline_language;
+use crate::lang::outline::{get_outline_entries, outline_language};
 use crate::types::{Lang, OutlineEntry};
 
 /// A resolved callee: a function/method called from within an expanded definition.
@@ -196,25 +196,6 @@ pub fn extract_callee_names(
     names
 }
 
-/// Get structured outline entries for file content.
-pub fn get_outline_entries(content: &str, lang: Lang) -> Vec<OutlineEntry> {
-    let Some(ts_lang) = outline_language(lang) else {
-        return Vec::new();
-    };
-
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(&ts_lang).is_err() {
-        return Vec::new();
-    }
-
-    let Some(tree) = parser.parse(content, None) else {
-        return Vec::new();
-    };
-
-    let lines: Vec<&str> = content.lines().collect();
-    crate::read::outline::code::walk_top_level(tree.root_node(), &lines, lang)
-}
-
 /// Match callee names against outline entries, moving resolved names out of `remaining`.
 fn resolve_from_entries(
     entries: &[OutlineEntry],
@@ -270,7 +251,7 @@ pub fn resolve_callees(
         return Vec::new();
     }
 
-    let file_type = crate::read::detect_file_type(source_path);
+    let file_type = crate::lang::detect_file_type(source_path);
     let crate::types::FileType::Code(lang) = file_type else {
         return Vec::new();
     };
@@ -320,7 +301,7 @@ pub fn resolve_callees(
             continue;
         }
 
-        let import_type = crate::read::detect_file_type(&import_path);
+        let import_type = crate::lang::detect_file_type(&import_path);
         let crate::types::FileType::Code(import_lang) = import_type else {
             continue;
         };
@@ -458,7 +439,7 @@ fn resolve_second_hop(
     visited: &mut HashSet<(PathBuf, u32)>,
     budget: &mut usize,
 ) -> Vec<ResolvedCallee> {
-    let file_type = crate::read::detect_file_type(&parent.file);
+    let file_type = crate::lang::detect_file_type(&parent.file);
     let crate::types::FileType::Code(lang) = file_type else {
         return Vec::new();
     };

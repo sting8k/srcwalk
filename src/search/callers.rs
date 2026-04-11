@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use streaming_iterator::StreamingIterator;
 
-use super::treesitter::{extract_definition_name, DEFINITION_KINDS};
+use crate::lang::treesitter::{extract_definition_name, DEFINITION_KINDS};
 
 use crate::cache::OutlineCache;
 use crate::error::TilthError;
-use crate::read::detect_file_type;
-use crate::read::outline::code::outline_language;
+use crate::lang::detect_file_type;
+use crate::lang::outline::outline_language;
 use crate::session::Session;
 use crate::types::FileType;
 

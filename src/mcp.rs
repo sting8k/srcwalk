@@ -551,7 +551,7 @@ fn tool_edit(
             }
 
             let abs_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-            let scope = crate::search::package_root(&abs_path).map_or_else(
+            let scope = crate::lang::package_root(&abs_path).map_or_else(
                 || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 std::path::Path::to_path_buf,
             );

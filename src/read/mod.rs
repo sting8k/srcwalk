@@ -11,7 +11,8 @@ use memmap2::Mmap;
 use crate::cache::OutlineCache;
 use crate::error::TilthError;
 use crate::format;
-use crate::types::{estimate_tokens, FileType, Lang, ViewMode};
+use crate::search::callees::get_outline_entries;
+use crate::types::{estimate_tokens, FileType, Lang, OutlineEntry, ViewMode};
 
 pub(crate) const TOKEN_THRESHOLD: u64 = 6_000;
 const FILE_SIZE_CAP: u64 = 500_000; // 500KB
@@ -274,17 +275,26 @@ fn read_section(path: &Path, range: &str, edit_mode: bool) -> Result<String, Til
     })?;
     let buf = &mmap[..];
 
-    // Check if this is a heading-based address (markdown)
+    // Resolve section address: line range, heading, or symbol name
     let (start, end) = if range.starts_with('#') {
+        // Markdown heading
         resolve_heading(buf, range).ok_or_else(|| TilthError::InvalidQuery {
             query: range.to_string(),
             reason: "heading not found in file".into(),
         })?
+    } else if let Some(r) = parse_range(range) {
+        // Line range like "45-89"
+        r
+    } else if let Some(r) = resolve_symbol(buf, path, range) {
+        // Symbol name like "isCustomization" or "handleRequest"
+        r
     } else {
-        parse_range(range).ok_or_else(|| TilthError::InvalidQuery {
+        return Err(TilthError::InvalidQuery {
             query: range.to_string(),
-            reason: "expected format: \"start-end\" (e.g. \"45-89\") or heading (e.g. \"## Architecture\")".into(),
-        })?
+            reason: format!(
+                "not a valid line range (e.g. \"45-89\"), heading (e.g. \"## Foo\"), or symbol name in this file"
+            ),
+        });
     };
 
     // Find line offsets using memchr — no full-file Vec<&str> allocation
@@ -332,6 +342,32 @@ fn parse_range(s: &str) -> Option<(usize, usize)> {
         return None;
     }
     Some((start, end))
+}
+
+/// Resolve a symbol name to its line range using AST outline.
+/// Returns (start_line, end_line) if found.
+fn resolve_symbol(buf: &[u8], path: &Path, symbol: &str) -> Option<(usize, usize)> {
+    let content = std::str::from_utf8(buf).ok()?;
+    let lang = match detect_file_type(path) {
+        FileType::Code(l) => l,
+        _ => return None,
+    };
+    let entries = get_outline_entries(content, lang);
+    find_symbol_in_entries(&entries, symbol)
+}
+
+/// Recursively search for a symbol in outline entries.
+fn find_symbol_in_entries(entries: &[OutlineEntry], symbol: &str) -> Option<(usize, usize)> {
+    for entry in entries {
+        if entry.name == symbol {
+            return Some((entry.start_line as usize, entry.end_line as usize));
+        }
+        // Search children (methods inside class, etc.)
+        if let Some(range) = find_symbol_in_entries(&entry.children, symbol) {
+            return Some(range);
+        }
+    }
+    None
 }
 
 /// List directory contents — treat as glob on dir/*.

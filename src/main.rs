@@ -284,7 +284,7 @@ fn main() {
 
     // Files mode — list matching file paths only
     if cli.files {
-        let result = tilth::run_files(&query, &scope, &cache);
+        let result = tilth::run_files(&query, &scope, &cache, cli.glob.as_deref());
         emit_result(result, &query, cli.json, is_tty);
         return;
     }

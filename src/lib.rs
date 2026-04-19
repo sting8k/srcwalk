@@ -455,9 +455,13 @@ fn multi_word_concept_search(
 }
 
 /// List only matching file paths (no content).
-pub fn run_files(query: &str, scope: &Path, cache: &OutlineCache) -> Result<String, TilthError> {
+pub fn run_files(
+    query: &str,
+    scope: &Path,
+    cache: &OutlineCache,
+    glob: Option<&str>,
+) -> Result<String, TilthError> {
     let query_type = classify(query, scope);
-    let glob = None;
     let result = match query_type {
         QueryType::Symbol(name) => search::search_symbol_raw(&name, scope, glob)?,
         QueryType::Content(text) | QueryType::Concept(text) | QueryType::Fallthrough(text) => {

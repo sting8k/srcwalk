@@ -227,11 +227,27 @@ pub(crate) fn find_callers_batch(
     let matches: Mutex<Vec<(String, CallerMatch)>> = Mutex::new(Vec::new());
     let found_count = AtomicUsize::new(0);
 
+    // Build Aho-Corasick automaton once for all targets — single-pass multi-pattern
+    // search. Faster than N independent memchr calls when targets.len() >= 3.
+    // For 1-2 targets, use length-sorted memchr (still beats unsorted).
+    let target_vec: Vec<&str> = targets.iter().map(String::as_str).collect();
+    let ac = if target_vec.len() >= 3 {
+        aho_corasick::AhoCorasick::new(&target_vec).ok()
+    } else {
+        None
+    };
+    // Sort fallback memchr targets longest-first: rare/specific names give
+    // quick misses on most files; common short names match too aggressively.
+    let mut sorted_targets: Vec<&str> = target_vec.clone();
+    sorted_targets.sort_by_key(|t| std::cmp::Reverse(t.len()));
+
     let walker = super::walker(scope, glob)?;
 
     walker.run(|| {
         let matches = &matches;
         let found_count = &found_count;
+        let ac = ac.as_ref();
+        let sorted_targets = &sorted_targets;
 
         Box::new(move |entry| {
             // Early termination: enough callers found
@@ -261,15 +277,19 @@ pub(crate) fn find_callers_batch(
                 return ignore::WalkState::Continue;
             }
 
-            // Fast byte-level scan: mmap + memchr SIMD pre-filter for any target.
+            // Fast byte-level scan: mmap + multi-pattern pre-filter.
             let Some(bytes) = super::read_file_bytes(path, file_len) else {
                 return ignore::WalkState::Continue;
             };
 
-            if !targets
-                .iter()
-                .any(|t| memchr::memmem::find(&bytes, t.as_bytes()).is_some())
-            {
+            let any_match = if let Some(ac) = ac {
+                ac.is_match(&*bytes)
+            } else {
+                sorted_targets
+                    .iter()
+                    .any(|t| memchr::memmem::find(&bytes, t.as_bytes()).is_some())
+            };
+            if !any_match {
                 return ignore::WalkState::Continue;
             }
 

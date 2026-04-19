@@ -692,6 +692,7 @@ dependencies = [
 name = "tilth"
 version = "0.6.1"
 dependencies = [
+ "aho-corasick",
  "clap",
  "clap_complete",
  "dashmap",

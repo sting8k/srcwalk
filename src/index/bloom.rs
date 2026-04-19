@@ -133,10 +133,17 @@ fn hash_with_seed(item: &str, seed: u64) -> u64 {
 // BloomFilterCache
 // ---------------------------------------------------------------------------
 
+/// Max number of cached Bloom filters before wholesale clear. Each filter is
+/// ~1-2KB; 10000 entries ≈ 10-20MB. Walker on huge repos (50k+ files) would
+/// otherwise grow unbounded — clear is acceptable since walker has no
+/// temporal locality (each call sweeps the tree once).
+const FILTER_CACHE_LIMIT: usize = 10_000;
+
 /// Thread-safe cache of per-file Bloom filters, keyed by path and validated
 /// by mtime. Stale entries are automatically rebuilt on access.
 pub struct BloomFilterCache {
     filters: DashMap<PathBuf, (BloomFilter, SystemTime)>,
+    count: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for BloomFilterCache {
@@ -151,6 +158,7 @@ impl BloomFilterCache {
     pub fn new() -> Self {
         Self {
             filters: DashMap::new(),
+            count: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -163,6 +171,8 @@ impl BloomFilterCache {
     /// `false` if it is DEFINITELY absent.
     #[must_use]
     pub fn contains(&self, path: &Path, mtime: SystemTime, content: &str, symbol: &str) -> bool {
+        use std::sync::atomic::Ordering;
+
         // Fast path: check existing cached entry
         if let Some(entry) = self.filters.get(path) {
             let (ref filter, cached_mtime) = *entry;
@@ -174,7 +184,23 @@ impl BloomFilterCache {
         // Cache miss or stale: build and cache a new filter
         let filter = build_filter(content);
         let result = filter.contains(symbol);
-        self.filters.insert(path.to_path_buf(), (filter, mtime));
+
+        // Cap check before insert. When exceeded, clear wholesale — walker
+        // workloads have no temporal locality, so refilling is the same cost
+        // as the original scan.
+        if self.count.load(Ordering::Relaxed) >= FILTER_CACHE_LIMIT {
+            self.filters.clear();
+            self.count.store(0, Ordering::Relaxed);
+        }
+
+        // insert() returns Some(old) on overwrite — only bump counter on new key.
+        if self
+            .filters
+            .insert(path.to_path_buf(), (filter, mtime))
+            .is_none()
+        {
+            self.count.fetch_add(1, Ordering::Relaxed);
+        }
         result
     }
 }

@@ -25,8 +25,6 @@ pub fn search(
     query: &str,
     scope: &Path,
     context: Option<&Path>,
-    limit: Option<usize>,
-    offset: usize,
     glob: Option<&str>,
 ) -> Result<SearchResult, TilthError> {
     // Compile regex once, share across both arms
@@ -60,18 +58,8 @@ pub fn search(
 
     let total = merged.len();
     let usage_count = total - def_count;
-    let display_limit = limit.unwrap_or(usize::MAX);
 
     rank::sort(&mut merged, query, scope, context);
-
-    // Apply offset + limit pagination
-    if offset > 0 && offset < merged.len() {
-        merged = merged.split_off(offset);
-    } else if offset >= merged.len() {
-        merged.clear();
-    }
-    merged.truncate(display_limit);
-    let has_more = total > offset + display_limit;
 
     Ok(SearchResult {
         query: query.to_string(),
@@ -80,8 +68,8 @@ pub fn search(
         total_found: total,
         definitions: def_count,
         usages: usage_count,
-        has_more,
-        offset,
+        has_more: false,
+        offset: 0,
     })
 }
 

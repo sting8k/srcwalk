@@ -382,19 +382,19 @@ fn single_query_search(
     };
 
     if accept_sym {
-        paginate(&mut sym_result, limit, offset);
+        search::paginate(&mut sym_result, limit, offset);
         return search::format_raw_result(&sym_result, cache);
     }
 
     let mut content_result = search::search_content_raw(text, scope, glob)?;
     if content_result.total_found > 0 {
-        paginate(&mut content_result, limit, offset);
+        search::paginate(&mut content_result, limit, offset);
         return search::format_raw_result(&content_result, cache);
     }
 
     // For concept queries: if symbol had usages but no definitions, show those
     if prefer_definitions && sym_result.total_found > 0 {
-        paginate(&mut sym_result, limit, offset);
+        search::paginate(&mut sym_result, limit, offset);
         return search::format_raw_result(&sym_result, cache);
     }
 
@@ -417,7 +417,7 @@ fn multi_word_concept_search(
     let mut content_result = search::search_content_raw(text, scope, glob)?;
     content_result.query = text.to_string();
     if content_result.total_found > 0 {
-        paginate(&mut content_result, limit, offset);
+        search::paginate(&mut content_result, limit, offset);
         return search::format_raw_result(&content_result, cache);
     }
 
@@ -443,7 +443,7 @@ fn multi_word_concept_search(
     let mut relaxed_result = search::search_regex_raw(&relaxed, scope, glob)?;
     relaxed_result.query = text.to_string();
     if relaxed_result.total_found > 0 {
-        paginate(&mut relaxed_result, limit, offset);
+        search::paginate(&mut relaxed_result, limit, offset);
         return search::format_raw_result(&relaxed_result, cache);
     }
 
@@ -452,25 +452,6 @@ fn multi_word_concept_search(
         path: scope.join(text),
         suggestion: read::suggest_similar_file(scope, first_word),
     })
-}
-
-/// Apply limit/offset pagination to a SearchResult.
-fn paginate(result: &mut crate::types::SearchResult, limit: Option<usize>, offset: usize) {
-    let total = result.matches.len();
-    if offset > 0 {
-        if offset >= total {
-            result.matches.clear();
-        } else {
-            result.matches = result.matches.split_off(offset);
-        }
-    }
-    if let Some(cap) = limit {
-        if result.matches.len() > cap {
-            result.matches.truncate(cap);
-            result.has_more = true;
-        }
-    }
-    result.offset = offset;
 }
 
 /// List only matching file paths (no content).

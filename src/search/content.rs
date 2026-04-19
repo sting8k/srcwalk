@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use super::file_metadata;
@@ -19,8 +18,6 @@ pub fn search(
     scope: &Path,
     is_regex: bool,
     context: Option<&Path>,
-    limit: Option<usize>,
-    offset: usize,
     glob: Option<&str>,
 ) -> Result<SearchResult, TilthError> {
     let matcher = if is_regex {
@@ -34,16 +31,11 @@ pub fn search(
     })?;
 
     let matches: Mutex<Vec<Match>> = Mutex::new(Vec::new());
-    // Relaxed is correct: walker.run() joins all threads before we read the final value.
-    // Early-quit checks are approximate by design — one extra iteration is harmless.
-    let total_found = AtomicUsize::new(0);
-
     let walker = super::walker(scope, glob)?;
 
     walker.run(|| {
         let matcher = &matcher;
         let matches = &matches;
-        let total_found = &total_found;
 
         Box::new(move |entry| {
             let Ok(entry) = entry else {
@@ -90,7 +82,6 @@ pub fn search(
             );
 
             if !file_matches.is_empty() {
-                total_found.fetch_add(file_matches.len(), Ordering::Relaxed);
                 let mut all = matches
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -101,7 +92,6 @@ pub fn search(
         })
     });
 
-    let _total_raw = total_found.load(Ordering::Relaxed);
     let mut all_matches = matches
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -109,16 +99,6 @@ pub fn search(
     rank::sort(&mut all_matches, pattern, scope, context);
 
     let total = all_matches.len();
-    let display_limit = limit.unwrap_or(usize::MAX);
-
-    // Apply offset + limit pagination
-    if offset > 0 && offset < all_matches.len() {
-        all_matches = all_matches.split_off(offset);
-    } else if offset >= all_matches.len() {
-        all_matches.clear();
-    }
-    all_matches.truncate(display_limit);
-    let has_more = total > offset + display_limit;
 
     Ok(SearchResult {
         query: pattern.to_string(),
@@ -127,7 +107,7 @@ pub fn search(
         total_found: total,
         definitions: 0,
         usages: total,
-        has_more,
-        offset,
+        has_more: false,
+        offset: 0,
     })
 }

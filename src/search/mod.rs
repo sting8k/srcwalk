@@ -146,7 +146,7 @@ pub fn search_symbol(
     offset: usize,
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
-    let mut result = symbol::search(query, scope, None, None, 0, glob)?;
+    let mut result = symbol::search(query, scope, None, glob)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, None, &bloom, 0)
@@ -167,7 +167,7 @@ pub fn search_symbol_expanded(
 ) -> Result<String, TilthError> {
     let _ = index;
 
-    let mut result = symbol::search(query, scope, context, None, 0, glob)?;
+    let mut result = symbol::search(query, scope, context, glob)?;
     paginate(&mut result, limit, offset);
     format_search_result(&result, cache, Some(session), bloom, expand)
 }
@@ -198,7 +198,7 @@ pub fn search_multi_symbol_expanded(
     let mut sections = Vec::with_capacity(queries.len());
 
     for query in queries {
-        let mut result = symbol::search(query, scope, context, None, 0, glob)?;
+        let mut result = symbol::search(query, scope, context, glob)?;
         paginate(&mut result, limit, offset);
         let mut out = format::search_header(
             &result.query,
@@ -239,7 +239,7 @@ pub fn search_content(
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
-    let mut result = content::search(pattern, scope, is_regex, None, None, 0, glob)?;
+    let mut result = content::search(pattern, scope, is_regex, None, glob)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, None, &bloom, 0)
@@ -253,7 +253,7 @@ pub fn search_regex(
     offset: usize,
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
-    let mut result = content::search(pattern, scope, true, None, None, 0, glob)?;
+    let mut result = content::search(pattern, scope, true, None, glob)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, None, &bloom, 0)
@@ -271,7 +271,7 @@ pub fn search_content_expanded(
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
-    let mut result = content::search(pattern, scope, is_regex, context, None, 0, glob)?;
+    let mut result = content::search(pattern, scope, is_regex, context, glob)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, Some(session), &bloom, expand)
@@ -289,7 +289,7 @@ pub fn search_regex_expanded(
     offset: usize,
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
-    let mut result = content::search(pattern, scope, true, context, None, 0, glob)?;
+    let mut result = content::search(pattern, scope, true, context, glob)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, Some(session), &bloom, expand)
@@ -301,7 +301,7 @@ pub fn search_symbol_raw(
     scope: &Path,
     glob: Option<&str>,
 ) -> Result<SearchResult, TilthError> {
-    symbol::search(query, scope, None, None, 0, glob)
+    symbol::search(query, scope, None, glob)
 }
 
 /// Raw content search — returns structured result for programmatic inspection.
@@ -311,7 +311,7 @@ pub fn search_content_raw(
     glob: Option<&str>,
 ) -> Result<SearchResult, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
-    content::search(pattern, scope, is_regex, None, None, 0, glob)
+    content::search(pattern, scope, is_regex, None, glob)
 }
 
 /// Raw regex search — returns structured result for programmatic inspection.
@@ -320,7 +320,7 @@ pub fn search_regex_raw(
     scope: &Path,
     glob: Option<&str>,
 ) -> Result<SearchResult, TilthError> {
-    content::search(pattern, scope, true, None, None, 0, glob)
+    content::search(pattern, scope, true, None, glob)
 }
 
 /// Format a raw search result (symbol or content — both use the same pipeline).
@@ -1403,11 +1403,10 @@ mod tests {
     #[test]
     fn content_search_glob_restricts_results() {
         let scope = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let all = content::search("TilthError", &scope, false, None, None, 0, None)
-            .expect("search failed");
-        let rs_only = content::search("TilthError", &scope, false, None, None, 0, Some("*.rs"))
+        let all = content::search("TilthError", &scope, false, None, None).expect("search failed");
+        let rs_only = content::search("TilthError", &scope, false, None, Some("*.rs"))
             .expect("search with glob failed");
-        let toml_only = content::search("TilthError", &scope, false, None, None, 0, Some("*.toml"))
+        let toml_only = content::search("TilthError", &scope, false, None, Some("*.toml"))
             .expect("search with toml glob failed");
 
         assert!(all.total_found > 0, "unfiltered should find TilthError");
@@ -1429,9 +1428,9 @@ mod tests {
     #[test]
     fn symbol_search_glob_restricts_results() {
         let scope = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let rs_result = symbol::search("walker", &scope, None, None, 0, Some("*.rs"))
-            .expect("symbol search failed");
-        let toml_result = symbol::search("walker", &scope, None, None, 0, Some("*.toml"))
+        let rs_result =
+            symbol::search("walker", &scope, None, Some("*.rs")).expect("symbol search failed");
+        let toml_result = symbol::search("walker", &scope, None, Some("*.toml"))
             .expect("symbol search with toml failed");
 
         assert!(rs_result.total_found > 0, "*.rs should find 'walker'");
@@ -1568,16 +1567,8 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_dir(&real_dir, tmp.path().join("linked")).unwrap();
 
-        let result = content::search(
-            "unique_symlink_test_symbol",
-            tmp.path(),
-            false,
-            None,
-            None,
-            0,
-            None,
-        )
-        .unwrap();
+        let result =
+            content::search("unique_symlink_test_symbol", tmp.path(), false, None, None).unwrap();
         // Should find the symbol in both real/api.rs and linked/api.rs
         assert!(
             result.total_found >= 2,

@@ -541,9 +541,8 @@ fn tool_search(
         }
         "regex" => {
             session.record_search(query);
-            let result =
-                crate::search::content::search(query, &scope, true, context, None, 0, glob)
-                    .map_err(|e| e.to_string())?;
+            let result = crate::search::content::search(query, &scope, true, context, glob)
+                .map_err(|e| e.to_string())?;
             crate::search::format_raw_result(&result, cache)
         }
         "callers" => {

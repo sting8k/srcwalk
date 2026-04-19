@@ -430,10 +430,7 @@ mod tests {
             QueryType::Regex(_)
         ));
         // Already /wrapped/ → regex via step 0, not this check
-        assert!(matches!(
-            classify("/Foo|Bar/", &scope),
-            QueryType::Regex(_)
-        ));
+        assert!(matches!(classify("/Foo|Bar/", &scope), QueryType::Regex(_)));
     }
 
     #[test]

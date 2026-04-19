@@ -72,7 +72,7 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["map", "full", "expand", "section", "edit"])]
     files: bool,
 
-    /// Max results to display (default: 25). Applies to search, callers, content.
+    /// Max results to display. Applies to search, callers, content.
     #[arg(long, value_name = "N")]
     limit: Option<usize>,
 

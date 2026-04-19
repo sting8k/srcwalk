@@ -19,8 +19,6 @@ use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
 
-
-
 /// Symbol search: find definitions via tree-sitter, usages via ripgrep, concurrently.
 /// Merge results, deduplicate, definitions first.
 pub fn search(

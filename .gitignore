@@ -31,3 +31,7 @@ benchmark/results/*.md
 
 # Local tests
 local_tests/
+
+# Pi agent
+.pi/
+.pi-lens/

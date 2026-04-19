@@ -142,9 +142,12 @@ pub fn search_symbol(
     query: &str,
     scope: &Path,
     cache: &OutlineCache,
+    limit: Option<usize>,
+    offset: usize,
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
-    let result = symbol::search(query, scope, None, None, 0, glob)?;
+    let mut result = symbol::search(query, scope, None, None, 0, glob)?;
+    paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, None, &bloom, 0)
 }
@@ -195,7 +198,8 @@ pub fn search_multi_symbol_expanded(
     let mut sections = Vec::with_capacity(queries.len());
 
     for query in queries {
-        let result = symbol::search(query, scope, context, None, 0, glob)?;
+        let mut result = symbol::search(query, scope, context, None, 0, glob)?;
+        paginate(&mut result, limit, offset);
         let mut out = format::search_header(
             &result.query,
             &result.scope,
@@ -230,10 +234,13 @@ pub fn search_content(
     query: &str,
     scope: &Path,
     cache: &OutlineCache,
+    limit: Option<usize>,
+    offset: usize,
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
-    let result = content::search(pattern, scope, is_regex, None, None, 0, glob)?;
+    let mut result = content::search(pattern, scope, is_regex, None, None, 0, glob)?;
+    paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, None, &bloom, 0)
 }
@@ -242,9 +249,12 @@ pub fn search_regex(
     pattern: &str,
     scope: &Path,
     cache: &OutlineCache,
+    limit: Option<usize>,
+    offset: usize,
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
-    let result = content::search(pattern, scope, true, None, None, 0, glob)?;
+    let mut result = content::search(pattern, scope, true, None, None, 0, glob)?;
+    paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(&result, cache, None, &bloom, 0)
 }
@@ -1393,7 +1403,8 @@ mod tests {
     #[test]
     fn content_search_glob_restricts_results() {
         let scope = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let all = content::search("TilthError", &scope, false, None, None, 0, None).expect("search failed");
+        let all = content::search("TilthError", &scope, false, None, None, 0, None)
+            .expect("search failed");
         let rs_only = content::search("TilthError", &scope, false, None, None, 0, Some("*.rs"))
             .expect("search with glob failed");
         let toml_only = content::search("TilthError", &scope, false, None, None, 0, Some("*.toml"))
@@ -1418,8 +1429,8 @@ mod tests {
     #[test]
     fn symbol_search_glob_restricts_results() {
         let scope = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let rs_result =
-            symbol::search("walker", &scope, None, None, 0, Some("*.rs")).expect("symbol search failed");
+        let rs_result = symbol::search("walker", &scope, None, None, 0, Some("*.rs"))
+            .expect("symbol search failed");
         let toml_result = symbol::search("walker", &scope, None, None, 0, Some("*.toml"))
             .expect("symbol search with toml failed");
 
@@ -1557,8 +1568,16 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_dir(&real_dir, tmp.path().join("linked")).unwrap();
 
-        let result =
-            content::search("unique_symlink_test_symbol", tmp.path(), false, None, None, 0, None).unwrap();
+        let result = content::search(
+            "unique_symlink_test_symbol",
+            tmp.path(),
+            false,
+            None,
+            None,
+            0,
+            None,
+        )
+        .unwrap();
         // Should find the symbol in both real/api.rs and linked/api.rs
         assert!(
             result.total_found >= 2,

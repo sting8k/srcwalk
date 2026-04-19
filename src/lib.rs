@@ -59,7 +59,18 @@ pub fn run(
     glob: Option<&str>,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    run_inner(query, scope, section, budget_tokens, false, 0, limit, offset, glob, cache)
+    run_inner(
+        query,
+        scope,
+        section,
+        budget_tokens,
+        false,
+        0,
+        limit,
+        offset,
+        glob,
+        cache,
+    )
 }
 
 /// Full variant — forces full file output, bypassing smart views.
@@ -73,7 +84,18 @@ pub fn run_full(
     glob: Option<&str>,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    run_inner(query, scope, section, budget_tokens, true, 0, limit, offset, glob, cache)
+    run_inner(
+        query,
+        scope,
+        section,
+        budget_tokens,
+        true,
+        0,
+        limit,
+        offset,
+        glob,
+        cache,
+    )
 }
 
 /// Run with expanded search — inline source for top N matches.
@@ -182,7 +204,8 @@ fn run_inner(
             let bloom = index::bloom::BloomFilterCache::new();
             let expand = if expand > 0 { expand } else { 2 };
             let output = search::search_multi_symbol_expanded(
-                &parts, scope, cache, &session, &sym_index, &bloom, expand, None, limit, offset, glob,
+                &parts, scope, cache, &session, &sym_index, &bloom, expand, None, limit, offset,
+                glob,
             )?;
             return match budget_tokens {
                 Some(b) => Ok(budget::apply(&output, b)),
@@ -317,15 +340,17 @@ fn run_query_basic(
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
     match query_type {
-        QueryType::Symbol(name) => search::search_symbol(name, scope, cache, glob),
+        QueryType::Symbol(name) => search::search_symbol(name, scope, cache, limit, offset, glob),
         QueryType::Concept(text) if text.contains(' ') => {
             multi_word_concept_search(text, scope, cache, limit, offset, glob)
         }
         QueryType::Concept(text) => {
             single_query_search(text, scope, cache, true, limit, offset, glob)
         }
-        QueryType::Content(text) => search::search_content(text, scope, cache, glob),
-        QueryType::Regex(pattern) => search::search_regex(pattern, scope, cache, glob),
+        QueryType::Content(text) => search::search_content(text, scope, cache, limit, offset, glob),
+        QueryType::Regex(pattern) => {
+            search::search_regex(pattern, scope, cache, limit, offset, glob)
+        }
         QueryType::Fallthrough(text) => {
             single_query_search(text, scope, cache, false, limit, offset, glob)
         }
@@ -361,7 +386,7 @@ fn single_query_search(
         return search::format_raw_result(&sym_result, cache);
     }
 
-    let mut content_result = search::search_content_raw(text, scope, None)?;
+    let mut content_result = search::search_content_raw(text, scope, glob)?;
     if content_result.total_found > 0 {
         paginate(&mut content_result, limit, offset);
         return search::format_raw_result(&content_result, cache);
@@ -389,7 +414,7 @@ fn multi_word_concept_search(
     glob: Option<&str>,
 ) -> Result<String, error::TilthError> {
     // Try exact phrase match first
-    let mut content_result = search::search_content_raw(text, scope, None)?;
+    let mut content_result = search::search_content_raw(text, scope, glob)?;
     content_result.query = text.to_string();
     if content_result.total_found > 0 {
         paginate(&mut content_result, limit, offset);
@@ -449,11 +474,7 @@ fn paginate(result: &mut crate::types::SearchResult, limit: Option<usize>, offse
 }
 
 /// List only matching file paths (no content).
-pub fn run_files(
-    query: &str,
-    scope: &Path,
-    cache: &OutlineCache,
-) -> Result<String, TilthError> {
+pub fn run_files(query: &str, scope: &Path, cache: &OutlineCache) -> Result<String, TilthError> {
     let query_type = classify(query, scope);
     let glob = None;
     let result = match query_type {

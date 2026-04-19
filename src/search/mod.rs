@@ -275,18 +275,28 @@ pub fn search_multi_symbol_expanded(
 ) -> Result<String, TilthError> {
     let _ = index; // Available but not yet used for search fast-path
 
-    // Shared expand budget: at least 1 slot per query, or explicit expand if higher.
-    // expand=0 means no expansion at all.
-    let mut expand_remaining = if expand == 0 {
-        0
-    } else {
-        expand.max(queries.len())
-    };
-    let mut expanded_files = HashSet::new();
-    let mut sections = Vec::with_capacity(queries.len());
+    let mut sections: Vec<(usize, String)> = Vec::with_capacity(queries.len());
+    let expand_per_query = if expand == 0 { 0 } else { expand.max(1) };
 
-    for query in queries {
-        let mut result = symbol::search(query, scope, Some(cache), context, glob)?;
+    // Phase 1: run all symbol searches in parallel. Expansion is NOT shared
+    // across queries in this path (each query gets its own expand budget)
+    // so we can safely parallelize. Tradeoff: may expand slightly more total
+    // files than the sequential version (which shared a single budget).
+    use rayon::prelude::*;
+    let results: Vec<_> = queries
+        .par_iter()
+        .enumerate()
+        .map(|(i, query)| {
+            let r = symbol::search(query, scope, Some(cache), context, glob);
+            (i, r)
+        })
+        .collect();
+
+    // Phase 2: format sequentially (format_matches touches the session mutex
+    // and a shared expanded_files set — cheap, keep single-threaded).
+    let mut expanded_files = HashSet::new();
+    for (i, result) in results {
+        let mut result = result?;
         paginate(&mut result, limit, offset);
         let mut out = format::search_header(
             &result.query,
@@ -295,13 +305,14 @@ pub fn search_multi_symbol_expanded(
             result.definitions,
             result.usages,
         );
+        let mut budget = expand_per_query;
         format_matches(
             &result.matches,
             &result.scope,
             cache,
             Some(session),
             bloom,
-            &mut expand_remaining,
+            &mut budget,
             &mut expanded_files,
             &mut out,
         );
@@ -312,10 +323,14 @@ pub fn search_multi_symbol_expanded(
                 "\n\n... and {omitted} more matches. Narrow with scope."
             );
         }
-        sections.push(out);
+        sections.push((i, out));
     }
-
-    Ok(sections.join("\n\n---\n"))
+    sections.sort_by_key(|(i, _)| *i);
+    Ok(sections
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect::<Vec<_>>()
+        .join("\n\n---\n"))
 }
 
 pub fn search_content(
@@ -1517,8 +1532,8 @@ mod tests {
     #[test]
     fn symbol_search_glob_restricts_results() {
         let scope = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let rs_result =
-            symbol::search("walker", &scope, None, None, Some("*.rs")).expect("symbol search failed");
+        let rs_result = symbol::search("walker", &scope, None, None, Some("*.rs"))
+            .expect("symbol search failed");
         let toml_result = symbol::search("walker", &scope, None, None, Some("*.toml"))
             .expect("symbol search with toml failed");
 
@@ -1541,8 +1556,8 @@ mod tests {
     fn callers_search_glob_restricts_results() {
         let scope = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let bloom = crate::index::bloom::BloomFilterCache::new();
-        let rs_callers =
-            callers::find_callers("walker", &scope, &bloom, Some("*.rs"), None).expect("callers failed");
+        let rs_callers = callers::find_callers("walker", &scope, &bloom, Some("*.rs"), None)
+            .expect("callers failed");
         let toml_callers = callers::find_callers("walker", &scope, &bloom, Some("*.toml"), None)
             .expect("callers toml failed");
 

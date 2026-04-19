@@ -23,6 +23,7 @@ use grep_searcher::Searcher;
 pub fn search(
     query: &str,
     scope: &Path,
+    cache: Option<&crate::cache::OutlineCache>,
     context: Option<&Path>,
     glob: Option<&str>,
 ) -> Result<SearchResult, TilthError> {
@@ -34,7 +35,7 @@ pub fn search(
     })?;
 
     let (defs, usages) = rayon::join(
-        || find_definitions(query, scope, glob),
+        || find_definitions(query, scope, glob, cache),
         || find_usages(query, &matcher, scope, glob),
     );
 
@@ -84,6 +85,7 @@ fn find_definitions(
     query: &str,
     scope: &Path,
     glob: Option<&str>,
+    cache: Option<&crate::cache::OutlineCache>,
 ) -> Result<Vec<Match>, TilthError> {
     let matches: Mutex<Vec<Match>> = Mutex::new(Vec::new());
     // Relaxed is correct: walker.run() joins all threads before we read the final value.
@@ -96,6 +98,7 @@ fn find_definitions(
     walker.run(|| {
         let matches = &matches;
         let found_count = &found_count;
+        let cache = cache;
 
         Box::new(move |entry| {
             let Ok(entry) = entry else {
@@ -160,7 +163,7 @@ fn find_definitions(
             let ts_language = lang.and_then(outline_language);
 
             let mut file_defs = if let Some(ref ts_lang) = ts_language {
-                find_defs_treesitter(path, query, ts_lang, &content, file_lines, mtime)
+                find_defs_treesitter(path, query, ts_lang, &content, file_lines, mtime, cache)
             } else {
                 Vec::new()
             };
@@ -196,14 +199,23 @@ fn find_defs_treesitter(
     content: &str,
     file_lines: u32,
     mtime: SystemTime,
+    cache: Option<&crate::cache::OutlineCache>,
 ) -> Vec<Match> {
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(ts_lang).is_err() {
-        return Vec::new();
-    }
-
-    let Some(tree) = parser.parse(content, None) else {
-        return Vec::new();
+    let tree = match cache {
+        Some(c) => match c.get_or_parse(path, mtime, content, ts_lang) {
+            Some(t) => t,
+            None => return Vec::new(),
+        },
+        None => {
+            let mut parser = tree_sitter::Parser::new();
+            if parser.set_language(ts_lang).is_err() {
+                return Vec::new();
+            }
+            let Some(tree) = parser.parse(content, None) else {
+                return Vec::new();
+            };
+            tree
+        }
     };
 
     let lines: Vec<&str> = content.lines().collect();
@@ -516,6 +528,7 @@ pub(crate) fn dispatch_tool(tool: &str) -> Result<String, String> {
             code,
             15,
             SystemTime::now(),
+            None,
         );
         assert!(!defs.is_empty(), "should find 'hello' definition");
         assert!(defs[0].is_definition);
@@ -528,6 +541,7 @@ pub(crate) fn dispatch_tool(tool: &str) -> Result<String, String> {
             code,
             15,
             SystemTime::now(),
+            None,
         );
         assert!(!defs.is_empty(), "should find 'Foo' definition");
 
@@ -538,6 +552,7 @@ pub(crate) fn dispatch_tool(tool: &str) -> Result<String, String> {
             code,
             15,
             SystemTime::now(),
+            None,
         );
         assert!(!defs.is_empty(), "should find 'dispatch_tool' definition");
     }

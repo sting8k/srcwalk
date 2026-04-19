@@ -43,6 +43,7 @@ pub fn find_callers(
     scope: &Path,
     bloom: &crate::index::bloom::BloomFilterCache,
     glob: Option<&str>,
+    cache: Option<&crate::cache::OutlineCache>,
 ) -> Result<Vec<CallerMatch>, TilthError> {
     let matches: Mutex<Vec<CallerMatch>> = Mutex::new(Vec::new());
     let found_count = AtomicUsize::new(0);
@@ -53,6 +54,7 @@ pub fn find_callers(
     walker.run(|| {
         let matches = &matches;
         let found_count = &found_count;
+        let cache = cache;
 
         Box::new(move |entry| {
             let Ok(entry) = entry else {
@@ -113,7 +115,8 @@ pub fn find_callers(
                 return ignore::WalkState::Continue;
             };
 
-            let file_callers = find_callers_treesitter(path, target, &ts_lang, &content, lang);
+            let file_callers =
+                find_callers_treesitter(path, target, &ts_lang, &content, lang, mtime, cache);
 
             if !file_callers.is_empty() {
                 found_count.fetch_add(file_callers.len(), Ordering::Relaxed);
@@ -139,19 +142,29 @@ fn find_callers_treesitter(
     ts_lang: &tree_sitter::Language,
     content: &str,
     lang: crate::types::Lang,
+    mtime: std::time::SystemTime,
+    cache: Option<&crate::cache::OutlineCache>,
 ) -> Vec<CallerMatch> {
     // Get the query string for this language
     let Some(query_str) = super::callees::callee_query_str(lang) else {
         return Vec::new();
     };
 
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(ts_lang).is_err() {
-        return Vec::new();
-    }
-
-    let Some(tree) = parser.parse(content, None) else {
-        return Vec::new();
+    let tree = match cache {
+        Some(c) => match c.get_or_parse(path, mtime, content, ts_lang) {
+            Some(t) => t,
+            None => return Vec::new(),
+        },
+        None => {
+            let mut parser = tree_sitter::Parser::new();
+            if parser.set_language(ts_lang).is_err() {
+                return Vec::new();
+            }
+            let Some(tree) = parser.parse(content, None) else {
+                return Vec::new();
+            };
+            tree
+        }
     };
 
     let content_bytes = content.as_bytes();
@@ -230,6 +243,7 @@ pub(crate) fn find_callers_batch(
     scope: &Path,
     bloom: &crate::index::bloom::BloomFilterCache,
     glob: Option<&str>,
+    cache: Option<&crate::cache::OutlineCache>,
 ) -> Result<Vec<(String, CallerMatch)>, TilthError> {
     let matches: Mutex<Vec<(String, CallerMatch)>> = Mutex::new(Vec::new());
     let found_count = AtomicUsize::new(0);
@@ -255,6 +269,7 @@ pub(crate) fn find_callers_batch(
         let found_count = &found_count;
         let ac = ac.as_ref();
         let sorted_targets = &sorted_targets;
+        let cache = cache;
 
         Box::new(move |entry| {
             // Early termination: enough callers found
@@ -330,8 +345,9 @@ pub(crate) fn find_callers_batch(
                 return ignore::WalkState::Continue;
             };
 
-            let file_callers =
-                find_callers_treesitter_batch(path, targets, &ts_lang, &content, lang);
+            let file_callers = find_callers_treesitter_batch(
+                path, targets, &ts_lang, &content, lang, mtime, cache,
+            );
 
             if !file_callers.is_empty() {
                 found_count.fetch_add(file_callers.len(), Ordering::Relaxed);
@@ -358,19 +374,29 @@ fn find_callers_treesitter_batch(
     ts_lang: &tree_sitter::Language,
     content: &str,
     lang: crate::types::Lang,
+    mtime: std::time::SystemTime,
+    cache: Option<&crate::cache::OutlineCache>,
 ) -> Vec<(String, CallerMatch)> {
     // Get the query string for this language
     let Some(query_str) = super::callees::callee_query_str(lang) else {
         return Vec::new();
     };
 
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(ts_lang).is_err() {
-        return Vec::new();
-    }
-
-    let Some(tree) = parser.parse(content, None) else {
-        return Vec::new();
+    let tree = match cache {
+        Some(c) => match c.get_or_parse(path, mtime, content, ts_lang) {
+            Some(t) => t,
+            None => return Vec::new(),
+        },
+        None => {
+            let mut parser = tree_sitter::Parser::new();
+            if parser.set_language(ts_lang).is_err() {
+                return Vec::new();
+            }
+            let Some(tree) = parser.parse(content, None) else {
+                return Vec::new();
+            };
+            tree
+        }
     };
 
     let content_bytes = content.as_bytes();
@@ -509,7 +535,7 @@ fn find_enclosing_function(
 pub fn search_callers_expanded(
     target: &str,
     scope: &Path,
-    _cache: &OutlineCache,
+    cache: &OutlineCache,
     _session: &Session,
     bloom: &crate::index::bloom::BloomFilterCache,
     expand: usize,
@@ -519,7 +545,7 @@ pub fn search_callers_expanded(
     glob: Option<&str>,
 ) -> Result<String, TilthError> {
     let max_matches = limit.unwrap_or(usize::MAX);
-    let callers = find_callers(target, scope, bloom, glob)?;
+    let callers = find_callers(target, scope, bloom, glob, Some(cache))?;
 
     if callers.is_empty() {
         return Ok(format!(
@@ -619,7 +645,7 @@ pub fn search_callers_expanded(
     // Use all_caller_names (pre-truncation) for the fan-out threshold check,
     // but search for callers of the full set to capture transitive impact.
     if !all_caller_names.is_empty() && all_caller_names.len() <= IMPACT_FANOUT_THRESHOLD {
-        if let Ok(hop2) = find_callers_batch(&all_caller_names, scope, bloom, glob) {
+        if let Ok(hop2) = find_callers_batch(&all_caller_names, scope, bloom, glob, Some(cache)) {
             // Filter out hop-1 matches (same file+line = same call site)
             let hop1_locations: HashSet<(PathBuf, u32)> = sorted_callers
                 .iter()

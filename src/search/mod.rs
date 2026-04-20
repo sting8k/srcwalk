@@ -280,7 +280,11 @@ pub fn search_multi_symbol_expanded(
 
     // Phase 1: single-walk batch search — one file I/O per file, one ts parse,
     // AhoCorasick-gated, per-query buckets. Much faster than N independent walkers.
-    let results = symbol::search_batch(queries, scope, Some(cache), context, glob)?;
+    let mut results = symbol::search_batch(queries, scope, Some(cache), context, glob)?;
+
+    // Sort by match count ascending — fewer matches = rarer/more specific.
+    // Rare symbols are higher value and shouldn't be starved by common ones.
+    results.sort_by(|a, b| a.matches.len().cmp(&b.matches.len()));
 
     // Phase 2: format sequentially (format_matches touches the session mutex
     // and a shared expanded_files set — cheap, keep single-threaded).

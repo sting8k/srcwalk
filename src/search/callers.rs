@@ -246,6 +246,7 @@ pub(crate) fn find_callers_batch(
     bloom: &crate::index::bloom::BloomFilterCache,
     glob: Option<&str>,
     cache: Option<&crate::cache::OutlineCache>,
+    early_quit: Option<usize>,
 ) -> Result<Vec<(String, CallerMatch)>, TilthError> {
     let matches: Mutex<Vec<(String, CallerMatch)>> = Mutex::new(Vec::new());
     let found_count = AtomicUsize::new(0);
@@ -273,9 +274,11 @@ pub(crate) fn find_callers_batch(
         let sorted_targets = &sorted_targets;
 
         Box::new(move |entry| {
-            // Early termination: enough callers found
-            if found_count.load(Ordering::Relaxed) >= BATCH_EARLY_QUIT {
-                return ignore::WalkState::Quit;
+            // Early termination: enough callers found (UI preview only).
+            if let Some(cap) = early_quit {
+                if found_count.load(Ordering::Relaxed) >= cap {
+                    return ignore::WalkState::Quit;
+                }
             }
 
             let Ok(entry) = entry else {
@@ -677,7 +680,7 @@ pub fn search_callers_expanded(
     // Use all_caller_names (pre-truncation) for the fan-out threshold check,
     // but search for callers of the full set to capture transitive impact.
     if !all_caller_names.is_empty() && all_caller_names.len() <= IMPACT_FANOUT_THRESHOLD {
-        if let Ok(hop2) = find_callers_batch(&all_caller_names, scope, bloom, glob, Some(cache)) {
+        if let Ok(hop2) = find_callers_batch(&all_caller_names, scope, bloom, glob, Some(cache), Some(BATCH_EARLY_QUIT)) {
             // Filter out hop-1 matches (same file+line = same call site)
             let hop1_locations: HashSet<(PathBuf, u32)> = sorted_callers
                 .iter()
@@ -792,7 +795,9 @@ pub struct BfsStats {
     pub edges_cut_at_hop: Option<usize>,
     pub top_level_terminal: usize,
     pub unresolved_symbols: usize, // frontier symbols that produced zero callers
-    pub hubs_skipped: Vec<String>, // hub symbols dropped from frontier
+    pub hubs_skipped: Vec<String>, // hub symbols dropped from frontier (user override)
+    pub auto_hubs_skipped: Vec<String>, // auto-promoted hub drops on later hops
+    pub auto_hubs_promoted: Vec<(String, usize)>, // (symbol, edge_count) promoted this run
     pub per_hop: Vec<HopStats>,
     pub elapsed_ms: u128,
 }
@@ -804,22 +809,16 @@ pub struct HopStats {
     pub edges: usize,
 }
 
-/// Default hub symbols — common trivial methods that cause fan-out explosions.
-const DEFAULT_HUBS: &[&str] = &[
-    "new",
-    "clone",
-    "from",
-    "into",
-    "to_string",
-    "drop",
-    "fmt",
-    "default",
-];
+/// Threshold for auto-hub promotion: if a single symbol produces this many
+/// edges in one hop, treat it as a hub and drop from the next frontier.
+/// Data-driven, language-agnostic — no hard-coded hub list.
+const AUTO_HUB_THRESHOLD: usize = 200;
 
+/// Parse user-provided hub overrides. Returns empty set by default;
+/// `--skip-hubs "A,B,C"` adds explicit skips on top of auto-promotion.
 fn parse_hubs(skip_hubs: Option<&str>) -> HashSet<String> {
     match skip_hubs {
-        None => DEFAULT_HUBS.iter().map(|s| (*s).to_string()).collect(),
-        Some("") => HashSet::new(),
+        None | Some("") => HashSet::new(),
         Some(csv) => csv
             .split(',')
             .map(str::trim)
@@ -833,7 +832,8 @@ fn parse_hubs(skip_hubs: Option<&str>) -> HashSet<String> {
 /// Reuses `find_callers_batch` per hop — one walk per hop, Aho-Corasick multi-pattern.
 ///
 /// Guards:
-/// - `skip_hubs`: drop common hub symbols from frontier (see `DEFAULT_HUBS`).
+/// - `skip_hubs`: explicit user override for symbols to drop from frontier.
+///   Auto-hub promotion (>= `AUTO_HUB_THRESHOLD` edges/hop) is always on.
 /// - `max_frontier`: cap symbols explored per hop (drop lowest-priority excess).
 /// - `max_edges`: hard stop on total edges.
 /// - Visited set on `(symbol, path)` avoids revisits and loops.
@@ -852,7 +852,10 @@ pub fn search_callers_bfs(
     json: bool,
 ) -> Result<String, TilthError> {
     let t_start = std::time::Instant::now();
-    let hub_set = parse_hubs(skip_hubs);
+    let user_hubs = parse_hubs(skip_hubs);
+    // Auto-promoted hubs: symbols producing >= AUTO_HUB_THRESHOLD edges per hop.
+    // Dropped from frontier in subsequent hops. Data-driven, language-agnostic.
+    let mut auto_hubs: HashSet<String> = HashSet::new();
 
     let mut edges: Vec<BfsEdge> = Vec::new();
     let mut stats = BfsStats::default();
@@ -869,14 +872,19 @@ pub fn search_callers_bfs(
         }
 
         // Drop hub symbols from frontier BEFORE the cap — they dominate fan-out.
-        // Keep the root target even if it happens to be a hub name.
+        // Two sources: explicit user override (`--skip-hubs`) and auto-promoted
+        // hubs detected in previous hops (>= AUTO_HUB_THRESHOLD edges/hop).
+        // Root symbol is always explored even if it's a hub.
         let mut frontier_vec: Vec<String> = frontier
             .iter()
             .filter(|s| {
                 if hop == 1 {
-                    true // always explore the root symbol
-                } else if hub_set.contains(s.as_str()) {
+                    true
+                } else if user_hubs.contains(s.as_str()) {
                     stats.hubs_skipped.push((*s).clone());
+                    false
+                } else if auto_hubs.contains(s.as_str()) {
+                    stats.auto_hubs_skipped.push((*s).clone());
                     false
                 } else {
                     true
@@ -897,14 +905,18 @@ pub fn search_callers_bfs(
         }
 
         let hop_matches =
-            find_callers_batch(&frontier_this_hop, scope, bloom, glob, Some(cache))?;
+            find_callers_batch(&frontier_this_hop, scope, bloom, glob, Some(cache), None)?;
 
         let mut next_frontier: HashSet<String> = HashSet::new();
         let mut hit_targets_this_hop: HashSet<String> = HashSet::new();
         let edges_before_hop = edges.len();
+        // Count edges per callee in this hop — used for auto-hub promotion.
+        let mut per_callee_count: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         for (callee, m) in hop_matches {
             hit_targets_this_hop.insert(callee.clone());
+            *per_callee_count.entry(callee.clone()).or_insert(0) += 1;
 
             let key = (m.calling_function.clone(), m.path.clone());
 
@@ -931,6 +943,13 @@ pub fn search_callers_bfs(
                     edges: edges.len() - edges_before_hop,
                 });
                 break 'outer;
+            }
+        }
+
+        // Promote high-fan-out symbols to auto-hubs for subsequent hops.
+        for (sym, count) in &per_callee_count {
+            if *count >= AUTO_HUB_THRESHOLD && auto_hubs.insert(sym.clone()) {
+                stats.auto_hubs_promoted.push((sym.clone(), *count));
             }
         }
 
@@ -1040,6 +1059,24 @@ fn format_bfs(
     for (h, n) in &stats.frontier_cut_hops {
         notes.push(format!("frontier at hop {h} truncated from {n}"));
     }
+    if !stats.auto_hubs_promoted.is_empty() {
+        let mut parts: Vec<String> = stats
+            .auto_hubs_promoted
+            .iter()
+            .map(|(s, c)| format!("{s}({c})"))
+            .collect();
+        parts.sort();
+        let preview: Vec<String> = parts.iter().take(6).cloned().collect();
+        let more = parts.len().saturating_sub(preview.len());
+        let suffix = if more > 0 { format!(", +{more} more") } else { String::new() };
+        notes.push(format!(
+            "{} symbol(s) auto-promoted to hub (≥{} edges/hop): {}{}",
+            parts.len(),
+            AUTO_HUB_THRESHOLD,
+            preview.join(", "),
+            suffix
+        ));
+    }
     if !stats.hubs_skipped.is_empty() {
         let mut uniq: Vec<&String> = stats.hubs_skipped.iter().collect();
         uniq.sort();
@@ -1134,6 +1171,12 @@ fn format_bfs_json(
     hubs_sorted.sort();
     hubs_sorted.dedup();
 
+    let auto_hubs_json: Vec<serde_json::Value> = stats
+        .auto_hubs_promoted
+        .iter()
+        .map(|(s, c)| serde_json::json!({"symbol": s, "edges": c}))
+        .collect();
+
     let payload = serde_json::json!({
         "root": target,
         "scope": scope.display().to_string(),
@@ -1151,6 +1194,8 @@ fn format_bfs_json(
             "edges_cut_at_hop": stats.edges_cut_at_hop,
             "frontier_cuts": frontier_cuts,
             "hubs_skipped": hubs_sorted,
+            "auto_hubs_promoted": auto_hubs_json,
+            "auto_hub_threshold": AUTO_HUB_THRESHOLD,
         },
         "disclaimer": "Static by-name call graph only. May miss indirect dispatch, reflection, macros, and calls from files > 500KB or from languages without a tree-sitter call query.",
     });

@@ -135,13 +135,30 @@ pub fn run_callers(
     offset: usize,
     glob: Option<&str>,
     cache: &OutlineCache,
+    depth: Option<usize>,
+    max_frontier: Option<usize>,
+    max_edges: Option<usize>,
 ) -> Result<String, TilthError> {
     let session = session::Session::new();
     let bloom = index::bloom::BloomFilterCache::new();
     let expand = if expand > 0 { expand } else { 1 };
-    let output = search::callers::search_callers_expanded(
-        target, scope, cache, &session, &bloom, expand, None, limit, offset, glob,
-    )?;
+
+    // BFS path when --depth N (N >= 2). Otherwise preserve legacy behavior byte-exact.
+    let output = match depth {
+        Some(d) if d >= 2 => search::callers::search_callers_bfs(
+            target,
+            scope,
+            cache,
+            &bloom,
+            d.min(5),
+            max_frontier.unwrap_or(50),
+            max_edges.unwrap_or(500),
+            glob,
+        )?,
+        _ => search::callers::search_callers_expanded(
+            target, scope, cache, &session, &bloom, expand, None, limit, offset, glob,
+        )?,
+    };
     match budget_tokens {
         Some(b) => Ok(budget::apply(&output, b)),
         None => Ok(output),

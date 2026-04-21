@@ -764,3 +764,225 @@ fn rank_callers(callers: &mut [CallerMatch], scope: &Path, context: Option<&Path
             .then_with(|| a.line.cmp(&b.line))
     });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Graphwalk-style BFS over call graph (v1 — safe, reuses find_callers_batch)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A single directed edge in the caller graph: `from` is the enclosing
+/// function that contains a call to `to` at `from_loc`.
+#[derive(Debug, Clone)]
+pub struct BfsEdge {
+    pub hop: usize,
+    pub from: String,
+    pub from_file: PathBuf,
+    pub from_line: u32,
+    pub to: String,
+}
+
+/// Aggregated BFS result.
+#[derive(Debug, Default)]
+pub struct BfsStats {
+    pub depth_reached: usize,
+    pub edges_total: usize,
+    pub frontier_cut_hops: Vec<(usize, usize)>, // (hop, frontier_size_before_cut)
+    pub edges_cut_at_hop: Option<usize>,
+    pub top_level_terminal: usize,
+    pub unresolved_symbols: usize, // frontier symbols that produced zero callers
+}
+
+/// BFS backward over callers up to `max_depth` hops.
+/// Reuses `find_callers_batch` per hop — one walk per hop, Aho-Corasick multi-pattern.
+///
+/// Guards:
+/// - `max_frontier`: cap symbols explored per hop (drop lowest-priority excess).
+/// - `max_edges`: hard stop on total edges.
+/// - Visited set on `(symbol, path)` avoids revisits and loops.
+/// - Unsupported-lang files become leaf nodes (inherited from `find_callers_batch`).
+#[allow(clippy::too_many_arguments)]
+pub fn search_callers_bfs(
+    target: &str,
+    scope: &Path,
+    cache: &OutlineCache,
+    bloom: &crate::index::bloom::BloomFilterCache,
+    max_depth: usize,
+    max_frontier: usize,
+    max_edges: usize,
+    glob: Option<&str>,
+) -> Result<String, TilthError> {
+    let mut edges: Vec<BfsEdge> = Vec::new();
+    let mut stats = BfsStats::default();
+    // Visited: (calling_function, path) — a function body in a given file
+    // already enumerated as source of edges at some hop.
+    let mut visited: HashSet<(String, PathBuf)> = HashSet::new();
+
+    // Frontier at hop k: set of symbol names whose callers we want next.
+    let mut frontier: HashSet<String> = HashSet::from([target.to_string()]);
+    // Top-level sentinel that should never be a searchable symbol.
+    const TOP_LEVEL: &str = "<top-level>";
+
+    'outer: for hop in 1..=max_depth {
+        if frontier.is_empty() {
+            break;
+        }
+
+        // Apply frontier cap. Deterministic: sort names to pick a stable subset.
+        let mut frontier_vec: Vec<String> = frontier.iter().cloned().collect();
+        frontier_vec.sort();
+        if frontier_vec.len() > max_frontier {
+            stats.frontier_cut_hops.push((hop, frontier_vec.len()));
+            frontier_vec.truncate(max_frontier);
+        }
+        let frontier_this_hop: HashSet<String> = frontier_vec.into_iter().collect();
+
+        let hop_matches =
+            find_callers_batch(&frontier_this_hop, scope, bloom, glob, Some(cache))?;
+
+        let mut next_frontier: HashSet<String> = HashSet::new();
+        let mut hit_targets_this_hop: HashSet<String> = HashSet::new();
+
+        for (callee, m) in hop_matches {
+            hit_targets_this_hop.insert(callee.clone());
+
+            // Dedup: same calling function + file already expanded at earlier hop.
+            let key = (m.calling_function.clone(), m.path.clone());
+            if visited.contains(&key) && hop > 1 {
+                // Still record edge (it's a real call site), but don't enqueue again.
+            }
+
+            if m.calling_function == TOP_LEVEL {
+                stats.top_level_terminal += 1;
+            } else if visited.insert(key) {
+                next_frontier.insert(m.calling_function.clone());
+            }
+
+            edges.push(BfsEdge {
+                hop,
+                from: m.calling_function,
+                from_file: m.path,
+                from_line: m.line,
+                to: callee,
+            });
+
+            if edges.len() >= max_edges {
+                stats.edges_cut_at_hop = Some(hop);
+                stats.depth_reached = hop;
+                stats.edges_total = edges.len();
+                break 'outer;
+            }
+        }
+
+        // Unresolved = frontier symbols nobody matched in the repo (by-name miss,
+        // unsupported-lang file-only, indirect dispatch, etc).
+        for s in &frontier_this_hop {
+            if !hit_targets_this_hop.contains(s) {
+                stats.unresolved_symbols += 1;
+            }
+        }
+
+        stats.depth_reached = hop;
+        frontier = next_frontier;
+    }
+
+    stats.edges_total = edges.len();
+    Ok(format_bfs(target, scope, &edges, &stats, max_depth))
+}
+
+/// Deterministic sort + pretty-print BFS edges grouped by hop.
+fn format_bfs(
+    target: &str,
+    scope: &Path,
+    edges: &[BfsEdge],
+    stats: &BfsStats,
+    max_depth: usize,
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "# BFS callers of \"{}\" in {} — depth={}/{}, {} edge{}",
+        target,
+        scope.display(),
+        stats.depth_reached,
+        max_depth,
+        stats.edges_total,
+        if stats.edges_total == 1 { "" } else { "s" }
+    );
+
+    if edges.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nNo call sites found. Symbol may be invoked via indirect dispatch \
+             (trait objects, interfaces, callbacks, reflection, macros) — tilth \
+             only sees direct by-name calls."
+        );
+        return out;
+    }
+
+    // Group edges by hop, sort deterministically within each group.
+    let mut by_hop: std::collections::BTreeMap<usize, Vec<&BfsEdge>> =
+        std::collections::BTreeMap::new();
+    for e in edges {
+        by_hop.entry(e.hop).or_default().push(e);
+    }
+
+    for (hop, mut list) in by_hop {
+        list.sort_by(|a, b| {
+            a.from_file
+                .cmp(&b.from_file)
+                .then_with(|| a.from_line.cmp(&b.from_line))
+                .then_with(|| a.to.cmp(&b.to))
+                .then_with(|| a.from.cmp(&b.from))
+        });
+        let _ = writeln!(out, "\n── hop {} ({} edge{}) ──", hop, list.len(),
+            if list.len() == 1 { "" } else { "s" });
+        for e in list {
+            let rel = e.from_file.strip_prefix(scope).unwrap_or(&e.from_file);
+            let _ = writeln!(
+                out,
+                "  {:<28} {}:{}  → {}",
+                e.from,
+                rel.display(),
+                e.from_line,
+                e.to
+            );
+        }
+    }
+
+    // Banner — truthfulness about what was cut.
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(h) = stats.edges_cut_at_hop {
+        notes.push(format!("edges capped at hop {h}"));
+    }
+    for (h, n) in &stats.frontier_cut_hops {
+        notes.push(format!("frontier at hop {h} truncated from {n}"));
+    }
+    if stats.top_level_terminal > 0 {
+        notes.push(format!("{} top-level terminal edge(s)", stats.top_level_terminal));
+    }
+    if stats.unresolved_symbols > 0 {
+        notes.push(format!(
+            "{} frontier symbol(s) unresolved (unsupported lang / indirect / orphan)",
+            stats.unresolved_symbols
+        ));
+    }
+    if !notes.is_empty() {
+        let _ = writeln!(out, "\n── budget ──");
+        for n in notes {
+            let _ = writeln!(out, "  • {n}");
+        }
+    }
+    let _ = writeln!(
+        out,
+        "\nStatic by-name call graph only. May miss indirect dispatch, reflection, macros, \
+         and calls from files > 500KB or from languages without a tree-sitter call query."
+    );
+
+    let tokens = crate::types::estimate_tokens(out.len() as u64);
+    let token_str = if tokens >= 1000 {
+        format!("~{}.{}k", tokens / 1000, (tokens % 1000) / 100)
+    } else {
+        format!("~{tokens}")
+    };
+    let _ = write!(out, "\n({token_str} tokens)");
+    out
+}

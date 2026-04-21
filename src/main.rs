@@ -65,6 +65,18 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["deps", "map", "edit", "files"])]
     callers: bool,
 
+    /// BFS depth for --callers. 1 = current behavior (default). Capped at 5.
+    #[arg(long, value_name = "N", requires = "callers")]
+    depth: Option<usize>,
+
+    /// Max callers to expand per BFS hop (hub guard). Default: 50.
+    #[arg(long, value_name = "K", requires = "callers")]
+    max_frontier: Option<usize>,
+
+    /// Max total edges across all BFS hops. Default: 500.
+    #[arg(long, value_name = "M", requires = "callers")]
+    max_edges: Option<usize>,
+
     /// Analyze blast-radius dependencies of a file.
     #[arg(long, conflicts_with_all = ["callers", "map", "edit", "files"])]
     deps: bool,
@@ -296,6 +308,9 @@ fn main() {
             cli.offset,
             cli.glob.as_deref(),
             &cache,
+            cli.depth,
+            cli.max_frontier,
+            cli.max_edges,
         );
         emit_result(result, &query, cli.json, is_tty);
         return;

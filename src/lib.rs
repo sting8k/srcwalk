@@ -126,6 +126,7 @@ pub fn run_expanded(
 }
 
 /// Find all callers of a symbol.
+#[allow(clippy::too_many_arguments)]
 pub fn run_callers(
     target: &str,
     scope: &Path,
@@ -138,6 +139,8 @@ pub fn run_callers(
     depth: Option<usize>,
     max_frontier: Option<usize>,
     max_edges: Option<usize>,
+    skip_hubs: Option<&str>,
+    json: bool,
 ) -> Result<String, TilthError> {
     let session = session::Session::new();
     let bloom = index::bloom::BloomFilterCache::new();
@@ -154,11 +157,17 @@ pub fn run_callers(
             max_frontier.unwrap_or(50),
             max_edges.unwrap_or(500),
             glob,
+            skip_hubs,
+            json,
         )?,
         _ => search::callers::search_callers_expanded(
             target, scope, cache, &session, &bloom, expand, None, limit, offset, glob,
         )?,
     };
+    if json {
+        // BFS JSON is already structured; don't budget-truncate.
+        return Ok(output);
+    }
     match budget_tokens {
         Some(b) => Ok(budget::apply(&output, b)),
         None => Ok(output),

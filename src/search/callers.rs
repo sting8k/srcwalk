@@ -23,6 +23,9 @@ const IMPACT_MAX_RESULTS: usize = 15;
 /// Early quit for batch caller search.
 const BATCH_EARLY_QUIT: usize = 50;
 
+/// Top-level sentinel used when a call site is not inside a function body.
+const TOP_LEVEL: &str = "<top-level>";
+
 /// A single caller match — a call site of a target symbol.
 #[derive(Debug)]
 pub struct CallerMatch {
@@ -789,12 +792,48 @@ pub struct BfsStats {
     pub edges_cut_at_hop: Option<usize>,
     pub top_level_terminal: usize,
     pub unresolved_symbols: usize, // frontier symbols that produced zero callers
+    pub hubs_skipped: Vec<String>, // hub symbols dropped from frontier
+    pub per_hop: Vec<HopStats>,
+    pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HopStats {
+    pub hop: usize,
+    pub frontier_size: usize, // after hub-skip + cap
+    pub edges: usize,
+}
+
+/// Default hub symbols — common trivial methods that cause fan-out explosions.
+const DEFAULT_HUBS: &[&str] = &[
+    "new",
+    "clone",
+    "from",
+    "into",
+    "to_string",
+    "drop",
+    "fmt",
+    "default",
+];
+
+fn parse_hubs(skip_hubs: Option<&str>) -> HashSet<String> {
+    match skip_hubs {
+        None => DEFAULT_HUBS.iter().map(|s| (*s).to_string()).collect(),
+        Some("") => HashSet::new(),
+        Some(csv) => csv
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect(),
+    }
 }
 
 /// BFS backward over callers up to `max_depth` hops.
 /// Reuses `find_callers_batch` per hop — one walk per hop, Aho-Corasick multi-pattern.
 ///
 /// Guards:
+/// - `skip_hubs`: drop common hub symbols from frontier (see `DEFAULT_HUBS`).
 /// - `max_frontier`: cap symbols explored per hop (drop lowest-priority excess).
 /// - `max_edges`: hard stop on total edges.
 /// - Visited set on `(symbol, path)` avoids revisits and loops.
@@ -809,7 +848,12 @@ pub fn search_callers_bfs(
     max_frontier: usize,
     max_edges: usize,
     glob: Option<&str>,
+    skip_hubs: Option<&str>,
+    json: bool,
 ) -> Result<String, TilthError> {
+    let t_start = std::time::Instant::now();
+    let hub_set = parse_hubs(skip_hubs);
+
     let mut edges: Vec<BfsEdge> = Vec::new();
     let mut stats = BfsStats::default();
     // Visited: (calling_function, path) — a function body in a given file
@@ -818,37 +862,51 @@ pub fn search_callers_bfs(
 
     // Frontier at hop k: set of symbol names whose callers we want next.
     let mut frontier: HashSet<String> = HashSet::from([target.to_string()]);
-    // Top-level sentinel that should never be a searchable symbol.
-    const TOP_LEVEL: &str = "<top-level>";
 
     'outer: for hop in 1..=max_depth {
         if frontier.is_empty() {
             break;
         }
 
-        // Apply frontier cap. Deterministic: sort names to pick a stable subset.
-        let mut frontier_vec: Vec<String> = frontier.iter().cloned().collect();
+        // Drop hub symbols from frontier BEFORE the cap — they dominate fan-out.
+        // Keep the root target even if it happens to be a hub name.
+        let mut frontier_vec: Vec<String> = frontier
+            .iter()
+            .filter(|s| {
+                if hop == 1 {
+                    true // always explore the root symbol
+                } else if hub_set.contains(s.as_str()) {
+                    stats.hubs_skipped.push((*s).clone());
+                    false
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
         frontier_vec.sort();
         if frontier_vec.len() > max_frontier {
             stats.frontier_cut_hops.push((hop, frontier_vec.len()));
             frontier_vec.truncate(max_frontier);
         }
         let frontier_this_hop: HashSet<String> = frontier_vec.into_iter().collect();
+        let frontier_size = frontier_this_hop.len();
+
+        if frontier_this_hop.is_empty() {
+            break;
+        }
 
         let hop_matches =
             find_callers_batch(&frontier_this_hop, scope, bloom, glob, Some(cache))?;
 
         let mut next_frontier: HashSet<String> = HashSet::new();
         let mut hit_targets_this_hop: HashSet<String> = HashSet::new();
+        let edges_before_hop = edges.len();
 
         for (callee, m) in hop_matches {
             hit_targets_this_hop.insert(callee.clone());
 
-            // Dedup: same calling function + file already expanded at earlier hop.
             let key = (m.calling_function.clone(), m.path.clone());
-            if visited.contains(&key) && hop > 1 {
-                // Still record edge (it's a real call site), but don't enqueue again.
-            }
 
             if m.calling_function == TOP_LEVEL {
                 stats.top_level_terminal += 1;
@@ -867,7 +925,11 @@ pub fn search_callers_bfs(
             if edges.len() >= max_edges {
                 stats.edges_cut_at_hop = Some(hop);
                 stats.depth_reached = hop;
-                stats.edges_total = edges.len();
+                stats.per_hop.push(HopStats {
+                    hop,
+                    frontier_size,
+                    edges: edges.len() - edges_before_hop,
+                });
                 break 'outer;
             }
         }
@@ -880,12 +942,33 @@ pub fn search_callers_bfs(
             }
         }
 
+        stats.per_hop.push(HopStats {
+            hop,
+            frontier_size,
+            edges: edges.len() - edges_before_hop,
+        });
         stats.depth_reached = hop;
         frontier = next_frontier;
     }
 
     stats.edges_total = edges.len();
-    Ok(format_bfs(target, scope, &edges, &stats, max_depth))
+    stats.elapsed_ms = t_start.elapsed().as_millis();
+
+    // Deterministic sort across ALL edges (stable for both text + JSON).
+    edges.sort_by(|a, b| {
+        a.hop
+            .cmp(&b.hop)
+            .then_with(|| a.from_file.cmp(&b.from_file))
+            .then_with(|| a.from_line.cmp(&b.from_line))
+            .then_with(|| a.to.cmp(&b.to))
+            .then_with(|| a.from.cmp(&b.from))
+    });
+
+    if json {
+        Ok(format_bfs_json(target, scope, &edges, &stats, max_depth))
+    } else {
+        Ok(format_bfs(target, scope, &edges, &stats, max_depth))
+    }
 }
 
 /// Deterministic sort + pretty-print BFS edges grouped by hop.
@@ -899,13 +982,14 @@ fn format_bfs(
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "# BFS callers of \"{}\" in {} — depth={}/{}, {} edge{}",
+        "# BFS callers of \"{}\" in {} — depth={}/{}, {} edge{}, {} ms",
         target,
         scope.display(),
         stats.depth_reached,
         max_depth,
         stats.edges_total,
-        if stats.edges_total == 1 { "" } else { "s" }
+        if stats.edges_total == 1 { "" } else { "s" },
+        stats.elapsed_ms
     );
 
     if edges.is_empty() {
@@ -956,6 +1040,20 @@ fn format_bfs(
     for (h, n) in &stats.frontier_cut_hops {
         notes.push(format!("frontier at hop {h} truncated from {n}"));
     }
+    if !stats.hubs_skipped.is_empty() {
+        let mut uniq: Vec<&String> = stats.hubs_skipped.iter().collect();
+        uniq.sort();
+        uniq.dedup();
+        let preview: Vec<String> = uniq.iter().take(6).map(|s| (*s).clone()).collect();
+        let more = uniq.len().saturating_sub(preview.len());
+        let suffix = if more > 0 { format!(", +{more} more") } else { String::new() };
+        notes.push(format!(
+            "{} hub symbol(s) skipped: {}{}",
+            uniq.len(),
+            preview.join(","),
+            suffix
+        ));
+    }
     if stats.top_level_terminal > 0 {
         notes.push(format!("{} top-level terminal edge(s)", stats.top_level_terminal));
     }
@@ -985,4 +1083,78 @@ fn format_bfs(
     };
     let _ = write!(out, "\n({token_str} tokens)");
     out
+}
+
+/// Emit the BFS result as JSON (edge-list schema compatible with GraphWalks-style consumers).
+fn format_bfs_json(
+    target: &str,
+    scope: &Path,
+    edges: &[BfsEdge],
+    stats: &BfsStats,
+    max_depth: usize,
+) -> String {
+    let edges_json: Vec<serde_json::Value> = edges
+        .iter()
+        .map(|e| {
+            let rel = e
+                .from_file
+                .strip_prefix(scope)
+                .unwrap_or(&e.from_file)
+                .display()
+                .to_string();
+            serde_json::json!({
+                "hop": e.hop,
+                "from": e.from,
+                "from_file": rel,
+                "from_line": e.from_line,
+                "to": e.to,
+            })
+        })
+        .collect();
+
+    let per_hop: Vec<serde_json::Value> = stats
+        .per_hop
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "hop": h.hop,
+                "frontier_size": h.frontier_size,
+                "edges": h.edges,
+            })
+        })
+        .collect();
+
+    let frontier_cuts: Vec<serde_json::Value> = stats
+        .frontier_cut_hops
+        .iter()
+        .map(|(h, n)| serde_json::json!({"hop": h, "frontier_size_before_cut": n}))
+        .collect();
+
+    let mut hubs_sorted: Vec<String> = stats.hubs_skipped.clone();
+    hubs_sorted.sort();
+    hubs_sorted.dedup();
+
+    let payload = serde_json::json!({
+        "root": target,
+        "scope": scope.display().to_string(),
+        "max_depth": max_depth,
+        "depth_reached": stats.depth_reached,
+        "edges_total": stats.edges_total,
+        "elapsed_ms": stats.elapsed_ms,
+        "edges": edges_json,
+        "stats": {
+            "per_hop": per_hop,
+            "top_level_terminal": stats.top_level_terminal,
+            "unresolved_symbols": stats.unresolved_symbols,
+        },
+        "elided": {
+            "edges_cut_at_hop": stats.edges_cut_at_hop,
+            "frontier_cuts": frontier_cuts,
+            "hubs_skipped": hubs_sorted,
+        },
+        "disclaimer": "Static by-name call graph only. May miss indirect dispatch, reflection, macros, and calls from files > 500KB or from languages without a tree-sitter call query.",
+    });
+
+    serde_json::to_string_pretty(&payload)
+        .expect("serde_json::Value is always serializable")
 }

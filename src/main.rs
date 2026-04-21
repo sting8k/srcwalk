@@ -77,6 +77,12 @@ struct Cli {
     #[arg(long, value_name = "M", requires = "callers")]
     max_edges: Option<usize>,
 
+    /// Comma-separated symbols to skip as BFS frontier (hub guard).
+    /// Default: new,clone,from,into,to_string,drop,fmt,default.
+    /// Pass empty string "" to disable.
+    #[arg(long, value_name = "CSV", requires = "callers")]
+    skip_hubs: Option<String>,
+
     /// Analyze blast-radius dependencies of a file.
     #[arg(long, conflicts_with_all = ["callers", "map", "edit", "files"])]
     deps: bool,
@@ -299,6 +305,7 @@ fn main() {
 
     // Callers mode
     if cli.callers {
+        let bfs_json = cli.json && matches!(cli.depth, Some(d) if d >= 2);
         let result = tilth::run_callers(
             &query,
             &scope,
@@ -311,7 +318,20 @@ fn main() {
             cli.depth,
             cli.max_frontier,
             cli.max_edges,
+            cli.skip_hubs.as_deref(),
+            bfs_json,
         );
+        if bfs_json {
+            // run_callers already returns pretty JSON; skip the generic wrapper.
+            match result {
+                Ok(s) => println!("{s}"),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    process::exit(e.exit_code());
+                }
+            }
+            return;
+        }
         emit_result(result, &query, cli.json, is_tty);
         return;
     }

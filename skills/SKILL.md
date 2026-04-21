@@ -7,7 +7,7 @@ description: "Code-intelligence CLI — structural outlines, symbol definitions,
 
 tilth is a code-intelligence tool built on tree-sitter. It answers questions grep and cat can't: *where is this symbol defined*, *who calls it*, *what does this file depend on*, *what does this codebase look like structurally*.
 
-**Use tilth for:** outlines of large files, symbol definitions, callers (single-hop or transitive BFS), file dependencies, codebase maps, jumping to a symbol body, call-chain tracing.
+**Use tilth for:** outlines of large files, symbol definitions, callers (single-hop or transitive BFS), file dependencies, codebase maps, jumping to a symbol body, call-chain tracing, comparing sizes of partial/overloaded definitions with the same name.
 
 **Don't use tilth for** plain text search, reading small files whose path you know, listing paths to pipe, or complex regex. Use `rg`, `cat`, `fd` directly — they're faster and you already know how to read their output.
 
@@ -57,6 +57,12 @@ tilth <symbol> --scope <dir> --expand=5         # inline source for top 5
 Tree-sitter finds where symbols are **defined**, not just where strings appear. Each match shows the surrounding file structure so you know context without a second read.
 
 Expanded definitions include a **callee footer** (`── calls ──`) listing resolved callees with file, line range, and signature — follow call chains without separate searches.
+
+Every definition hit reports its **line range** (e.g. `[38-690]` vs `[9-16]`). Use this to:
+
+- Pick the real implementation vs a generated stub in a partial/split class (C#, Kotlin) — the tiny range is usually the stub.
+- Tell overloads apart at a glance without opening each file.
+- Rank where to drill first when a symbol has many definitions.
 
 ---
 

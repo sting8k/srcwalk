@@ -904,8 +904,18 @@ pub fn search_callers_bfs(
             break;
         }
 
-        let hop_matches =
+        let mut hop_matches =
             find_callers_batch(&frontier_this_hop, scope, bloom, glob, Some(cache), None)?;
+        // Parallel walker returns matches in thread-scheduling order. Sort
+        // deterministically so `--max-edges` truncation is reproducible across runs.
+        // Key matches the final edge sort below: (from_file, from_line, callee, caller).
+        hop_matches.sort_by(|(a_to, a), (b_to, b)| {
+            a.path
+                .cmp(&b.path)
+                .then(a.line.cmp(&b.line))
+                .then(a_to.cmp(b_to))
+                .then(a.calling_function.cmp(&b.calling_function))
+        });
 
         let mut next_frontier: HashSet<String> = HashSet::new();
         let mut hit_targets_this_hop: HashSet<String> = HashSet::new();

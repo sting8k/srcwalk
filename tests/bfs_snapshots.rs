@@ -24,6 +24,16 @@ fn run_callers(
     depth: Option<usize>,
     json: bool,
 ) -> String {
+    run_callers_capped(target, scope, depth, json, Some(20_000))
+}
+
+fn run_callers_capped(
+    target: &str,
+    scope: &Path,
+    depth: Option<usize>,
+    json: bool,
+    max_edges: Option<usize>,
+) -> String {
     let cache = OutlineCache::new();
     tilth::run_callers(
         target,
@@ -36,14 +46,16 @@ fn run_callers(
         &cache,
         depth,
         /* max_frontier */ None,
-        /* max_edges */ Some(20_000),
+        max_edges,
         /* skip_hubs */ None,
         json,
     )
     .expect("run_callers should succeed on fixture")
 }
 
-/// Strip ", N ms" from output → make determinism comparison robust.
+/// Strip ", N ms" and "(~N tokens)" → make determinism comparison robust.
+/// Both are non-deterministic artifacts of wall-clock timing (the token
+/// estimator runs on a string that still contains the `N ms` banner).
 fn strip_timing(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
@@ -61,6 +73,19 @@ fn strip_timing(s: &str) -> String {
             if j > i + 2 && j + 3 <= bytes.len() && &bytes[j..j + 3] == b" ms" {
                 // Skip the whole ", N ms" segment.
                 i = j + 3;
+                continue;
+            }
+        }
+        // Look for pattern "(~<digits[.digits]>[k] tokens)"
+        if bytes[i] == b'(' && i + 2 < bytes.len() && &bytes[i + 1..i + 2] == b"~" {
+            let mut j = i + 2;
+            while j < bytes.len()
+                && (bytes[j].is_ascii_digit() || bytes[j] == b'.' || bytes[j] == b'k')
+            {
+                j += 1;
+            }
+            if j > i + 2 && j + 8 <= bytes.len() && &bytes[j..j + 8] == b" tokens)" {
+                i = j + 8;
                 continue;
             }
         }
@@ -235,4 +260,34 @@ fn json_schema_top_level_keys() {
             "JSON missing elided.{key}; schema changed"
         );
     }
+}
+
+// ── #6 Determinism under --max-edges cap ─────────────────────────────────
+// Regression guard for the cap-path race: `find_callers_batch` is fed by
+// the parallel walker and returned in thread-scheduling order. When the
+// BFS truncates at `max_edges`, the surviving subset depended on that
+// order → non-deterministic output across runs (repro: Bifrost NewClient
+// d=2 returned 3 different hashes). The fix sorts hop_matches by
+// (from_file, from_line, callee, caller) before the truncation loop.
+//
+// This test exercises the cap code path on the tilth repo itself
+// (Session d=4 with max_edges=50 trips the cap at hop 2).
+
+#[test]
+fn bfs_deterministic_under_edge_cap() {
+    let scope = repo_root();
+    let j1 = run_callers_capped("Session", &scope, Some(4), true, Some(50));
+    let j2 = run_callers_capped("Session", &scope, Some(4), true, Some(50));
+    let j3 = run_callers_capped("Session", &scope, Some(4), true, Some(50));
+    let e1 = extract_edges(&j1);
+    let e2 = extract_edges(&j2);
+    let e3 = extract_edges(&j3);
+    assert_eq!(e1, e2, "cap-truncated BFS run 1 vs 2 must be deterministic");
+    assert_eq!(e2, e3, "cap-truncated BFS run 2 vs 3 must be deterministic");
+    // Sanity: cap must actually trigger, otherwise the test doesn't guard.
+    let v: serde_json::Value = serde_json::from_str(&j1).unwrap();
+    assert!(
+        v["elided"]["edges_cut_at_hop"].is_number(),
+        "test fixture no longer trips the edge cap; pick a heavier target or lower the cap"
+    );
 }

@@ -4,20 +4,32 @@ on:
   push:
     tags: ["v*"]
 
+# Top-level: read-only by default. Jobs opt-in to higher permissions.
 permissions:
-  contents: write
+  contents: read
+
+# Prevent two releases of the same tag racing each other.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Fail fast if Cargo.toml and npm/package.json versions don't match the tag
+  # Fail fast if Cargo.toml / npm package.json versions don't match the tag.
   version-check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
       - name: Verify versions match tag
         run: |
+          set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/v}"
           CARGO_VER=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           NPM_VER=$(node -p "require('./npm/package.json').version")
@@ -33,6 +45,8 @@ jobs:
 
   build:
     needs: version-check
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -56,77 +70,101 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.target }}
 
-      # Install cross for Linux targets (cross-compiles via Docker)
+      # cross pulls a Docker image; pin it via --locked for reproducibility.
       - name: Install cross
         if: matrix.cross
-        run: cargo install cross --locked
+        run: cargo install cross --version 0.2.5 --locked
 
-      # Build
       - name: Build
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }}
-          else
-            cargo build --release --locked --target ${{ matrix.target }}
-          fi
         shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }} --bin tilth
+          else
+            cargo build --release --locked --target ${{ matrix.target }} --bin tilth
+          fi
 
-      # Package — unix
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
+        shell: bash
         run: |
+          set -euo pipefail
           cd target/${{ matrix.target }}/release
           tar czf ../../../tilth-${{ matrix.target }}.tar.gz tilth
           cd ../../..
+          shasum -a 256 tilth-${{ matrix.target }}.tar.gz > tilth-${{ matrix.target }}.tar.gz.sha256
 
-      # Package — windows
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
+          set -euo pipefail
           cd target/${{ matrix.target }}/release
           7z a ../../../tilth-${{ matrix.target }}.zip tilth.exe
           cd ../../..
+          sha256sum tilth-${{ matrix.target }}.zip > tilth-${{ matrix.target }}.zip.sha256
 
-      # Upload to GitHub release
-      - uses: softprops/action-gh-release@v2
+      - name: Upload artifacts
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: tilth-${{ matrix.target }}
+          path: |
+            tilth-${{ matrix.target }}.tar.gz
+            tilth-${{ matrix.target }}.tar.gz.sha256
+            tilth-${{ matrix.target }}.zip
+            tilth-${{ matrix.target }}.zip.sha256
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create release + upload assets
+      id-token: write        # sign build provenance (SLSA)
+      attestations: write    # write attestations to repo
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      # SLSA build provenance — binary signed, verifiable via `gh attestation verify`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            dist/tilth-*.tar.gz
+            dist/tilth-*.zip
+
+      - name: Create release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: |
-            tilth-*.tar.gz
-            tilth-*.zip
+            dist/tilth-*.tar.gz
+            dist/tilth-*.tar.gz.sha256
+            dist/tilth-*.zip
+            dist/tilth-*.zip.sha256
           generate_release_notes: true
-
-  # After all builds, publish to crates.io
-  publish-crate:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo publish --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-  # After all builds, publish to npm
-  publish-npm:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-      - run: npm publish ./npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          fail_on_unmatched_files: true

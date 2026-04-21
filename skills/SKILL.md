@@ -1,28 +1,28 @@
 ---
 name: tilth
-description: "Smart code navigation using tilth CLI — reading, outlining, searching, and drilling into codebases. Use whenever you'd reach for cat/grep/find/ripgrep on a codebase, or want file structure, definitions, usages, callers, or blast-radius awareness in one call. Output is tuned for LLM-agent token economy: stable pagination, directory token rollups, content previews, progressive reads on oversized files."
+description: "Code-intelligence CLI — structural outlines, symbol definitions, callers (incl. multi-hop BFS), blast-radius deps, token-aware codebase maps. Use when the answer depends on code structure. For plain text search, reading small files, or listing paths, use ripgrep / cat / fd."
 ---
 
-# Tilth — Smart Code Reading CLI
+# Tilth — Code Intelligence CLI
 
-tilth combines `ripgrep`, `tree-sitter`, and `cat` into one tool that understands code structure. It replaces the grep-read-grep-read-again cycle with structural outlines, definition search, callers, and blast-radius deps in a single invocation.
+tilth is a code-intelligence tool built on tree-sitter. It answers questions grep and cat can't: *where is this symbol defined*, *who calls it*, *what does this file depend on*, *what does this codebase look like structurally*.
 
-**Binary:** `~/.cargo/bin/tilth` (in PATH). Invoke via:
+**Use tilth for:** outlines of large files, symbol definitions, callers (single-hop or transitive BFS), file dependencies, codebase maps, jumping to a symbol body, call-chain tracing.
+
+**Don't use tilth for** plain text search, reading small files whose path you know, listing paths to pipe, or complex regex. Use `rg`, `cat`, `fd` directly — they're faster and you already know how to read their output.
+
+**Binary:** `~/.cargo/bin/tilth` (in PATH).
 
 ```bash
 tilth <args>
 ```
 
-## Core idea: smart view adapts to size
-
-Every read/search output adapts to input size. Small files print whole, large files outline, oversized `--full` pages progressively. Pipe mode uses the same smart view as TTY (not raw bytes) — pass `--full` when you actually need raw content.
-
 ---
 
-## Read a file
+## Read a large file (outline + drill-in)
 
 ```bash
-tilth <path>                          # smart view (outline if large, full if small)
+tilth <path>                          # outline if large, full if small
 tilth <path> --section 45-89          # exact line range
 tilth <path> --section "## Foo"       # markdown heading
 tilth <path> --section validateToken  # jump to a symbol's body by name
@@ -40,11 +40,8 @@ tilth <path> --budget 2000            # cap response to ~N tokens
 | < ~6000 tokens | Full content, line-numbered |
 | > ~6000 tokens | Structural outline with line ranges |
 | `--full` over cap | Progressive: header + first 200 numbered lines + outline + continuation hint |
-| Pipe mode | Same smart view as TTY (use `--full` for raw bytes) |
 
-**On a heading miss, top-5 closest matches are suggested** — no need to re-read the file to find the right heading.
-
-**Outline is capped at a safe line count.** When capped, output ends with `> _outline capped at N lines — more symbols exist..._`. Drill in with `--section <symbol>` or a line range rather than trying to dump more.
+On a heading miss, top-5 closest matches are suggested. Outlines are capped at a safe line count — when capped, drill in with `--section <symbol>` or a line range.
 
 ---
 
@@ -52,33 +49,14 @@ tilth <path> --budget 2000            # cap response to ~N tokens
 
 ```bash
 tilth <symbol> --scope <dir>                    # definitions first, then usages
-tilth "foo, bar, baz" --scope <dir>             # multi-symbol search, one pass
-tilth <symbol> --scope <dir> --expand           # inline source for top 2 matches
+tilth "foo, bar, baz" --scope <dir>             # multi-symbol, one pass
+tilth <symbol> --scope <dir> --expand           # inline source for top 2
 tilth <symbol> --scope <dir> --expand=5         # inline source for top 5
 ```
 
 Tree-sitter finds where symbols are **defined**, not just where strings appear. Each match shows the surrounding file structure so you know context without a second read.
 
 Expanded definitions include a **callee footer** (`── calls ──`) listing resolved callees with file, line range, and signature — follow call chains without separate searches.
-
----
-
-## Content search (text / regex)
-
-```bash
-tilth "TODO: fix" --scope <dir>
-tilth "/def\s+my_func/" --scope <dir>           # regex
-```
-
----
-
-## Glob files
-
-```bash
-tilth "*.test.ts" --scope <dir>
-```
-
-Each result includes a **token estimate** and a **one-line content preview** (first non-trivial doc/code line). Use the token estimate to decide what's safe to read before you read it.
 
 ---
 
@@ -101,7 +79,7 @@ tilth <symbol> --callers --depth <N> --json
 
 Trace callers transitively up to `N` hops (max 5). Use this instead of looping `--callers` manually.
 
-- `--depth N` — 1 (default, legacy behavior) up to 5.
+- `--depth N` — 1 (default) up to 5.
 - `--max-frontier K` — callers expanded per hop (default 50). Excess symbols auto-promoted to hubs, listed in `elided.auto_hubs_promoted`.
 - `--max-edges M` — global edge cap (default 500). Truncation is deterministic.
 - `--skip-hubs CSV` — explicit hub-skip list. Default is language-agnostic (`new,clone,from,into,to_string,drop,fmt,default`). `--skip-hubs ""` to disable.
@@ -109,9 +87,9 @@ Trace callers transitively up to `N` hops (max 5). Use this instead of looping `
 
 **For agents reading `--json`:**
 
-- Each `edges[]` entry has `hop, from, from_file, from_line, to, call_text`. Use `call_text` (the raw call-site line) to disambiguate overloaded callee names like `New` — you will see `errors.New("timeout")` vs `pool.New(cfg)` directly, no extra lookup.
-- Check `stats.suspicious_hops[]` before trusting deep hops. An entry there means that hop is likely polluted by cross-package name collision (e.g. `→ New` matching hundreds of unrelated `New` definitions). When flagged, either qualify the target, drop that hop, or filter edges client-side using `call_text`.
-- Check `elided` — it tells you if edges were cut (`edges_cut_at_hop`), frontier was capped (`frontier_cuts`), or hubs were auto-promoted (`auto_hubs_promoted`).
+- Each `edges[]` entry has `hop, from, from_file, from_line, to, call_text`. Use `call_text` (the raw call-site line) to disambiguate overloaded callee names — you see `errors.New("timeout")` vs `pool.New(cfg)` directly, no extra lookup.
+- Check `stats.suspicious_hops[]` before trusting deep hops. Entries there flag cross-package name collisions (e.g. `→ New` matching hundreds of unrelated `New` definitions). When flagged, qualify the target, drop that hop, or filter edges client-side using `call_text`.
+- Check `elided` for truncation signals: `edges_cut_at_hop`, `frontier_cuts`, `auto_hubs_promoted`.
 
 ---
 
@@ -121,7 +99,7 @@ Trace callers transitively up to `N` hops (max 5). Use this instead of looping `
 tilth <file> --deps
 ```
 
-Shows imports (what this file depends on) and dependents (what depends on it). Use before modifying a file to understand impact.
+Imports (what this file depends on) and dependents (what depends on it). Use before modifying a file to understand impact.
 
 ---
 
@@ -131,20 +109,20 @@ Shows imports (what this file depends on) and dependents (what depends on it). U
 tilth --map --scope <dir>
 ```
 
-Structural skeleton of the codebase. **Every directory is annotated with cumulative tokens of its descendants** (`src/ (~14.9k tokens)`, `.pi-lens/ (~175.9k tokens)`). See scale before choosing what to read. Auto k/M formatting.
+Structural skeleton. **Every directory is annotated with cumulative tokens of its descendants** (`src/ (~14.9k tokens)`, `.pi-lens/ (~175.9k tokens)`). See scale before choosing what to read. Auto k/M formatting.
 
 ---
 
-## Pagination — every list result
+## Pagination
 
-`--limit N` and `--offset N` work on glob, symbol search, content search, callers, and deps. Ordering is stable across runs (deterministic sort), so retries return identical pages.
+`--limit N` and `--offset N` work on symbol search, callers, and deps. Ordering is stable across runs (deterministic sort), so retries return identical pages.
 
 ```bash
-tilth "*.rs" --scope . --limit 10                # first page
-tilth "*.rs" --scope . --limit 10 --offset 10    # second page
+tilth <symbol> --scope . --limit 10              # first page
+tilth <symbol> --scope . --limit 10 --offset 10  # second page
 ```
 
-Output ends with either `Next page: --offset N --limit M.` or `(end of results)`. No silent caps — at ≥100k matches you get a soft warning but the result set is still complete. If you see the warning, narrow `--scope` or refine the pattern.
+Output ends with `Next page: --offset N --limit M.` or `(end of results)`. No silent caps — at ≥100k matches you get a soft warning but the result set is still complete.
 
 ---
 
@@ -166,19 +144,9 @@ Output ends with either `Next page: --offset N --limit M.` or `(end of results)`
 
 ### Tracing transitive callers (who ultimately triggers this?)
 1. Start shallow: `tilth <symbol> --callers --depth 2 --json`
-2. Check `stats.suspicious_hops` — if present, that hop has cross-package name collision; either qualify the target or filter edges by `call_text` pattern
+2. Check `stats.suspicious_hops` — if present, qualify the target or filter by `call_text`
 3. Read `call_text` on each edge to disambiguate overloaded callees (`errors.New` vs `pool.New`)
 4. Check `elided` for truncation signals; raise `--max-edges` / `--max-frontier` only when justified
-
-### Reading a large file efficiently
-1. `tilth <path>` — outline first
-2. `tilth <path> --section <line-range-or-symbol>` — read the part you need
-3. Only reach for `--full` when you genuinely need the whole file (it pages progressively above the cap)
-
-### Paging through many results
-1. Start without `--limit`: see total count in the footer
-2. If too many, narrow `--scope` or the pattern
-3. Otherwise paginate with `--limit N --offset M`
 
 ---
 
@@ -186,15 +154,4 @@ Output ends with either `Next page: --offset N --limit M.` or `(end of results)`
 
 Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift.
 
-Unsupported languages still work for file reading and content search — you just won't get structural outlines or definition detection.
-
----
-
-## Why this beats grep/cat/read
-
-- **One call instead of many:** outline + definitions + usages in a single invocation
-- **Structure-aware:** tree-sitter finds definitions, not text matches
-- **Token-efficient:** smart view, token estimates on every match, directory rollups, progressive read
-- **Stable pagination:** retries return identical pages, no silent truncation
-- **Call chain tracing:** callee footers on expanded definitions let you follow code flow
-- **Honest misses:** fuzzy heading suggestions, indirect-call hints, omission indicators — you know when the view is incomplete and how to recover
+Unsupported languages still work for file reading — you just won't get structural outlines or definition detection.

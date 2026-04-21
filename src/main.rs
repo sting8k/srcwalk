@@ -271,8 +271,8 @@ fn main() {
     let cache = tilth::cache::OutlineCache::new();
     let scope = cli.scope.canonicalize().unwrap_or(cli.scope);
 
-    // When piped (not a TTY), force full output — scripts expect raw content
-    let full = cli.full || !is_tty;
+    // Smart view by default (outline for large files). Use --full to force raw content.
+    let full = cli.full;
     let expand = cli.expand.unwrap_or(0);
 
     // TTY interactive mode: cap at 50 unless user set --limit or --full.

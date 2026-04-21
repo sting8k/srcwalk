@@ -108,10 +108,12 @@ pub fn read_file(
     let content = String::from_utf8_lossy(buf);
     let line_count = memchr::memchr_iter(b'\n', buf).count() as u32 + 1;
 
-    // Guard: full=true on very large files. Return outline + warning instead of
-    // dumping megabytes that would blow up the MCP client's timeout/memory.
+    // Guard: full=true on very large files. Return first-N numbered lines +
+    // outline + section continue hint instead of dead-ending. This lets the
+    // agent see head content immediately and paginate via `section`.
     let cap = full_read_size_cap();
     if full && byte_len > cap {
+        const PROGRESSIVE_LINES: u32 = 200;
         let file_type = detect_file_type(path);
         let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         #[allow(clippy::cast_precision_loss)] // cap and file sizes fit in f64 mantissa for display
@@ -119,14 +121,25 @@ pub fn read_file(
         #[allow(clippy::cast_precision_loss)]
         let file_mb = byte_len as f64 / 1_000_000.0;
 
+        // Take the first PROGRESSIVE_LINES via memchr — avoids allocating the full content split.
+        let head_end = memchr::memchr_iter(b'\n', buf)
+            .nth(PROGRESSIVE_LINES as usize - 1)
+            .map_or(buf.len(), |p| p + 1);
+        let head = String::from_utf8_lossy(&buf[..head_end]);
+        let numbered_head = format::number_lines(&head, 1);
+
         let outline = cache.get_or_compute(path, mtime, || {
             outline::generate(path, file_type, &content, buf, true)
         });
 
-        let header = format::file_header(path, byte_len, line_count, ViewMode::Outline);
+        let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
+        let shown = PROGRESSIVE_LINES.min(line_count);
+        let next_start = shown + 1;
         return Ok(format!(
-            "{header}\n\n> **full=true skipped**: file is {file_mb:.1}MB (cap: {cap_mb:.1}MB). \
-             Use `section` to read specific ranges, or set TILTH_FULL_SIZE_CAP={byte_len} to override.\n\n{outline}"
+            "{header}\n\n> **full=true capped**: file is {file_mb:.1}MB (cap: {cap_mb:.1}MB). \
+             Showing first {shown} of {line_count} lines. \
+             Continue with `section=\"{next_start}-<end>\"` or set TILTH_FULL_SIZE_CAP={byte_len} to override.\n\n\
+             {numbered_head}\n\n## Outline\n\n{outline}"
         ));
     }
 
@@ -137,7 +150,8 @@ pub fn read_file(
             let numbered = format::hashlines(&content, 1);
             return Ok(format!("{header}\n\n{numbered}"));
         }
-        return Ok(format!("{header}\n\n{content}"));
+        let numbered = format::number_lines(&content, 1);
+        return Ok(format!("{header}\n\n{numbered}"));
     }
 
     // Large file → smart view by file type
@@ -212,13 +226,14 @@ fn resolve_heading(buf: &[u8], heading: &str) -> Option<(usize, usize)> {
                 continue;
             }
 
-            // Check if this line matches the heading (exact or with anchor/attribute suffix)
+            // Check if this line matches the heading (exact or with anchor/attribute/ATX-close suffix)
+            // Accept: "## Foo", "## Foo {#anchor}", "## Foo {:.class}", "## Foo ##", "## Foo\t"
             let matches = trimmed == heading_trimmed
                 || (trimmed.starts_with(heading_trimmed)
                     && trimmed[heading_trimmed.len()..]
                         .chars()
                         .next()
-                        .is_none_or(|c| c == ' ' || c == '{'));
+                        .is_none_or(|c| matches!(c, ' ' | '\t' | '{' | '#')));
             if matches {
                 found_line = Some(line_idx + 1); // 1-indexed
                 break;
@@ -266,6 +281,49 @@ fn resolve_heading(buf: &[u8], heading: &str) -> Option<(usize, usize)> {
     Some((start_line, total_lines))
 }
 
+/// Collect up to `top_n` headings whose text is closest (by edit distance)
+/// to the queried heading. Returns headings as they appear in the file
+/// (e.g. "## Foo Bar"), excluding ones inside fenced code blocks.
+fn suggest_headings(buf: &[u8], query: &str, top_n: usize) -> Vec<String> {
+    let q = query.trim_end();
+    let q_text = q.trim_start_matches('#').trim();
+    if q_text.is_empty() {
+        return Vec::new();
+    }
+
+    let mut in_code_block = false;
+    let mut scored: Vec<(usize, String)> = Vec::new();
+    for line in buf.split(|&b| b == b'\n') {
+        let Ok(s) = std::str::from_utf8(line) else {
+            continue;
+        };
+        let trimmed = s.trim_end();
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if in_code_block || !trimmed.starts_with('#') {
+            continue;
+        }
+        let h_text = trimmed.trim_start_matches('#').trim();
+        if h_text.is_empty() {
+            continue;
+        }
+        // Strip kramdown attr / ATX-close trailing markers from comparison text.
+        let h_clean = h_text
+            .split('{')
+            .next()
+            .unwrap_or(h_text)
+            .trim_end_matches('#')
+            .trim();
+        let dist = edit_distance(&q_text.to_ascii_lowercase(), &h_clean.to_ascii_lowercase());
+        scored.push((dist, trimmed.to_string()));
+    }
+
+    scored.sort_by_key(|(d, _)| *d);
+    scored.into_iter().take(top_n).map(|(_, h)| h).collect()
+}
+
 /// Read a specific line range from a file.
 /// Uses memchr to find the Nth newline offset and slice the mmap buffer directly
 /// instead of collecting all lines into a Vec.
@@ -283,9 +341,20 @@ fn read_section(path: &Path, range: &str, edit_mode: bool) -> Result<String, Til
     // Resolve section address: line range, heading, or symbol name
     let (start, end) = if range.starts_with('#') {
         // Markdown heading
-        resolve_heading(buf, range).ok_or_else(|| TilthError::InvalidQuery {
-            query: range.to_string(),
-            reason: "heading not found in file".into(),
+        resolve_heading(buf, range).ok_or_else(|| {
+            let suggestions = suggest_headings(buf, range, 5);
+            let reason = if suggestions.is_empty() {
+                "heading not found in file".to_string()
+            } else {
+                format!(
+                    "heading not found in file. Closest matches:\n  {}",
+                    suggestions.join("\n  ")
+                )
+            };
+            TilthError::InvalidQuery {
+                query: range.to_string(),
+                reason,
+            }
         })?
     } else if let Some(r) = parse_range(range) {
         // Line range like "45-89"
@@ -565,14 +634,14 @@ mod tests {
         let cache = OutlineCache::new();
         let result = read_file(&path, None, true, &cache, false).unwrap();
 
-        // Should contain the warning, not the full file content
+        // Should contain the progressive-read warning, not the full file content
         assert!(
-            result.contains("full=true skipped"),
+            result.contains("full=true capped"),
             "expected size cap warning, got: {result}"
         );
         assert!(
             result.contains("func_0"),
-            "expected outline content in output"
+            "expected head/outline content in output"
         );
 
         std::env::remove_var("TILTH_FULL_SIZE_CAP");

@@ -165,8 +165,9 @@ fn find_definitions_batch(
                     if !hit_mask[i] {
                         continue;
                     }
-                    let defs =
-                        find_defs_treesitter(path, q, ts_lang, lang, content, file_lines, mtime, cache);
+                    let defs = find_defs_treesitter(
+                        path, q, ts_lang, lang, content, file_lines, mtime, cache,
+                    );
                     if !defs.is_empty() {
                         local[i] = defs;
                     }

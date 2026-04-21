@@ -571,8 +571,17 @@ fn tool_files(args: &Value, cache: &OutlineCache) -> Result<String, String> {
         .ok_or("missing required parameter: pattern")?;
     let (scope, scope_warning) = resolve_scope(args);
     let budget = args.get("budget").and_then(serde_json::Value::as_u64);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map(|n| n as usize);
+    let offset = args
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(0, |n| n as usize);
 
-    let output = crate::search::search_glob(pattern, &scope, cache).map_err(|e| e.to_string())?;
+    let output = crate::search::search_glob(pattern, &scope, cache, limit, offset)
+        .map_err(|e| e.to_string())?;
 
     let mut result = scope_warning.unwrap_or_default();
     result.push_str(&apply_budget(output, budget));

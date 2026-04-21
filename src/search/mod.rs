@@ -432,8 +432,10 @@ pub fn search_glob(
     pattern: &str,
     scope: &Path,
     _cache: &OutlineCache,
+    limit: Option<usize>,
+    offset: usize,
 ) -> Result<String, TilthError> {
-    let result = glob::search(pattern, scope)?;
+    let result = glob::search(pattern, scope, limit, offset)?;
     format_glob_result(&result, scope)
 }
 
@@ -1343,16 +1345,27 @@ fn extract_line_range(line: &str) -> Option<(u32, u32)> {
     }
 }
 
-/// Format glob search results (file list with previews).
+/// Format glob search results (file list with previews + pagination hint).
 fn format_glob_result(result: &glob::GlobResult, scope: &Path) -> Result<String, TilthError> {
     let header = format!(
-        "# Glob: \"{}\" in {} — {} files",
+        "# Glob: \"{}\" in {} — {} of {} files (offset {})",
         result.pattern,
         scope.display(),
-        result.files.len()
+        result.files.len(),
+        result.total_found,
+        result.offset,
     );
 
     let mut out = header;
+    if result.oversized {
+        let _ = write!(
+            out,
+            "\n\n> ⚠ Large match set ({} files). Pagination is stable but \
+             walks may be slow. Consider narrowing `--scope` or refining the pattern.",
+            result.total_found,
+        );
+    }
+
     for file in &result.files {
         let _ = write!(out, "\n  {}", rel(&file.path, scope));
         if let Some(ref preview) = file.preview {
@@ -1360,9 +1373,16 @@ fn format_glob_result(result: &glob::GlobResult, scope: &Path) -> Result<String,
         }
     }
 
-    if result.total_found > result.files.len() {
-        let omitted = result.total_found - result.files.len();
-        let _ = write!(out, "\n\n... and {omitted} more files. Narrow with scope.");
+    let shown_end = result.offset + result.files.len();
+    if result.total_found > shown_end {
+        let omitted = result.total_found - shown_end;
+        let _ = write!(
+            out,
+            "\n\n... and {omitted} more files. Next page: --offset {shown_end} --limit {limit}.",
+            limit = result.limit,
+        );
+    } else if result.offset > 0 {
+        let _ = write!(out, "\n(end of results)");
     }
 
     if result.files.is_empty() && !result.available_extensions.is_empty() {

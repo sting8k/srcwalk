@@ -568,10 +568,17 @@ pub fn search_callers_expanded(
     if callers.is_empty() {
         return Ok(format!(
             "# Callers of \"{}\" in {} — no call sites found\n\n\
-             Tip: the symbol may be called via interface/trait dispatch. \
-             Try symbol search instead.",
+             Tip: tilth detects only direct, by-name call sites. The symbol may still be invoked via:\n\
+               - Rust trait objects (`dyn Trait`) or generic bounds\n\
+               - Go interface dispatch or function values stored in structs\n\
+               - Java/Kotlin interface or abstract methods, reflection\n\
+               - TypeScript/JS class hierarchies, callbacks, or dynamic property access\n\
+               - Python duck typing, `getattr`, decorators\n\n\
+             Try `tilth(\"{}\")` (symbol search) to find the declaring interface/trait, \
+             then run `callers` on that name, or search for implementors.",
             target,
-            scope.display()
+            scope.display(),
+            target,
         ));
     }
 

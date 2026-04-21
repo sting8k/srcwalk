@@ -96,12 +96,31 @@ pub fn generate(scope: &Path, depth: usize, budget: Option<u64>, cache: &Outline
     }
 
     let mut out = format!("# Map: {} (depth {})\n", scope.display(), depth);
-    format_tree(&tree, Path::new(""), 0, &mut out);
+    let totals = compute_dir_totals(&tree);
+    format_tree(&tree, &totals, Path::new(""), 0, &mut out);
 
     match budget {
         Some(b) => crate::budget::apply(&out, b),
         None => out,
     }
+}
+
+/// Compute total tokens for each directory (sum of all descendant files).
+fn compute_dir_totals(tree: &BTreeMap<PathBuf, Vec<FileEntry>>) -> BTreeMap<PathBuf, u64> {
+    let mut totals: BTreeMap<PathBuf, u64> = BTreeMap::new();
+    for (dir, files) in tree {
+        let sum: u64 = files.iter().map(|f| f.tokens).sum();
+        // Add this dir's direct file tokens to itself and every ancestor.
+        let mut cur: Option<&Path> = Some(dir.as_path());
+        while let Some(p) = cur {
+            *totals.entry(p.to_path_buf()).or_insert(0) += sum;
+            if p == Path::new("") {
+                break;
+            }
+            cur = p.parent();
+        }
+    }
+    totals
 }
 
 struct FileEntry {
@@ -167,6 +186,7 @@ fn extract_name_from_sig(sig: &str) -> String {
 
 fn format_tree(
     tree: &BTreeMap<PathBuf, Vec<FileEntry>>,
+    totals: &BTreeMap<PathBuf, u64>,
     dir: &Path,
     indent: usize,
     out: &mut String,
@@ -201,10 +221,24 @@ fn format_tree(
         }
     }
 
-    // Recurse into subdirectories
+    // Recurse into subdirectories — show rollup token total next to dir name.
     for subdir in subdirs {
         let dir_name = subdir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        let _ = writeln!(out, "{prefix}{dir_name}/");
-        format_tree(tree, subdir, indent + 1, out);
+        let total = totals.get(subdir).copied().unwrap_or(0);
+        let _ = writeln!(out, "{prefix}{dir_name}/  (~{} tokens)", fmt_tokens(total));
+        format_tree(tree, totals, subdir, indent + 1, out);
+    }
+}
+
+/// Compact token count for directory rollups (e.g. "12.3k", "1.2M").
+fn fmt_tokens(n: u64) -> String {
+    #[allow(clippy::cast_precision_loss)] // display-only; mantissa loss is fine for summaries
+    let f = n as f64;
+    if n >= 1_000_000 {
+        format!("{:.1}M", f / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", f / 1_000.0)
+    } else {
+        n.to_string()
     }
 }

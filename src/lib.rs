@@ -233,7 +233,7 @@ fn run_inner(
             }
             out
         }
-        QueryType::Glob(pattern) => search::search_glob(&pattern, scope, cache)?,
+        QueryType::Glob(pattern) => search::search_glob(&pattern, scope, cache, limit, offset)?,
         _ if use_expanded => {
             let ctx = ExpandedCtx {
                 session: session::Session::new(),
@@ -482,7 +482,7 @@ pub fn run_files(
             .into_iter()
             .map(|m| m.path)
             .collect(),
-        QueryType::Glob(pattern) => search::glob::search(&pattern, scope)?
+        QueryType::Glob(pattern) => search::glob::search(&pattern, scope, None, 0)?
             .files
             .into_iter()
             .map(|f| f.path)

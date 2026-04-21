@@ -1,5 +1,9 @@
 # tilth
 
+> **another-tilth** — a personal fork tuned for heavy LLM-agent workflows.
+> This is `another-tilth`: [tilth](https://github.com/jahala/tilth) with additional CLI UX, performance, and token-economy patches.
+> Upstream-compatible features are periodically submitted as PRs. Install from branch `another-tilth`.
+
 **Smart code reading for humans and AI agents.** Reduces cost per correct answer by **44%** on Sonnet, **39%** on Opus, and **38%** on Haiku across 160 benchmark runs. ([benchmarks](#benchmarks))
 
 tilth is what happens when you give `ripgrep`, `tree-sitter`, and `cat` a shared brain.

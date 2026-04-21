@@ -287,7 +287,7 @@ pub fn search_multi_symbol_expanded(
 
     // Sort by match count ascending — fewer matches = rarer/more specific.
     // Rare symbols are higher value and shouldn't be starved by common ones.
-    results.sort_by(|a, b| a.matches.len().cmp(&b.matches.len()));
+    results.sort_by_key(|r| r.matches.len());
 
     // Phase 2: format sequentially (format_matches touches the session mutex
     // and shared sets — cheap, keep single-threaded).

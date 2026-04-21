@@ -18,6 +18,9 @@ Inherits everything from upstream tilth (tree-sitter outlines, structural search
 - **Fuzzy heading suggestions** when `--section "## Foo"` misses.
 - **Indirect-call hint** when `--callers` returns 0 — explains trait objects, interfaces, reflection, callbacks per language family.
 - **Type/constructor refs** counted as callers (`new Foo()`, `Foo {}`).
+- **Multi-hop callers (BFS)** — `--callers --depth N` traces up to 5 hops, with hub guard (`--skip-hubs`, auto-promotion), hard edge cap (`--max-edges`), per-hop frontier cap (`--max-frontier`), deterministic output, per-hop stats, and `--json` edge-list for agents.
+- **Cross-package collision warning** — BFS flags hops likely polluted by name collisions (e.g. `New` matching `errors.New` across unrelated packages). Emitted in text banner and `stats.suspicious_hops` in JSON.
+- **Call-site source on every edge** — BFS edges carry the actual call-site line (`→ errors.New("timeout")` not just `→ New`), so agents can disambiguate without extra lookups.
 - **Outline omission indicator** when the view is capped.
 - **Faster engine** — mmap walkers, Aho-Corasick multi-symbol search, parse cache, mimalloc, minified-file skip.
 - **MCP output cap** at 25k chars with explicit truncation note.
@@ -182,6 +185,23 @@ tilth isTrustedProxy --kind callers --scope .
 ```
 
 When callers returns 0, you get a per-language hint about indirect dispatch (trait objects, interfaces, reflection, callbacks) instead of "not found".
+
+### Multi-hop callers (BFS)
+
+Trace callers transitively. Useful for "who ultimately triggers this?" without the agent looping manually.
+
+```bash
+tilth NewClient --callers --depth 2 --scope .
+tilth NewClient --callers --depth 3 --max-edges 300 --json
+```
+
+- `--depth N` — 1 (default, legacy) up to 5.
+- `--max-frontier K` — cap callers expanded per hop (default 50). Over-cap symbols are auto-promoted to hubs.
+- `--max-edges M` — global hard cap on edges across all hops (default 500). Deterministic truncation.
+- `--skip-hubs CSV` — explicit hub list (default: `new,clone,from,into,to_string,drop,fmt,default`). `--skip-hubs ""` disables.
+- `--json` — edge-list for agents. Top-level keys: `edges`, `stats`, `elided`, `depth_reached`, `elapsed_ms`, `disclaimer`.
+
+Each edge carries `from`, `from_file`, `from_line`, `to`, and `call_text` (the actual call-site line). `stats.suspicious_hops` flags hops with cross-package name collisions — read it before trusting transitive edges.
 
 ## Map
 

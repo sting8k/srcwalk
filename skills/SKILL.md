@@ -92,6 +92,27 @@ Structural (tree-sitter), not text-based. Includes type/constructor references (
 
 **When callers returns 0**, output includes a per-language hint about indirect dispatch (trait objects, interfaces, reflection, callbacks, duck typing). A symbol with zero direct callers is often still in use — check the hint before concluding it's dead code.
 
+### Multi-hop callers (BFS)
+
+```bash
+tilth <symbol> --callers --depth <N> --scope <dir>
+tilth <symbol> --callers --depth <N> --json
+```
+
+Trace callers transitively up to `N` hops (max 5). Use this instead of looping `--callers` manually.
+
+- `--depth N` — 1 (default, legacy behavior) up to 5.
+- `--max-frontier K` — callers expanded per hop (default 50). Excess symbols auto-promoted to hubs, listed in `elided.auto_hubs_promoted`.
+- `--max-edges M` — global edge cap (default 500). Truncation is deterministic.
+- `--skip-hubs CSV` — explicit hub-skip list. Default is language-agnostic (`new,clone,from,into,to_string,drop,fmt,default`). `--skip-hubs ""` to disable.
+- `--json` — machine-readable edge list.
+
+**For agents reading `--json`:**
+
+- Each `edges[]` entry has `hop, from, from_file, from_line, to, call_text`. Use `call_text` (the raw call-site line) to disambiguate overloaded callee names like `New` — you will see `errors.New("timeout")` vs `pool.New(cfg)` directly, no extra lookup.
+- Check `stats.suspicious_hops[]` before trusting deep hops. An entry there means that hop is likely polluted by cross-package name collision (e.g. `→ New` matching hundreds of unrelated `New` definitions). When flagged, either qualify the target, drop that hop, or filter edges client-side using `call_text`.
+- Check `elided` — it tells you if edges were cut (`edges_cut_at_hop`), frontier was capped (`frontier_cuts`), or hubs were auto-promoted (`auto_hubs_promoted`).
+
 ---
 
 ## Blast radius — file dependencies
@@ -142,6 +163,12 @@ Output ends with either `Next page: --offset N --limit M.` or `(end of results)`
 ### Tracing impact before a change
 1. `tilth <file> --deps` — see dependents
 2. For each dependent: `tilth <dep> --section <symbol>` to check actual usage
+
+### Tracing transitive callers (who ultimately triggers this?)
+1. Start shallow: `tilth <symbol> --callers --depth 2 --json`
+2. Check `stats.suspicious_hops` — if present, that hop has cross-package name collision; either qualify the target or filter edges by `call_text` pattern
+3. Read `call_text` on each edge to disambiguate overloaded callees (`errors.New` vs `pool.New`)
+4. Check `elided` for truncation signals; raise `--max-edges` / `--max-frontier` only when justified
 
 ### Reading a large file efficiently
 1. `tilth <path>` — outline first

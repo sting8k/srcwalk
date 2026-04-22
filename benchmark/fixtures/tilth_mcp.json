@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "tilth": {
-      "command": "/Users/jahala/.cargo/bin/tilth",
-      "args": ["--mcp", "--edit"]
-    }
-  }
-}

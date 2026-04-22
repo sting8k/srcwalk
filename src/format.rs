@@ -96,18 +96,6 @@ pub fn hashlines(content: &str, start: u32) -> String {
     out
 }
 
-/// Parse a hashline anchor `"42:a3f"` into `(line_number, hash)`.
-/// Inverse of the format produced by [`hashlines`].
-pub(crate) fn parse_anchor(s: &str) -> Option<(usize, u16)> {
-    let (line_str, hash_str) = s.split_once(':')?;
-    let line: usize = line_str.trim().parse().ok()?;
-    if line == 0 {
-        return None; // 1-indexed
-    }
-    let hash = u16::from_str_radix(hash_str.trim(), 16).ok()?;
-    Some((line, hash))
-}
-
 /// Path relative to scope for cleaner output. Falls back to full path.
 pub(crate) fn rel(path: &Path, scope: &Path) -> String {
     path.strip_prefix(scope)

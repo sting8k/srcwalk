@@ -29,7 +29,6 @@ from config import (
     SYNTHETIC_REPO,
     RESULTS_DIR,
     DEFAULT_REPS,
-    TILTH_MCP_CODEX_ARGS,
 )
 from parse import parse_stream_json, parse_codex_json, tool_call_counts
 from tasks import TASKS
@@ -114,10 +113,6 @@ def run_single(
             "-m", model_id,
         ]
 
-        # Add MCP config for tilth modes
-        if mode.mcp_config_path:
-            cmd += TILTH_MCP_CODEX_ARGS
-
         # Codex has no --system-prompt, prepend to prompt
         full_prompt = f"{SYSTEM_PROMPT}\n\n{task.prompt}"
         cmd += ["--", full_prompt]
@@ -131,15 +126,11 @@ def run_single(
             "--max-budget-usd", str(DEFAULT_MAX_BUDGET_USD),
             "--no-session-persistence",
             "--dangerously-skip-permissions",
-            "--strict-mcp-config",
             "--system-prompt", SYSTEM_PROMPT + f"\nYour current working directory is: {repo_path}",
         ]
 
         if mode.tools:
             cmd += ["--tools", ",".join(mode.tools)]
-
-        if mode.mcp_config_path:
-            cmd += ["--mcp-config", mode.mcp_config_path]
 
         cmd += ["--", task.prompt]
 

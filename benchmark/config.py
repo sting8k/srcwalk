@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 MODELS = {
     "haiku": "claude-haiku-4-5-20251001",
@@ -19,19 +18,12 @@ RUNNERS = {
     "o3": "codex",
 }
 
-# MCP config arguments for codex (tilth server)
-TILTH_MCP_CODEX_ARGS = [
-    "-c", 'mcp_servers.tilth.command="/Users/flysikring/.cargo/bin/tilth"',
-    "-c", 'mcp_servers.tilth.args=["--mcp", "--edit"]',
-]
-
 
 @dataclass
 class ModeConfig:
-    """Configuration for a benchmark mode (baseline vs tilth)."""
+    """Configuration for a benchmark mode."""
     name: str
     tools: list[str]
-    mcp_config_path: Optional[str]
     description: str
 
 
@@ -40,7 +32,6 @@ BENCHMARK_DIR = Path(__file__).parent
 FIXTURES_DIR = BENCHMARK_DIR / "fixtures"
 SYNTHETIC_REPO = FIXTURES_DIR / "repo"
 RESULTS_DIR = BENCHMARK_DIR / "results"
-TILTH_MCP_CONFIG = FIXTURES_DIR / "tilth_mcp.json"
 REPOS_DIR = Path("/tmp/tilth_bench/repos")
 
 
@@ -93,20 +84,7 @@ MODES = {
     "baseline": ModeConfig(
         name="baseline",
         tools=["Read", "Edit", "Grep", "Glob", "Bash"],
-        mcp_config_path=None,
-        description="Claude Code built-in tools",
-    ),
-    "tilth": ModeConfig(
-        name="tilth",
-        tools=["Read", "Edit", "Grep", "Glob", "Bash"],
-        mcp_config_path=str(TILTH_MCP_CONFIG),
-        description="Built-in tools + tilth MCP (hybrid)",
-    ),
-    "tilth_forced": ModeConfig(
-        name="tilth_forced",
-        tools=["Read", "Edit"],
-        mcp_config_path=str(TILTH_MCP_CONFIG),
-        description="tilth MCP only (no Bash/Grep/Glob)",
+        description="Built-in tools (Bash includes tilth CLI)",
     ),
 }
 

@@ -6,7 +6,7 @@ Upstream cuts cost-per-correct-answer by ~40% on benchmark runs. This fork keeps
 
 ## Features
 
-Inherits everything from upstream tilth (tree-sitter outlines, structural search, callers/diff, MCP server, edit mode), plus:
+Inherits everything from upstream tilth (tree-sitter outlines, structural search, callers/diff), plus:
 
 - **Stable pagination** on every list result — `--limit` / `--offset` for glob, symbol, callers, callees, deps. No silent caps; soft warning at 100k matches.
 - **Directory token rollups** in `--map` so you see scale before you read.
@@ -23,7 +23,7 @@ Inherits everything from upstream tilth (tree-sitter outlines, structural search
 - **Call-site source on every edge** — BFS edges carry the actual call-site line (`→ errors.New("timeout")` not just `→ New`), so agents can disambiguate without extra lookups.
 - **Outline omission indicator** when the view is capped.
 - **Faster engine** — mmap walkers, Aho-Corasick multi-symbol search, parse cache, mimalloc, minified-file skip.
-- **MCP output cap** at 25k chars with explicit truncation note.
+- **CLI-only** — MCP server / hashline edit mode removed (MTGA: code-intel ergonomics over protocol surface). Agents call the binary via shell.
 
 See [PR #64](https://github.com/jahala/tilth/pull/64) for the full rationale and before/after examples.
 
@@ -91,7 +91,7 @@ cargo install tilth
 
 ## Agent skill
 
-For agents that use tilth via plain bash (Claude Code, Cursor, pi, cowork, anything that doesn't speak MCP), a ready-to-load skill prompt lives at [`skills/SKILL.md`](./skills/SKILL.md). Drop it into your agent's skills directory and the agent will reach for tilth instead of `cat`/`grep`/`find` on code reads, with the right flags for pagination, outlines, callers, deps, and progressive reads already wired in.
+For agents (Claude Code, Cursor, pi, cowork, codex, droid, etc.), a ready-to-load skill prompt lives at [`skills/SKILL.md`](./skills/SKILL.md). Drop it into your agent's skills directory and the agent will reach for tilth instead of `cat`/`grep`/`find` on code reads, with the right flags for pagination, outlines, callers, deps, and progressive reads already wired in.
 
 Most agents follow the same convention — a `<skill-name>/SKILL.md` file under a global skills directory. Install once globally:
 
@@ -243,40 +243,11 @@ $ tilth diff HEAD~1
 
 Function-level change detection. Use `--scope` to narrow, `--log` for history, conflict detection on by default.
 
-## MCP server
-
-```bash
-tilth --mcp
-```
-
-Exposes `tilth_read`, `tilth_search`, and (with `--edit`) `tilth_edit`. Session dedup: previously expanded definitions show `[shown earlier]` on subsequent searches. Output is hard-capped at 25k chars with an explicit truncation warning so context never silently blows up.
-
-## Edit mode
-
-Install with `--edit` to enable hashline output and `tilth_edit`:
-
-```
-42:a3f|  let x = compute();
-43:f1b|  return x;
-```
-
-Edits use these hashes as anchors. If the file changed since the last read, hashes won't match and the edit is rejected with current content shown.
-
-```json
-{
-  "path": "src/auth.ts",
-  "edits": [
-    { "start": "42:a3f", "content": "  let x = recompute();" },
-    { "start": "44:b2c", "end": "46:e1d", "content": "" }
-  ]
-}
-```
-
 Inspired by [The Harness Problem](https://blog.can.ac/2026/02/12/the-harness-problem/).
 
 ## Speed
 
-CLI times on x86_64 Mac, 26–1060 file codebases. ~17ms process startup amortised in MCP mode.
+CLI times on x86_64 Mac, 26–1060 file codebases.
 
 | Operation | ~30 files | ~1000 files |
 |-----------|-----------|-------------|

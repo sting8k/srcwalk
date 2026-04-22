@@ -4,6 +4,7 @@ pub mod content;
 pub mod deps;
 pub mod facets;
 pub mod glob;
+pub mod pagination;
 pub mod rank;
 pub mod siblings;
 pub mod strip;
@@ -24,6 +25,8 @@ use crate::format;
 use crate::read;
 use crate::session::Session;
 use crate::types::{estimate_tokens, FileType, Match, SearchResult};
+
+use self::pagination::paginate;
 
 use crate::format::rel;
 
@@ -1710,21 +1713,3 @@ mod tests {
     }
 }
 
-/// Apply limit/offset pagination to a `SearchResult`.
-pub(crate) fn paginate(result: &mut SearchResult, limit: Option<usize>, offset: usize) {
-    let total = result.matches.len();
-    if offset > 0 {
-        if offset >= total {
-            result.matches.clear();
-        } else {
-            result.matches = result.matches.split_off(offset);
-        }
-    }
-    if let Some(cap) = limit {
-        if result.matches.len() > cap {
-            result.matches.truncate(cap);
-            result.has_more = true;
-        }
-    }
-    result.offset = offset;
-}

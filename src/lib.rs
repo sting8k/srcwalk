@@ -393,19 +393,19 @@ fn single_query_search(
     };
 
     if accept_sym {
-        search::paginate(&mut sym_result, limit, offset);
+        search::pagination::paginate(&mut sym_result, limit, offset);
         return search::format_raw_result(&sym_result, cache);
     }
 
     let mut content_result = search::search_content_raw(text, scope, glob)?;
     if content_result.total_found > 0 {
-        search::paginate(&mut content_result, limit, offset);
+        search::pagination::paginate(&mut content_result, limit, offset);
         return search::format_raw_result(&content_result, cache);
     }
 
     // For concept queries: if symbol had usages but no definitions, show those
     if prefer_definitions && sym_result.total_found > 0 {
-        search::paginate(&mut sym_result, limit, offset);
+        search::pagination::paginate(&mut sym_result, limit, offset);
         return search::format_raw_result(&sym_result, cache);
     }
 
@@ -428,7 +428,7 @@ fn multi_word_concept_search(
     let mut content_result = search::search_content_raw(text, scope, glob)?;
     content_result.query = text.to_string();
     if content_result.total_found > 0 {
-        search::paginate(&mut content_result, limit, offset);
+        search::pagination::paginate(&mut content_result, limit, offset);
         return search::format_raw_result(&content_result, cache);
     }
 
@@ -454,7 +454,7 @@ fn multi_word_concept_search(
     let mut relaxed_result = search::search_regex_raw(&relaxed, scope, glob)?;
     relaxed_result.query = text.to_string();
     if relaxed_result.total_found > 0 {
-        search::paginate(&mut relaxed_result, limit, offset);
+        search::pagination::paginate(&mut relaxed_result, limit, offset);
         return search::format_raw_result(&relaxed_result, cache);
     }
 

@@ -4,9 +4,9 @@ version = "0.7.0"
 edition = "2021"
 description = "Tree-sitter indexed lookups — smart code reading for AI agents"
 license = "MIT"
-repository = "https://github.com/jahala/tilth"
+repository = "https://github.com/sting8k/tilth"
 readme = "README.md"
-keywords = ["mcp", "code-search", "tree-sitter", "developer-tools"]
+keywords = ["code-search", "tree-sitter", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
@@ -62,9 +62,6 @@ dashmap = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-
-# MCP protocol (JSON-RPC over stdio)
-# (handled manually — no framework needed)
 
 
 [dev-dependencies]

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="jahala/tilth"
+REPO="sting8k/tilth"
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in

@@ -27,7 +27,7 @@
             cargoLock.lockFile = ./Cargo.lock;
             meta = {
               inherit (cargoToml.package) description;
-              homepage = "https://github.com/jahala/tilth";
+              homepage = "https://github.com/sting8k/tilth";
               license = lib.licenses.mit;
               mainProgram = "tilth";
             };

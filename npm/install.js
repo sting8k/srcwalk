@@ -30,7 +30,7 @@ const version = require("./package.json").version;
 const isWindows = process.platform === "win32";
 const ext = isWindows ? "zip" : "tar.gz";
 const binName = isWindows ? "tilth.exe" : "tilth";
-const url = `https://github.com/jahala/tilth/releases/download/v${version}/tilth-${target}.${ext}`;
+const url = `https://github.com/sting8k/tilth/releases/download/v${version}/tilth-${target}.${ext}`;
 
 const binDir = path.join(__dirname, "bin");
 const binPath = path.join(binDir, binName);

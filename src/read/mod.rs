@@ -555,7 +555,7 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
     Ok(format!("{header}\n\n{formatted}"))
 }
 
-/// Filter outline entries (and children) to those overlapping [range_start, range_end].
+/// Filter outline entries (and children) to those overlapping [`range_start`, `range_end`].
 fn filter_entries_in_range(
     entries: &[OutlineEntry],
     range_start: u32,

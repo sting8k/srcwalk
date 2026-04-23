@@ -211,7 +211,7 @@ pub fn run_callees(
         ));
     }
 
-    let depth_limit = depth.map(|d| d.min(5) as u32).unwrap_or(1);
+    let depth_limit = depth.map_or(1, |d| d.min(5) as u32);
     let nodes = search::callees::resolve_callees_transitive(
         &callee_names,
         &def_match.path,
@@ -314,8 +314,7 @@ fn is_non_prod(path: &Path, scope: &Path) -> bool {
     rel.components().any(|c| {
         c.as_os_str()
             .to_str()
-            .map(|s| NON_PROD_DIR_SEGMENTS.contains(&s))
-            .unwrap_or(false)
+            .is_some_and(|s| NON_PROD_DIR_SEGMENTS.contains(&s))
     })
 }
 
@@ -392,26 +391,26 @@ fn disambiguate_glob_for_section(
 
     // Picker: single primary → done. Multiple primary → break tie by
     // min depth-from-scope if unique, otherwise fail loud.
-    let picked_opt: Option<std::path::PathBuf> = if primary.len() == 1 {
-        Some(primary[0].clone())
-    } else if primary.len() > 1 {
-        let min_depth = primary
-            .iter()
-            .map(|p| depth_from_scope(p, scope))
-            .min()
-            .unwrap_or(0);
-        let shallowest: Vec<&std::path::PathBuf> = primary
-            .iter()
-            .copied()
-            .filter(|p| depth_from_scope(p, scope) == min_depth)
-            .collect();
-        if shallowest.len() == 1 {
-            Some(shallowest[0].clone())
-        } else {
-            None
+    let picked_opt: Option<std::path::PathBuf> = match primary.len().cmp(&1) {
+        std::cmp::Ordering::Equal => Some(primary[0].clone()),
+        std::cmp::Ordering::Greater => {
+            let min_depth = primary
+                .iter()
+                .map(|p| depth_from_scope(p, scope))
+                .min()
+                .unwrap_or(0);
+            let shallowest: Vec<&std::path::PathBuf> = primary
+                .iter()
+                .copied()
+                .filter(|p| depth_from_scope(p, scope) == min_depth)
+                .collect();
+            if shallowest.len() == 1 {
+                Some(shallowest[0].clone())
+            } else {
+                None
+            }
         }
-    } else {
-        None
+        std::cmp::Ordering::Less => None,
     };
 
     if let Some(picked) = picked_opt {
@@ -446,10 +445,10 @@ fn disambiguate_glob_for_section(
     }
 
     // Ambiguous — fail loud with top-5 candidates (prefer primary set).
-    let candidates: Vec<&std::path::PathBuf> = if !primary.is_empty() {
-        primary
-    } else {
+    let candidates: Vec<&std::path::PathBuf> = if primary.is_empty() {
         result.files.iter().take(5).map(|e| &e.path).collect()
+    } else {
+        primary
     };
     let listing = candidates
         .iter()

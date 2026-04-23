@@ -820,14 +820,14 @@ fn is_definition_line(line: &str) -> bool {
 ///
 /// Strategy: case-insensitive `\bquery\b` regex sweep over the same scope used
 /// by the failed search. Collects each distinct **actual spelling** found in
-/// source, with its first location, then ranks by edit_distance(query_lower,
-/// hit_lower). Returns up to `top_n` suggestions.
+/// source, with its first location, then ranks by `edit_distance(query_lower`,
+/// `hit_lower`). Returns up to `top_n` suggestions.
 ///
 /// Cheap because it only fires on the 0-hit path. Uses ripgrep's `\b…\b`
 /// matcher with `(?i)` flag — same engine as `find_usages`.
 /// Normalize an identifier for fuzzy comparison: lowercase + strip underscores.
 /// Lets `searchSymbol` ↔ `search_symbol` ↔ `SearchSymbol` all collapse to
-/// the same canonical string, so a single edit_distance over normalized
+/// the same canonical string, so a single `edit_distance` over normalized
 /// forms covers both naming-convention mismatches and typos uniformly.
 fn normalize_ident(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

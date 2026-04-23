@@ -1,7 +1,7 @@
 {
   "name": "srcwalk",
-  "version": "0.8.5",
-  "description": "Tree-sitter indexed lookups — smart code reading for AI agents",
+  "version": "0.1.0",
+  "description": "Code-intelligence CLI for AI agents — tree-sitter outlines, symbol search, caller/callee graphs, deps, maps",
   "bin": {
     "srcwalk": "run.js"
   },
@@ -17,12 +17,22 @@
     "type": "git",
     "url": "git+https://github.com/sting8k/srcwalk.git"
   },
+  "homepage": "https://github.com/sting8k/srcwalk",
+  "bugs": {
+    "url": "https://github.com/sting8k/srcwalk/issues"
+  },
+  "author": "sting8k",
   "keywords": [
-    "mcp",
+    "code-intelligence",
     "code-search",
     "tree-sitter",
-    "developer-tools",
-    "ai-agents"
+    "ai-agents",
+    "callers",
+    "callees",
+    "developer-tools"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=14"
+  }
 }

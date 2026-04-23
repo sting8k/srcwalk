@@ -1,13 +1,15 @@
 [package]
 name = "srcwalk"
-version = "0.8.5"
+version = "0.1.0"
 edition = "2021"
 description = "Tree-sitter indexed lookups — smart code reading for AI agents"
 license = "MIT"
 repository = "https://github.com/sting8k/srcwalk"
 readme = "README.md"
-keywords = ["code-search", "tree-sitter", "developer-tools"]
+homepage = "https://github.com/sting8k/srcwalk"
+keywords = ["code-search", "tree-sitter", "developer-tools", "ai-agents", "code-intelligence"]
 categories = ["command-line-utilities", "development-tools"]
+authors = ["sting8k"]
 
 [[bin]]
 name = "srcwalk"

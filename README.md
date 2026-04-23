@@ -1,6 +1,8 @@
 # srcwalk
 
-Code-intelligence CLI for AI agents — tree-sitter outlines, symbol search, caller/callee graphs, blast-radius deps, token-aware maps.
+**Agent's code navigator CLI** — instantly outline, search, and trace call graphs across any language. One binary, one skill, zero config.
+
+> Tree-sitter outlines · symbol search · caller/callee graphs · blast-radius deps · token-aware maps
 
 Small files come back whole, large files get a structural outline. Your agent reaches for `srcwalk` instead of `cat` and `grep` — cheap outlines first, drill on demand, never blow the token budget.
 
@@ -15,7 +17,7 @@ Small files come back whole, large files get a structural outline. Your agent re
 - **Deps** — blast-radius: imports and dependents of a file
 - **Map** — token-annotated directory skeleton, respects `.gitignore`
 
-14 languages: Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir.
+15 languages: Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir.
 
 ## Install
 
@@ -176,7 +178,7 @@ src/       (~14.9k tokens)
 
 Bloom-filter pruning + length-sorted memchr + tree-sitter parse cache.
 
-## What changed from upstream
+## Key features
 
 - **Multi-hop caller BFS** (up to 5 hops, hub guard, collision detection)
 - **`--callees` flag** — forward call graph as standalone query

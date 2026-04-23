@@ -148,6 +148,17 @@ Imports (what this file depends on) and dependents (what depends on it). Use bef
 
 ---
 
+## Callees — forward call graph
+
+```bash
+srcwalk <symbol> --callees --scope <dir>
+srcwalk <symbol> --callees --depth N --scope <dir>
+```
+
+What does this function call? Resolved callees show file, line range, signature. Unresolved (stdlib/external) listed separately. `--depth N` for transitive callees (up to 5 hops, cycle-safe).
+
+---
+
 ## Codebase map
 
 ```bash

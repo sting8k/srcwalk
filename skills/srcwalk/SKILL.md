@@ -26,6 +26,7 @@ srcwalk <path>                          # outline if large, full if small
 srcwalk <path> --section 45-89          # exact line range
 srcwalk <path> --section "## Foo"       # markdown heading
 srcwalk <path> --section validateToken  # jump to a symbol's body by name
+srcwalk <path> --section "fn_a,fn_b"   # multiple symbols in one call
 srcwalk <path> --full                   # force full output with line numbers
 srcwalk <path> --budget 2000            # cap response to ~N tokens
 ```
@@ -42,7 +43,7 @@ srcwalk <path> --budget 2000            # cap response to ~N tokens
 | `--full` over `--budget` | Cascades: outline first (label `outline (full requested, over budget)`), then signatures (`signatures (full requested, over budget)`) if outline still over. Not a bug — srcwalk degraded gracefully because the budget was tight. |
 | Pipe mode | Same smart view as TTY (use `--full` for raw bytes) |
 
-On a heading miss, top-5 closest matches are suggested. Outlines are capped at a safe line count — when capped, drill in with `--section <symbol>` or a line range.
+On large files, outlines are capped at a safe line count — when capped, drill in with `--section <symbol>` or a line range.
 
 ---
 
@@ -77,28 +78,6 @@ Symbol search **definitions** use tree-sitter (precise). **Usages** are text-mat
 
 ---
 
-## When something isn't found
-
-srcwalk tries hard to convert misses into actionable suggestions. Trust the suggestion line before reformulating — it saves a round trip.
-
-- **0-hit symbol search** → srcwalk suggests close matches across naming
-  conventions (snake↔camel↔Pascal) and typo distance ≤ 2 (Levenshtein),
-  filtered to source files (no markdown, no JSON, no lockfiles). The
-  suggestion line `> Did you mean: <symbol> (<file>:<line>)` is reliable.
-  Example: query `searchSymbol` → suggests `search_symbol`. Query `readByt`
-  → suggests `readByte, readBytes, readInt`.
-
-- **Concept / multi-word miss** → format is
-  `no matches for "<query>" in <scope>`, followed by the same `> Did you
-  mean:` line when applicable. Treat this as a normal "try this instead",
-  not as an error to retry verbatim.
-
-- **No suggestion at all** → the query is genuinely far from anything
-  indexed. Reformulate (broader scope, partial name, related concept) or
-  fall back to `rg` for a text-level scan.
-
----
-
 ## Bare filename + `--section` auto-pick
 
 `srcwalk config.go --section parseConfig` works even if many `config.go`
@@ -122,8 +101,6 @@ srcwalk <symbol> --callers --scope <dir>
 ```
 
 Structural (tree-sitter), not text-based. Includes type/constructor references (`new Foo()`, `Foo {}`), not just function calls.
-
-**When callers returns 0**, output includes a per-language hint about indirect dispatch (trait objects, interfaces, reflection, callbacks, duck typing). A symbol with zero direct callers is often still in use — check the hint before concluding it's dead code.
 
 ### Multi-hop callers (BFS)
 

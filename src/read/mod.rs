@@ -481,11 +481,20 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
         // Symbol name like "isCustomization" or "handleRequest"
         r
     } else {
+        // Check for comma-separated multi-symbol request
+        if range.contains(',') {
+            return read_multi_symbol_section(path, buf, range);
+        }
+        let suggestions = suggest_symbols(buf, path, range, 3);
+        let reason = if suggestions.is_empty() {
+            "not a valid line range (e.g. \"45-89\"), heading (e.g. \"## Foo\"), or symbol name in this file"
+                .to_string()
+        } else {
+            format!("symbol not found. Closest:\n  {}", suggestions.join("\n  "))
+        };
         return Err(SrcwalkError::InvalidQuery {
             query: range.to_string(),
-            reason:
-                "not a valid line range (e.g. \"45-89\"), heading (e.g. \"## Foo\"), or symbol name in this file"
-                    .to_string(),
+            reason,
         });
     };
 
@@ -552,6 +561,110 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
     let header = format::file_header(path, byte_len, line_count, ViewMode::Section);
     let formatted = format::number_lines(&selected, start as u32);
     Ok(format!("{header}\n\n{formatted}"))
+}
+
+/// Resolve multiple comma-separated symbol names and return their bodies concatenated.
+fn read_multi_symbol_section(path: &Path, buf: &[u8], range: &str) -> Result<String, SrcwalkError> {
+    let symbols: Vec<&str> = range
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if symbols.is_empty() {
+        return Err(SrcwalkError::InvalidQuery {
+            query: range.to_string(),
+            reason: "empty symbol list".to_string(),
+        });
+    }
+
+    let mut blocks: Vec<(usize, usize, String)> = Vec::new(); // (start, end, name)
+    let mut errors: Vec<String> = Vec::new();
+
+    for sym in &symbols {
+        if let Some((start, end)) = resolve_symbol(buf, path, sym) {
+            blocks.push((start, end, sym.to_string()));
+        } else {
+            let suggestions = suggest_symbols(buf, path, sym, 3);
+            if suggestions.is_empty() {
+                errors.push(format!("{sym}: not found"));
+            } else {
+                errors.push(format!(
+                    "{sym}: not found. Closest:\n    {}",
+                    suggestions.join("\n    ")
+                ));
+            }
+        }
+    }
+
+    if !errors.is_empty() && blocks.is_empty() {
+        // All symbols missed — hard error
+        return Err(SrcwalkError::InvalidQuery {
+            query: range.to_string(),
+            reason: format!("symbols not found:\n  {}", errors.join("\n  ")),
+        });
+    }
+
+    // Sort blocks by start line for natural reading order
+    blocks.sort_by_key(|(start, _, _)| *start);
+
+    // Build line offsets
+    let mut line_offsets: Vec<usize> = vec![0];
+    for pos in memchr::memchr_iter(b'\n', buf) {
+        line_offsets.push(pos + 1);
+    }
+    let total = line_offsets.len();
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut total_bytes: u64 = 0;
+    let mut total_lines: u32 = 0;
+
+    for (start, end, _name) in &blocks {
+        let s = (start.saturating_sub(1)).min(total);
+        let e = (*end).min(total);
+        if s >= e {
+            continue;
+        }
+        let start_byte = line_offsets[s];
+        let end_byte = if e < line_offsets.len() {
+            line_offsets[e]
+        } else {
+            buf.len()
+        };
+        let selected = String::from_utf8_lossy(&buf[start_byte..end_byte]);
+        total_bytes += selected.len() as u64;
+        total_lines += (e - s) as u32;
+        parts.push(format::number_lines(&selected, *start as u32));
+    }
+
+    let tok_est = estimate_tokens(total_bytes);
+    let limit = section_token_limit();
+
+    if tok_est > limit {
+        // Over budget — show outline-style summary instead
+        let header = format::file_header(path, total_bytes, total_lines, ViewMode::SectionOutline);
+        let names: Vec<&str> = blocks.iter().map(|(_, _, n)| n.as_str()).collect();
+        return Ok(format!(
+            "{header}\n\n\
+             > {count} symbols ({names}) span ~{tok_est} tokens (limit {limit}).\n\
+             > Drill: `--section <fn-name>` for one at a time.",
+            count = blocks.len(),
+            names = names.join(", "),
+        ));
+    }
+
+    let sym_count = blocks.len();
+    let header = format::file_header(path, total_bytes, total_lines, ViewMode::Section);
+    let header = header.replace("[section]", &format!("[{sym_count} symbols, section]"));
+    let body = parts.join("\n\n");
+
+    if errors.is_empty() {
+        Ok(format!("{header}\n\n{body}"))
+    } else {
+        let missing = errors.join("\n  ");
+        Ok(format!(
+            "{header}\n\n{body}\n\n> Missing symbols:\n>   {missing}"
+        ))
+    }
 }
 
 /// Filter outline entries (and children) to those overlapping [`range_start`, `range_end`].
@@ -623,6 +736,53 @@ fn resolve_symbol(buf: &[u8], path: &Path, symbol: &str) -> Option<(usize, usize
     };
     let entries = lang_get_outline_entries(content, lang);
     find_symbol_in_entries(&entries, symbol)
+}
+
+/// Collect symbol names from outline entries (recursively) with their line ranges,
+/// then rank by prefix match + edit distance, returning top `top_n` suggestions.
+fn suggest_symbols(buf: &[u8], path: &Path, query: &str, top_n: usize) -> Vec<String> {
+    let Ok(content) = std::str::from_utf8(buf) else {
+        return Vec::new();
+    };
+    let FileType::Code(lang) = detect_file_type(path) else {
+        return Vec::new();
+    };
+    let entries = lang_get_outline_entries(content, lang);
+    let mut flat: Vec<(&str, usize, usize)> = Vec::new();
+    collect_symbol_names(&entries, &mut flat);
+
+    let q = query.to_ascii_lowercase();
+    let mut scored: Vec<(usize, &str, usize, usize)> = flat
+        .iter()
+        .map(|&(name, start, end)| {
+            let nl = name.to_ascii_lowercase();
+            // Prefix match gets a big bonus (distance 0 override)
+            let dist = if nl.starts_with(&q) {
+                0
+            } else {
+                edit_distance(&q, &nl)
+            };
+            (dist, name, start, end)
+        })
+        .collect();
+    scored.sort_by_key(|(d, _, _, _)| *d);
+    scored
+        .into_iter()
+        .take(top_n)
+        .map(|(_, name, start, end)| format!("{name} [{start}-{end}]"))
+        .collect()
+}
+
+/// Flatten outline entries into (name, `start_line`, `end_line`) tuples.
+fn collect_symbol_names<'a>(entries: &'a [OutlineEntry], out: &mut Vec<(&'a str, usize, usize)>) {
+    for entry in entries {
+        out.push((
+            &entry.name,
+            entry.start_line as usize,
+            entry.end_line as usize,
+        ));
+        collect_symbol_names(&entry.children, out);
+    }
 }
 
 /// Recursively search for a symbol in outline entries.
@@ -891,6 +1051,185 @@ mod tests {
         assert!(
             !out.contains("exceeded budget"),
             "no cascade note for fitting file"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // --- suggest_symbols tests ---
+
+    #[test]
+    fn suggest_symbols_prefix_match() {
+        let code = b"fn collect_ranges() {}\nfn collect_names() {}\nfn parse_input() {}\n";
+        let path = std::env::temp_dir().join("srcwalk_suggest_prefix.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let suggestions = suggest_symbols(code, &path, "collect", 3);
+        assert!(
+            suggestions.len() >= 2,
+            "expected at least 2 prefix matches: {suggestions:?}"
+        );
+        // Prefix matches should come first (distance 0)
+        assert!(
+            suggestions[0].starts_with("collect_"),
+            "first should be prefix match: {}",
+            suggestions[0]
+        );
+        assert!(
+            suggestions[1].starts_with("collect_"),
+            "second should be prefix match: {}",
+            suggestions[1]
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn suggest_symbols_edit_distance_fallback() {
+        let code = b"fn tag_comment_matches() {}\nfn find_symbol() {}\n";
+        let path = std::env::temp_dir().join("srcwalk_suggest_edit.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let suggestions = suggest_symbols(code, &path, "tag_comment", 3);
+        assert!(!suggestions.is_empty(), "should have suggestions");
+        assert!(
+            suggestions[0].contains("tag_comment_matches"),
+            "closest should be tag_comment_matches: {}",
+            suggestions[0]
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn suggest_symbols_includes_line_ranges() {
+        let code = b"fn alpha() {}\nfn beta() {}\n";
+        let path = std::env::temp_dir().join("srcwalk_suggest_ranges.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let suggestions = suggest_symbols(code, &path, "alph", 3);
+        assert!(!suggestions.is_empty());
+        // Format should be "name [start-end]"
+        assert!(
+            suggestions[0].contains('[') && suggestions[0].contains(']'),
+            "should include line range: {}",
+            suggestions[0]
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn suggest_symbols_empty_for_non_code() {
+        let md = b"# Heading\nSome text\n";
+        let path = std::env::temp_dir().join("srcwalk_suggest_md.md");
+        std::fs::write(&path, md).unwrap();
+
+        let suggestions = suggest_symbols(md, &path, "foo", 3);
+        assert!(
+            suggestions.is_empty(),
+            "non-code file should return empty suggestions"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // --- symbol suggest on miss integration ---
+
+    #[test]
+    fn section_symbol_miss_shows_suggestions() {
+        let code = "fn resolve_heading() {}\nfn resolve_symbol() {}\nfn resolve_range() {}\n";
+        let path = std::env::temp_dir().join("srcwalk_section_miss.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let err = read_section(&path, "resolve_sym", &cache).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("symbol not found. Closest:"),
+            "should show suggestions: {msg}"
+        );
+        assert!(
+            msg.contains("resolve_symbol"),
+            "should suggest resolve_symbol: {msg}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // --- multi-symbol section tests ---
+
+    #[test]
+    fn multi_symbol_section_returns_all_bodies() {
+        let code = "fn aaa() {\n    1\n}\nfn bbb() {\n    2\n}\nfn ccc() {\n    3\n}\n";
+        let path = std::env::temp_dir().join("srcwalk_multi_sym.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_section(&path, "aaa,ccc", &cache).unwrap();
+        assert!(
+            out.contains("2 symbols, section"),
+            "header should show symbol count: {out}"
+        );
+        assert!(out.contains("aaa()"), "should contain aaa body");
+        assert!(out.contains("ccc()"), "should contain ccc body");
+        assert!(!out.contains("bbb()"), "should NOT contain bbb body");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multi_symbol_section_sorted_by_line_order() {
+        let code = "fn first() {\n    1\n}\nfn second() {\n    2\n}\n";
+        let path = std::env::temp_dir().join("srcwalk_multi_order.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        // Request in reverse order
+        let out = read_section(&path, "second,first", &cache).unwrap();
+        let pos_first = out.find("first()").unwrap();
+        let pos_second = out.find("second()").unwrap();
+        assert!(
+            pos_first < pos_second,
+            "should be sorted by line order, not request order"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multi_symbol_section_partial_miss_returns_found() {
+        let code = "fn real_fn() {}\nfn other_fn() {}\n";
+        let path = std::env::temp_dir().join("srcwalk_multi_miss.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_section(&path, "real_fn,nope_fn", &cache).unwrap();
+        assert!(
+            out.contains("real_fn()"),
+            "should contain found symbol: {out}"
+        );
+        assert!(
+            out.contains("Missing symbols"),
+            "should note missing: {out}"
+        );
+        assert!(out.contains("nope_fn"), "should name missing symbol: {out}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multi_symbol_section_all_miss_errors() {
+        let code = "fn real_fn() {}\n";
+        let path = std::env::temp_dir().join("srcwalk_multi_all_miss.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let err = read_section(&path, "zzz_fake,yyy_fake", &cache).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("symbols not found"),
+            "all-miss should error: {msg}"
         );
 
         let _ = std::fs::remove_file(&path);

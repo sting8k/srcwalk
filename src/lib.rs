@@ -183,6 +183,107 @@ pub fn run_deps(
     Ok(search::deps::format_deps(&result, scope, budget_usize))
 }
 
+/// Test/vendor/build directories that we de-prioritize when picking a single
+/// file for a bare-filename + `--section` request.
+const NON_PROD_DIR_SEGMENTS: &[&str] = &[
+    "tests",
+    "test",
+    "spec",
+    "specs",
+    "__tests__",
+    "vendor",
+    "node_modules",
+    "override",
+    "overrides",
+    "fixtures",
+    "examples",
+    "docs",
+    "build",
+    "dist",
+    "target",
+];
+
+fn is_non_prod(path: &Path, scope: &Path) -> bool {
+    let rel = path.strip_prefix(scope).unwrap_or(path);
+    rel.components().any(|c| {
+        c.as_os_str()
+            .to_str()
+            .map(|s| NON_PROD_DIR_SEGMENTS.contains(&s))
+            .unwrap_or(false)
+    })
+}
+
+/// Resolve a glob pattern produced from a bare filename to a single file when
+/// `--section` is supplied. Returns:
+/// - `Some((picked, Some(note)))` when exactly one prod-path candidate exists
+///   and other candidates were skipped.
+/// - `Some((picked, None))` when there's a single match overall.
+/// - Returns an `Err(InvalidQuery)` listing candidates when the choice is
+///   ambiguous (>1 prod paths or >1 total with no prod/non-prod split).
+/// - `Ok(None)` when the glob matched nothing — caller falls back to the
+///   normal Glob handler so existing 0-match UX is preserved.
+fn disambiguate_glob_for_section(
+    pattern: &str,
+    scope: &Path,
+    original_query: &str,
+) -> Result<Option<(std::path::PathBuf, Option<String>)>, TilthError> {
+    let result = search::glob::search(pattern, scope, Some(200), 0)?;
+    if result.files.is_empty() {
+        return Ok(None);
+    }
+
+    let total = result.files.len();
+    if total == 1 {
+        return Ok(Some((result.files[0].path.clone(), None)));
+    }
+
+    let prod: Vec<&std::path::PathBuf> = result
+        .files
+        .iter()
+        .map(|e| &e.path)
+        .filter(|p| !is_non_prod(p, scope))
+        .collect();
+
+    if prod.len() == 1 {
+        let picked = prod[0].clone();
+        let skipped = total - 1;
+        let note = format!(
+            "Resolved '{original_query}' → {} (skipped {skipped} test/override/vendor copies). Pass full path to override.",
+            picked.strip_prefix(scope).unwrap_or(&picked).display()
+        );
+        return Ok(Some((picked, Some(note))));
+    }
+
+    // Ambiguous — fail loud with top-5 candidates.
+    let candidates: Vec<&std::path::PathBuf> = if prod.len() > 1 {
+        prod
+    } else {
+        result.files.iter().take(5).map(|e| &e.path).collect()
+    };
+    let listing = candidates
+        .iter()
+        .take(5)
+        .map(|p| {
+            format!(
+                "  - {}",
+                p.strip_prefix(scope).unwrap_or(p).display()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let more = if candidates.len() > 5 {
+        format!("\n  ... and {} more", candidates.len() - 5)
+    } else {
+        String::new()
+    };
+    Err(TilthError::InvalidQuery {
+        query: original_query.to_string(),
+        reason: format!(
+            "matches {total} files; --section needs exactly one. Candidates:\n{listing}{more}\nPass full path or narrow --scope."
+        ),
+    })
+}
+
 fn run_inner(
     query: &str,
     scope: &Path,
@@ -196,6 +297,27 @@ fn run_inner(
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
     let query_type = classify(query, scope);
+
+    // P1.2 — disambiguate bare-filename + --section.
+    // Glob classification swallows `--section` silently for bare filenames like
+    // `Cart.php`. When section is set, resolve the glob now: pick the prod
+    // candidate if exactly one survives test/vendor filtering, else fail loud.
+    let mut resolution_note: Option<String> = None;
+    let query_type = if section.is_some() {
+        if let QueryType::Glob(pattern) = &query_type {
+            match disambiguate_glob_for_section(pattern, scope, query)? {
+                Some((picked, note)) => {
+                    resolution_note = note;
+                    QueryType::FilePath(picked)
+                }
+                None => query_type,
+            }
+        } else {
+            query_type
+        }
+    } else {
+        query_type
+    };
 
     let use_expanded =
         expand > 0 && !matches!(query_type, QueryType::FilePath(_) | QueryType::Glob(_));
@@ -268,10 +390,14 @@ fn run_inner(
         _ => run_query_basic(&query_type, scope, cache, limit, offset, glob)?,
     };
 
-    match budget_tokens {
-        Some(b) => Ok(budget::apply(&output, b)),
-        None => Ok(output),
-    }
+    let final_out = match budget_tokens {
+        Some(b) => budget::apply(&output, b),
+        None => output,
+    };
+    Ok(match resolution_note {
+        Some(note) => format!("{note}\n\n{final_out}"),
+        None => final_out,
+    })
 }
 
 /// Dispatch search queries in expanded mode (inline source for top N matches).

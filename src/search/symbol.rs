@@ -814,6 +814,118 @@ fn is_definition_line(line: &str) -> bool {
         || trimmed.starts_with("func ")
 }
 
+/// Find spelling-similar symbols for a query that produced 0 hits.
+///
+/// Strategy: case-insensitive `\bquery\b` regex sweep over the same scope used
+/// by the failed search. Collects each distinct **actual spelling** found in
+/// source, with its first location, then ranks by edit_distance(query_lower,
+/// hit_lower). Returns up to `top_n` suggestions.
+///
+/// Cheap because it only fires on the 0-hit path. Uses ripgrep's `\b…\b`
+/// matcher with `(?i)` flag — same engine as `find_usages`.
+pub fn suggest(
+    query: &str,
+    scope: &Path,
+    glob: Option<&str>,
+    top_n: usize,
+) -> Vec<(String, std::path::PathBuf, u32)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let pat = format!(r"(?i)\b{}\b", regex_syntax::escape(query));
+    let Ok(matcher) = RegexMatcher::new(&pat) else {
+        return Vec::new();
+    };
+    let Ok(walker) = super::walker(scope, glob) else {
+        return Vec::new();
+    };
+
+    // (spelling -> (path, line))
+    let hits: Mutex<std::collections::HashMap<String, (std::path::PathBuf, u32)>> =
+        Mutex::new(std::collections::HashMap::new());
+
+    walker.run(|| {
+        let hits = &hits;
+        let matcher = matcher.clone();
+        let q_len = query.len();
+        Box::new(move |entry| {
+            let Ok(entry) = entry else {
+                return ignore::WalkState::Continue;
+            };
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                return ignore::WalkState::Continue;
+            }
+            let path = entry.path();
+            if let Ok(meta) = std::fs::metadata(path) {
+                if meta.len() > 500_000 {
+                    return ignore::WalkState::Continue;
+                }
+            }
+            let mut local: Vec<(String, u32)> = Vec::new();
+            let mut searcher = Searcher::new();
+            let _ = searcher.search_path(
+                &matcher,
+                path,
+                UTF8(|line_num, line| {
+                    // Extract the actual matched word(s) — re-scan line for
+                    // word-boundary substrings of length close to q_len.
+                    for (start, ch) in line.char_indices() {
+                        if !ch.is_ascii_alphanumeric() && ch != '_' {
+                            continue;
+                        }
+                        // Word start
+                        if start > 0 {
+                            let prev = line.as_bytes()[start - 1];
+                            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                                continue;
+                            }
+                        }
+                        let rest = &line[start..];
+                        let end = rest
+                            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                            .unwrap_or(rest.len());
+                        let word = &rest[..end];
+                        // Filter: roughly same length (±50%) and case-insensitive equal first letter
+                        if word.len() < q_len.saturating_sub(2)
+                            || word.len() > q_len + 4
+                        {
+                            continue;
+                        }
+                        if word.eq_ignore_ascii_case(query) {
+                            local.push((word.to_string(), line_num as u32));
+                        }
+                    }
+                    Ok(true)
+                }),
+            );
+            if !local.is_empty() {
+                let mut h = hits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                for (spelling, line) in local {
+                    h.entry(spelling)
+                        .or_insert_with(|| (path.to_path_buf(), line));
+                }
+            }
+            ignore::WalkState::Continue
+        })
+    });
+
+    let q_lower = query.to_ascii_lowercase();
+    let mut all: Vec<(String, std::path::PathBuf, u32)> = hits
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .into_iter()
+        .filter(|(s, _)| s != query) // exclude exact-spelling (would have hit)
+        .map(|(s, (p, l))| (s, p, l))
+        .collect();
+    all.sort_by(|a, b| {
+        let da = crate::read::edit_distance(&q_lower, &a.0.to_ascii_lowercase());
+        let db = crate::read::edit_distance(&q_lower, &b.0.to_ascii_lowercase());
+        da.cmp(&db).then_with(|| a.0.cmp(&b.0))
+    });
+    all.truncate(top_n);
+    all
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1045,5 +1157,28 @@ end
             !elixir_find(code, "Inner").is_empty(),
             "should find nested 'Inner' module"
         );
+    }
+
+    #[test]
+    fn suggest_finds_case_variant() {
+        let dir = std::env::temp_dir().join(format!("tilth_p13_suggest_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("foo.rs");
+        std::fs::write(
+            &path,
+            "pub fn orderExists() -> bool { true }\nfn other() {}\n",
+        )
+        .unwrap();
+
+        let hits = suggest("OrderExists", &dir, None, 3);
+        assert!(
+            hits.iter().any(|(s, _, _)| s == "orderExists"),
+            "expected case-variant suggestion, got: {hits:?}"
+        );
+
+        let no_match = suggest("CompletelyUnrelatedXyz", &dir, None, 3);
+        assert!(no_match.is_empty(), "no fuzzy hit expected, got: {no_match:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -614,7 +614,7 @@ fn suggest_similar(path: &Path) -> Option<String> {
 }
 
 /// Simple Levenshtein distance — only used on short file names.
-fn edit_distance(a: &str, b: &str) -> usize {
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     let a = a.as_bytes();
     let b = b.as_bytes();
     let mut prev: Vec<usize> = (0..=b.len()).collect();

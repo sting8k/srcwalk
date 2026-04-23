@@ -28,6 +28,35 @@ use crate::types::{estimate_tokens, FileType, Match, SearchResult};
 use self::io::{file_metadata, parse_pattern, read_file_bytes, walker};
 use self::pagination::paginate;
 
+/// Append a `> Did you mean: …` line when a symbol search returned 0 hits and
+/// at least one spelling-similar symbol exists in scope.
+fn append_did_you_mean(out: &mut String, result: &SearchResult, scope: &Path, glob: Option<&str>) {
+    if !result.matches.is_empty() {
+        return;
+    }
+    let suggestions = symbol::suggest(&result.query, scope, glob, 3);
+    if suggestions.is_empty() {
+        return;
+    }
+    let _ = write!(out, "\n\n> Did you mean: ");
+    for (i, (spelling, path, line)) in suggestions.iter().enumerate() {
+        if i > 0 {
+            let _ = write!(out, ", ");
+        }
+        let rel_path = rel(path, scope);
+        let display = if rel_path.is_empty() {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string()
+        } else {
+            rel_path
+        };
+        let _ = write!(out, "{spelling} ({display}:{line})");
+    }
+    out.push('?');
+}
+
 const EXPAND_FULL_FILE_THRESHOLD: u64 = 800;
 
 pub fn search_symbol(
@@ -41,7 +70,9 @@ pub fn search_symbol(
     let mut result = symbol::search(query, scope, Some(cache), None, glob)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result(&result, cache, None, &bloom, 0)
+    let mut out = format_search_result(&result, cache, None, &bloom, 0)?;
+    append_did_you_mean(&mut out, &result, scope, glob);
+    Ok(out)
 }
 
 pub fn search_symbol_expanded(
@@ -61,7 +92,9 @@ pub fn search_symbol_expanded(
 
     let mut result = symbol::search(query, scope, Some(cache), context, glob)?;
     paginate(&mut result, limit, offset);
-    format_search_result(&result, cache, Some(session), bloom, expand)
+    let mut out = format_search_result(&result, cache, Some(session), bloom, expand)?;
+    append_did_you_mean(&mut out, &result, scope, glob);
+    Ok(out)
 }
 
 pub fn search_multi_symbol_expanded(
@@ -122,6 +155,7 @@ pub fn search_multi_symbol_expanded(
                 "\n\n... and {omitted} more matches. Narrow with scope."
             );
         }
+        append_did_you_mean(&mut out, &result, scope, glob);
         sections.push(out);
     }
     Ok(sections.join("\n\n---\n"))

@@ -4,6 +4,8 @@ A personal fork of [tilth](https://github.com/jahala/tilth) — code-intelligenc
 
 Same core idea as upstream (small files come back whole, large files get a structural outline), with extra polish around: **multi-hop caller graphs (BFS)**, output economy under token budgets, search ergonomics when the agent guesses the symbol name wrong, and a CLI-only surface that drops protocol cruft (no MCP, no edit mode, no diff subcommand).
 
+> Your agent will **love** reaching for this — cheap outlines first, drill on demand, never blow the token budget. Drop the skill in once and watch it quietly prefer `tilth` over `cat` and `grep`. 😼
+
 ## Why this fork
 
 Driven by real agent sessions across 8 cross-language codebases (Rust, TypeScript, Python, Go, PHP, Java, C#) plus a side-by-side audit experiment.

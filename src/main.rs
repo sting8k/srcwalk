@@ -100,7 +100,26 @@ enum Command {
     Overview,
 }
 
+/// Reset SIGPIPE to the OS default on Unix.
+///
+/// Rust's stdlib masks SIGPIPE to SIG_IGN at startup, which turns broken-pipe
+/// into an `EPIPE` error that `println!` converts into a panic. For a CLI that
+/// is routinely piped into `head`, `less`, or a truncating UI, that's the wrong
+/// default: we want the process to exit silently like every other Unix tool.
+#[cfg(unix)]
+fn reset_sigpipe() {
+    // SAFETY: setting a signal disposition is a standard, thread-safe operation
+    // before any threads are spawned.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
+
 fn main() {
+    reset_sigpipe();
     configure_thread_pools();
     let cli = Cli::parse();
 

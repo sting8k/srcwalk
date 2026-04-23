@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "tilth"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "aho-corasick",
  "clap",
@@ -719,6 +719,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "libc",
  "memchr",
  "memmap2",
  "mimalloc",

@@ -30,8 +30,13 @@ struct Cli {
     section: Option<String>,
 
     /// Max tokens in response. Reduces detail to fit.
+    /// Default: 5000 when piped (non-TTY). Unlimited for interactive TTY.
     #[arg(long)]
     budget: Option<u64>,
+
+    /// Disable default budget cap (for piped/scripted usage).
+    #[arg(long)]
+    no_budget: bool,
 
     /// Force full output (override smart view).
     #[arg(long)]
@@ -151,11 +156,23 @@ fn main() {
 
     let is_tty = io::stdout().is_terminal();
 
+    // Effective budget: explicit --budget wins, --no-budget disables,
+    // otherwise default 5000 tokens for piped (non-TTY) output.
+    let effective_budget = if cli.no_budget {
+        None
+    } else if cli.budget.is_some() {
+        cli.budget
+    } else if !is_tty {
+        Some(5_000)
+    } else {
+        None
+    };
+
     // Map mode
     if cli.map {
         let cache = srcwalk::cache::OutlineCache::new();
         let scope = cli.scope.canonicalize().unwrap_or(cli.scope);
-        let output = srcwalk::map::generate(&scope, 3, cli.budget, &cache);
+        let output = srcwalk::map::generate(&scope, 3, effective_budget, &cache);
         emit_output(&output, is_tty);
         return;
     }
@@ -192,7 +209,7 @@ fn main() {
             &query,
             &scope,
             expand,
-            cli.budget,
+            effective_budget,
             effective_limit,
             cli.offset,
             cli.glob.as_deref(),
@@ -220,7 +237,7 @@ fn main() {
 
     // Callees mode
     if cli.callees {
-        let result = srcwalk::run_callees(&query, &scope, cli.budget, &cache, cli.depth);
+        let result = srcwalk::run_callees(&query, &scope, effective_budget, &cache, cli.depth);
         emit_result(result, &query, cli.json, is_tty);
         return;
     }
@@ -242,7 +259,7 @@ fn main() {
                 }
             }
         };
-        let result = srcwalk::run_deps(&path, &scope, cli.budget, &cache);
+        let result = srcwalk::run_deps(&path, &scope, effective_budget, &cache);
         emit_result(result, &query, cli.json, is_tty);
         return;
     }
@@ -252,7 +269,7 @@ fn main() {
             &query,
             &scope,
             cli.section.as_deref(),
-            cli.budget,
+            effective_budget,
             full,
             expand,
             effective_limit,
@@ -265,7 +282,7 @@ fn main() {
             &query,
             &scope,
             cli.section.as_deref(),
-            cli.budget,
+            effective_budget,
             effective_limit,
             cli.offset,
             cli.glob.as_deref(),
@@ -276,7 +293,7 @@ fn main() {
             &query,
             &scope,
             cli.section.as_deref(),
-            cli.budget,
+            effective_budget,
             effective_limit,
             cli.offset,
             cli.glob.as_deref(),

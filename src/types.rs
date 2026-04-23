@@ -71,6 +71,8 @@ pub enum ViewMode {
     #[allow(dead_code)]
     Error,
     Section,
+    /// Outline of a section that exceeded the section token threshold.
+    SectionOutline,
 }
 
 impl std::fmt::Display for ViewMode {
@@ -87,6 +89,7 @@ impl std::fmt::Display for ViewMode {
             Self::Binary => write!(f, "skipped"),
             Self::Error => write!(f, "error"),
             Self::Section => write!(f, "section"),
+            Self::SectionOutline => write!(f, "section, outline (over limit)"),
         }
     }
 }

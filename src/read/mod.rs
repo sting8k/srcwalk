@@ -10,11 +10,20 @@ use crate::cache::OutlineCache;
 use crate::error::TilthError;
 use crate::format;
 use crate::lang::detect_file_type;
-use crate::lang::outline::get_outline_entries;
+use crate::lang::outline::get_outline_entries as lang_get_outline_entries;
 use crate::types::{estimate_tokens, FileType, OutlineEntry, ViewMode};
 
 pub(crate) const TOKEN_THRESHOLD: u64 = 6_000;
 const FILE_SIZE_CAP: u64 = 500_000; // 500KB
+
+/// Sections exceeding this token count are degraded to an outline of the range.
+/// Override with `TILTH_SECTION_SOFT_LIMIT` env var.
+fn section_token_limit() -> u64 {
+    std::env::var("TILTH_SECTION_SOFT_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5_000)
+}
 
 /// Max file size for `full=true` reads. Files above this threshold get a
 /// warning header + outline instead of raw content, preventing multi-megabyte
@@ -69,7 +78,7 @@ pub fn read_file(
 
     // Section param → return those lines verbatim, any size
     if let Some(range) = section {
-        return read_section(path, range);
+        return read_section(path, range, cache);
     }
 
     // Binary detection
@@ -437,7 +446,7 @@ fn suggest_headings(buf: &[u8], query: &str, top_n: usize) -> Vec<String> {
 /// Read a specific line range from a file.
 /// Uses memchr to find the Nth newline offset and slice the mmap buffer directly
 /// instead of collecting all lines into a Vec.
-fn read_section(path: &Path, range: &str) -> Result<String, TilthError> {
+fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<String, TilthError> {
     let file = fs::File::open(path).map_err(|e| TilthError::IoError {
         path: path.to_path_buf(),
         source: e,
@@ -508,9 +517,93 @@ fn read_section(path: &Path, range: &str) -> Result<String, TilthError> {
     let selected = String::from_utf8_lossy(&buf[start_byte..end_byte]);
     let byte_len = selected.len() as u64;
     let line_count = (e - s) as u32;
+    let tok_est = estimate_tokens(byte_len);
+    let limit = section_token_limit();
+
+    if tok_est > limit {
+        // Degrade: render outline entries within the section range
+        let file_type = detect_file_type(path);
+        let content = String::from_utf8_lossy(buf);
+        let header = format::file_header(path, byte_len, line_count, ViewMode::SectionOutline);
+
+        let start32 = start as u32;
+        let end32 = end as u32;
+
+        if let crate::types::FileType::Code(lang) = file_type {
+            let entries = lang_get_outline_entries(&content, lang);
+            let filtered = filter_entries_in_range(&entries, start32, end32);
+            if !filtered.is_empty() {
+                let body = format_section_outline(&filtered);
+                return Ok(format!(
+                    "{header}\n\n{body}\n\n\
+                     > Section spans ~{tok_est} tokens (limit {limit}). Showing outline of {start}-{end}.\n\
+                     > Drill: `--section <fn-name>` for a specific symbol."
+                ));
+            }
+        }
+
+        // Fallback: no structured outline available — return header + advice only
+        return Ok(format!(
+            "{header}\n\n\
+             > Section spans ~{tok_est} tokens (limit {limit}).\n\
+             > Drill: `--section <fn-name>` for a specific symbol, or use a narrower line range."
+        ));
+    }
+
     let header = format::file_header(path, byte_len, line_count, ViewMode::Section);
     let formatted = format::number_lines(&selected, start as u32);
     Ok(format!("{header}\n\n{formatted}"))
+}
+
+/// Filter outline entries (and children) to those overlapping [range_start, range_end].
+fn filter_entries_in_range(
+    entries: &[OutlineEntry],
+    range_start: u32,
+    range_end: u32,
+) -> Vec<&OutlineEntry> {
+    let mut out = Vec::new();
+    for e in entries {
+        // For container entries (class/struct) that span beyond the range,
+        // skip the parent — we'll include matching children directly.
+        if !e.children.is_empty()
+            && (e.start_line < range_start || e.end_line > range_end)
+        {
+            // Recurse into children
+            for c in &e.children {
+                if c.start_line <= range_end && c.end_line >= range_start {
+                    out.push(c);
+                }
+            }
+        } else if e.start_line <= range_end && e.end_line >= range_start {
+            out.push(e);
+        }
+    }
+    out
+}
+
+/// Format filtered outline entries for section degrade output.
+fn format_section_outline(entries: &[&OutlineEntry]) -> String {
+    let mut lines = Vec::new();
+    for e in entries {
+        let range = if e.start_line == e.end_line {
+            format!("[{}]", e.start_line)
+        } else {
+            format!("[{}-{}]", e.start_line, e.end_line)
+        };
+        let sig = e.signature.as_deref().unwrap_or(&e.name);
+        lines.push(format!("  {range:>14}    {sig}"));
+        // Show children in range
+        for c in &e.children {
+            let cr = if c.start_line == c.end_line {
+                format!("[{}]", c.start_line)
+            } else {
+                format!("[{}-{}]", c.start_line, c.end_line)
+            };
+            let csig = c.signature.as_deref().unwrap_or(&c.name);
+            lines.push(format!("    {cr:>12}    {csig}"));
+        }
+    }
+    lines.join("\n")
 }
 
 /// Parse "45-89" into (45, 89). 1-indexed.
@@ -531,7 +624,7 @@ fn resolve_symbol(buf: &[u8], path: &Path, symbol: &str) -> Option<(usize, usize
     let FileType::Code(lang) = detect_file_type(path) else {
         return None;
     };
-    let entries = get_outline_entries(content, lang);
+    let entries = lang_get_outline_entries(content, lang);
     find_symbol_in_entries(&entries, symbol)
 }
 

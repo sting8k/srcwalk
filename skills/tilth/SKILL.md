@@ -1,6 +1,6 @@
 ---
 name: tilth
-description: "Code-intelligence CLI — structural outlines, symbol definitions, callers (incl. multi-hop BFS), blast-radius deps, token-aware codebase maps. Use when the answer depends on code structure. For plain text search, reading small files, or listing paths, use ripgrep / cat / fd."
+description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'tilth' or 'outline'. Prefer this over cat/grep/find for any code-structure question. For plain text search, reading small files whose path you already know, or listing paths to pipe, use ripgrep / cat / fd directly."
 ---
 
 # Tilth — Code Intelligence CLI
@@ -39,7 +39,8 @@ tilth <path> --budget 2000            # cap response to ~N tokens
 | Generated (lockfiles, `.min.js`) | `[generated]` |
 | < ~6000 tokens | Full content, line-numbered |
 | > ~6000 tokens | Structural outline with line ranges |
-| `--full` over cap | Progressive: header + first 200 numbered lines + outline + continuation hint |
+| `--full` over `--budget` | Cascades: outline first (label `outline (full requested, over budget)`), then signatures (`signatures (full requested, over budget)`) if outline still over. Not a bug — tilth degraded gracefully because the budget was tight. |
+| Pipe mode | Same smart view as TTY (use `--full` for raw bytes) |
 
 On a heading miss, top-5 closest matches are suggested. Outlines are capped at a safe line count — when capped, drill in with `--section <symbol>` or a line range.
 
@@ -63,6 +64,44 @@ Every definition hit reports its **line range** (e.g. `[38-690]` vs `[9-16]`). U
 - Pick the real implementation vs a generated stub in a partial/split class (C#, Kotlin) — the tiny range is usually the stub.
 - Tell overloads apart at a glance without opening each file.
 - Rank where to drill first when a symbol has many definitions.
+
+---
+
+## When something isn't found
+
+tilth tries hard to convert misses into actionable suggestions. Trust the suggestion line before reformulating — it saves a round trip.
+
+- **0-hit symbol search** → tilth suggests close matches across naming
+  conventions (snake↔camel↔Pascal) and typo distance ≤ 2 (Levenshtein),
+  filtered to source files (no markdown, no JSON, no lockfiles). The
+  suggestion line `> Did you mean: <symbol> (<file>:<line>)` is reliable.
+  Example: query `searchSymbol` → suggests `search_symbol`. Query `readByt`
+  → suggests `readByte, readBytes, readInt`.
+
+- **Concept / multi-word miss** → format is
+  `no matches for "<query>" in <scope>`, followed by the same `> Did you
+  mean:` line when applicable. Treat this as a normal "try this instead",
+  not as an error to retry verbatim.
+
+- **No suggestion at all** → the query is genuinely far from anything
+  indexed. Reformulate (broader scope, partial name, related concept) or
+  fall back to `rg` for a text-level scan.
+
+---
+
+## Bare filename + `--section` auto-pick
+
+`tilth config.go --section parseConfig` works even if many `config.go`
+files exist in scope. tilth picks the **primary** copy automatically:
+
+- Files matched by `.gitignore` / `.ignore` / git excludes (test fixtures,
+  vendor copies, generated mirrors) are dropped first.
+- Among the rest, the file with the shallowest directory depth wins.
+- The output sidebar lists what was skipped — usually safe to ignore, but
+  scan it once if you suspect you wanted a vendored copy.
+
+If the result still looks wrong (e.g. monorepo with multiple legitimate
+`config.go`), pass an unambiguous path: `tilth pkg/foo/config.go --section ...`.
 
 ---
 
@@ -117,6 +156,10 @@ tilth --map --scope <dir>
 
 Structural skeleton. **Every directory is annotated with cumulative tokens of its descendants** (`src/ (~14.9k tokens)`, `.pi-lens/ (~175.9k tokens)`). See scale before choosing what to read. Auto k/M formatting.
 
+`--map` respects `.gitignore`, `.ignore`, and git excludes — token totals
+reflect what you would actually have to read, not the unfiltered tree on
+disk. A header note calls out when ignores are active.
+
 ---
 
 ## Pagination
@@ -132,32 +175,20 @@ Output ends with `Next page: --offset N --limit M.` or `(end of results)`. No si
 
 ---
 
-## Workflow patterns
+## Workflow: understanding a new codebase
 
-### Understanding a new codebase
-1. `tilth --map --scope .` — skeleton + directory token scale; skip huge subtrees
-2. `tilth <key-file>` — outline the interesting files
-3. `tilth <file> --section <range-or-symbol>` — drill into specific parts
+A common pattern that compounds these features:
 
-### Finding where a symbol lives
-1. `tilth <symbol> --scope .` — definitions first, usages after
-2. Follow the `── calls ──` footer to trace call chains
-3. If you need all call sites: `tilth <symbol> --callers --scope .`
+1. `tilth --map --scope .` — skeleton + directory token scale; skip huge subtrees that the gitignore-aware totals confirm are noise (build outputs, vendored deps).
+2. `tilth <key-file>` — outline the interesting files.
+3. `tilth <symbol> --scope .` — find definitions; follow the `── calls ──` footer instead of re-searching.
+4. `tilth <file> --section <range-or-symbol>` — drill into specific parts.
+5. `tilth <symbol> --callers --depth 2 --json` when you need transitive call sites.
 
-### Tracing impact before a change
-1. `tilth <file> --deps` — see dependents
-2. For each dependent: `tilth <dep> --section <symbol>` to check actual usage
-
-### Tracing transitive callers (who ultimately triggers this?)
-1. Start shallow: `tilth <symbol> --callers --depth 2 --json`
-2. Check `stats.suspicious_hops` — if present, qualify the target or filter by `call_text`
-3. Read `call_text` on each edge to disambiguate overloaded callees (`errors.New` vs `pool.New`)
-4. Check `elided` for truncation signals; raise `--max-edges` / `--max-frontier` only when justified
+Other tasks (impact analysis, dead-code check, etc.) compose the same primitives.
 
 ---
 
 ## Supported languages (tree-sitter)
 
-Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift.
-
-Unsupported languages still work for file reading — you just won't get structural outlines or definition detection.
+Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift. Unsupported languages still work for file reading — you just won't get structural outlines or definition detection.

@@ -1,111 +1,126 @@
 # another-tilth
 
-A personal fork of [tilth](https://github.com/jahala/tilth) — smart code reading for LLM agents — tuned for heavier real-world workflows. Same core idea (small files come back whole, large files get an outline), with extra polish around pagination, output economy, and search ergonomics.
+A personal fork of [tilth](https://github.com/jahala/tilth) — code-intelligence CLI for AI agents — tuned for heavier real-world workflows.
 
-Upstream cuts cost-per-correct-answer by ~40% on benchmark runs. This fork keeps that and adds the bits I personally hit friction with every day.
+Same core idea as upstream (small files come back whole, large files get a structural outline), with extra polish around: **multi-hop caller graphs (BFS)**, output economy under token budgets, search ergonomics when the agent guesses the symbol name wrong, and a CLI-only surface that drops protocol cruft (no MCP, no edit mode, no diff subcommand).
 
-## Features
+## Why this fork
 
-Inherits everything from upstream tilth (tree-sitter outlines, structural search, callers), plus:
+Driven by real agent sessions across 8 cross-language codebases (Rust, TypeScript, Python, Go, PHP, Java, C#) plus a side-by-side audit experiment.
 
-- **Stable pagination** on every list result — `--limit` / `--offset` for glob, symbol, callers, callees, deps. No silent caps; soft warning at 100k matches.
-- **Directory token rollups** in `--map` so you see scale before you read.
-- **Content previews** in glob results — filename, token estimate, and a one-line summary.
-- **Progressive read** for oversized `--full` — header + first 200 numbered lines + outline + continuation hint.
-- **Line numbers** in full mode by default.
-- **Smart view in pipe mode** — `tilth file.rs | …` returns the outline, not raw bytes (use `--full` for raw).
-- **`--section <symbol>`** to jump straight to a symbol body, alongside line ranges and headings.
-- **Fuzzy heading suggestions** when `--section "## Foo"` misses.
-- **Indirect-call hint** when `--callers` returns 0 — explains trait objects, interfaces, reflection, callbacks per language family.
-- **Type/constructor refs** counted as callers (`new Foo()`, `Foo {}`).
-- **Multi-hop callers (BFS)** — `--callers --depth N` traces up to 5 hops, with hub guard (`--skip-hubs`, auto-promotion), hard edge cap (`--max-edges`), per-hop frontier cap (`--max-frontier`), deterministic output, per-hop stats, and `--json` edge-list for agents.
-- **Cross-package collision warning** — BFS flags hops likely polluted by name collisions (e.g. `New` matching `errors.New` across unrelated packages). Emitted in text banner and `stats.suspicious_hops` in JSON.
-- **Call-site source on every edge** — BFS edges carry the actual call-site line (`→ errors.New("timeout")` not just `→ New`), so agents can disambiguate without extra lookups.
-- **Outline omission indicator** when the view is capped.
-- **Faster engine** — mmap walkers, Aho-Corasick multi-symbol search, parse cache, mimalloc, minified-file skip.
-- **CLI-only** — MCP server / hashline edit mode removed (MTGA: code-intel ergonomics over protocol surface). Agents call the binary via shell.
+**Same agent, same prompt, same conclusion — a breadth-first code review on a large codebase, with vs without tilth:**
 
-See [PR #64](https://github.com/jahala/tilth/pull/64) for the full rationale and before/after examples.
+| | tilth-on | bash-only |
+|---|---|---|
+| Tool-result bytes consumed | **198 KB** | 230 KB (−14%) |
+| Avg tool-result size | **3.2 KB** | 4.3 KB (−26%) |
+| Files surveyed in adjacent surface the agent found on its own | **8** | 0 |
+| Findings reported | 1 | 1 |
 
-## Installation
+Same answer, less context burned, and the tilth-on run swept a whole adjacent surface that bash-only missed entirely. Headline numbers are modest; the real win is **fewer false-negatives on breadth-first work** because outlines are cheap enough that the agent looks around.
 
-### Pre-built binary (recommended)
+What that pressure-tested into the fork:
 
-Links below always resolve to the latest release.
+- A real **multi-hop caller graph** (BFS), not just one-hop callers — agents stop looping `tilth caller-of-caller-of-…` manually.
+- Cascade behaviour for `--full` over `--budget` so big files degrade gracefully (`outline → signatures`) with explicit labels — no silent truncation.
+- Search that **routes around dead ends**: cross-naming-convention + typo-tolerant Did-you-mean, bare-filename `--section` auto-pick (gitignore + depth-ranked), filename suggestions on concept-search misses.
+- Map / glob that respect `.gitignore` so token totals reflect what you'd actually have to read, not what's on disk.
+- A leaner CLI surface — MCP server, edit mode, hashline-edit, `tilth diff`, `tilth install`, `--files`, content-search dispatch all removed (overlap with `rg`/`fd`/native edit tools).
+- Performance pass: mmap walkers, Aho-Corasick + length-sorted memchr, tree-sitter parse cache, rayon-parallel multi-symbol search, mimalloc, minified-file skip.
+- Elixir language support.
 
-**macOS (Apple Silicon)**
+Most of this lives in [PR #64](https://github.com/jahala/tilth/pull/64) upstream (rationale + before/after).
 
-```sh
-curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-aarch64-apple-darwin.tar.gz \
-  | tar xz -C /usr/local/bin
+## Headline feature: multi-hop caller BFS
+
+Trace callers transitively (up to 5 hops) in one call. Hub guard, deterministic edge cap, per-edge call-site source, and a cross-package collision warning — designed so the agent can trust deep hops or know exactly when not to.
+
+```
+$ tilth NewClient --callers --depth 3 --json
+{
+  "edges": [
+    { "hop": 1, "from": "newDefaultClient", "from_file": "client/factory.go", "from_line": 42,
+      "to": "NewClient", "call_text": "return NewClient(opts)" },
+    { "hop": 2, "from": "Bootstrap",         "from_file": "cmd/server/main.go",  "from_line": 88,
+      "to": "newDefaultClient", "call_text": "c, err := newDefaultClient(cfg)" },
+    { "hop": 3, "from": "main",              "from_file": "cmd/server/main.go",  "from_line": 17,
+      "to": "Bootstrap",        "call_text": "if err := Bootstrap(ctx); err != nil {" }
+  ],
+  "stats": { "edges_per_hop": [4, 7, 3], "suspicious_hops": [] },
+  "elided": { "auto_hubs_promoted": ["Error"], "edges_truncated": 0 },
+  "depth_reached": 3,
+  "elapsed_ms": 41
+}
 ```
 
-**macOS (Intel)**
+`call_text` is the actual call-site line, so overloaded names disambiguate themselves. `suspicious_hops` flags cross-package name collisions. `auto_hubs_promoted` tells you which symbols got fan-out-capped so the graph stays readable.
+
+Skill prompt teaches agents how to read this; flags / syntax live in [`skills/tilth/SKILL.md`](./skills/tilth/SKILL.md).
+
+## Install
+
+**Binary** — pick one:
 
 ```sh
-curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-x86_64-apple-darwin.tar.gz \
-  | tar xz -C /usr/local/bin
-```
-
-**Linux (x86_64, static musl)**
-
-```sh
-curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-x86_64-unknown-linux-musl.tar.gz \
-  | tar xz -C ~/.local/bin
-```
-
-**Linux (aarch64, static musl)**
-
-```sh
-curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-aarch64-unknown-linux-musl.tar.gz \
-  | tar xz -C ~/.local/bin
-```
-
-**Windows** — download `tilth-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/sting8k/tilth/releases/latest) and unzip.
-
-Verify build provenance (optional):
-
-```sh
-gh attestation verify tilth-<target>.tar.gz --owner sting8k
-```
-
-### From source (Cargo)
-
-Always latest (tracks `another-tilth` branch):
-
-```sh
+# Cargo (latest from this branch)
 cargo install --git https://github.com/sting8k/tilth --branch another-tilth --locked tilth
-```
 
-Pin to a specific release:
-
-```sh
-cargo install --git https://github.com/sting8k/tilth --tag v0.7.0 --locked tilth
-```
-
-### Upstream tilth
-
-```sh
+# Upstream tilth (no fork extras)
 cargo install tilth
 ```
 
-## Agent skill
+<details>
+<summary>Pre-built binaries (macOS / Linux / Windows)</summary>
 
-For agents (Claude Code, Cursor, pi, cowork, codex, droid, etc.), a ready-to-load skill prompt lives at [`skills/SKILL.md`](./skills/SKILL.md). Drop it into your agent's skills directory and the agent will reach for tilth instead of `cat`/`grep`/`find` on code reads, with the right flags for pagination, outlines, callers, deps, and progressive reads already wired in.
+```sh
+# macOS Apple Silicon
+curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-aarch64-apple-darwin.tar.gz | tar xz -C /usr/local/bin
 
-Most agents follow the same convention — a `<skill-name>/SKILL.md` file under a global skills directory. Install once globally:
+# macOS Intel
+curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-x86_64-apple-darwin.tar.gz | tar xz -C /usr/local/bin
+
+# Linux x86_64 (static musl)
+curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-x86_64-unknown-linux-musl.tar.gz | tar xz -C ~/.local/bin
+
+# Linux aarch64 (static musl)
+curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-aarch64-unknown-linux-musl.tar.gz | tar xz -C ~/.local/bin
+```
+
+Windows: download `tilth-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/sting8k/tilth/releases/latest) and unzip.
+
+Verify build provenance: `gh attestation verify tilth-<target>.tar.gz --owner sting8k`. Pin to a tagged release with `--tag v0.8.1` instead of `--branch …`.
+
+</details>
+
+**Agent skill** — teaches your coding agent the command vocabulary, when to fall back to `rg`/`cat`/`fd`, how to read Did-you-mean / cascade labels / BFS edge JSON. Ships at [`skills/tilth/SKILL.md`](./skills/tilth/SKILL.md).
+
+```sh
+npx skills add sting8k/tilth
+```
+
+Works with Claude Code, Cursor, codex, droid — any agent that follows the `<skill-name>/SKILL.md` convention.
+
+<details>
+<summary>Manual skill install</summary>
 
 ```sh
 mkdir -p ~/.<your-agent>/skills/tilth && \
-curl -L https://raw.githubusercontent.com/sting8k/tilth/another-tilth/skills/SKILL.md \
+curl -L https://raw.githubusercontent.com/sting8k/tilth/another-tilth/skills/tilth/SKILL.md \
   -o ~/.<your-agent>/skills/tilth/SKILL.md
 ```
 
-Replace `~/.<your-agent>/skills/` with the actual skills path your agent reads (`~/.claude/skills/`, `~/.pi/agent/skills/`, etc.). For agents that use a single rules file instead of skill discovery (Cursor, Windsurf), paste the body of `SKILL.md` (without the YAML frontmatter) into your rules / custom-instructions file.
+Common paths: `~/.claude/skills/`, `~/.pi/agent/skills/`, `~/.cursor/skills/`. For agents that use a single rules file (Cursor rules, Windsurf), paste the body of `SKILL.md` (without the YAML frontmatter) into your rules / custom-instructions file.
 
-## Usage
+</details>
 
-```bash
+## Example outputs
+
+A few snapshots — see the skill for the full command vocabulary.
+
+<details>
+<summary><b>Outline of a large file</b></summary>
+
+```
 $ tilth src/auth.ts
 # src/auth.ts (258 lines, ~3.4k tokens) [outline]
 
@@ -117,41 +132,20 @@ $ tilth src/auth.ts
   [99-130]  fn authenticate(credentials)
   [132-180] fn authorize(user, resource)
 ```
+</details>
 
-Small files print whole. Large files outline. Drill in by line range, heading, or symbol name:
-
-```bash
-tilth src/auth.ts --section 44-89
-tilth docs/guide.md --section "## Installation"
-tilth src/auth.ts --section AuthManager
-```
-
-## Smart read
-
-Output adapts to size and channel:
-
-| Input | Behaviour |
-|-------|-----------|
-| 0 bytes | `[empty]` |
-| Binary | `[skipped]` with mime type |
-| Generated (lockfiles, `.min.js`) | `[generated]` |
-| < ~6000 tokens | Full content, line-numbered |
-| > ~6000 tokens | Structural outline |
-| `--full` over cap | Progressive: header + first 200 lines + outline + continuation hint |
-| Pipe mode | Same smart view as TTY (use `--full` for raw bytes) |
-
-On a heading miss, the closest matches are suggested:
+<details>
+<summary><b><code>--full</code> over <code>--budget</code> cascade — explicit label, no silent truncation</b></summary>
 
 ```
-invalid query "## Get Started": heading not found. Closest matches:
-  ## 🚀 Quick Start
-  ## Contributors
-  ## Contributing
+# src/Uno.UI.Runtime.Skia.Win32/Accessibility/Win32Accessibility.cs
+  (687 lines, ~5.1k tokens) [outline (full requested, over budget)]
+...
 ```
+</details>
 
-## Search
-
-Tree-sitter finds where symbols are **defined**, not just where strings appear:
+<details>
+<summary><b>Symbol search — definitions first, with resolved callees</b></summary>
 
 ```
 $ tilth handleAuth --scope src/
@@ -167,46 +161,44 @@ $ tilth handleAuth --scope src/
 ── calls ──
   validateToken    src/auth.ts:24-42
   refreshSession   src/auth.ts:91-120
+```
+</details>
 
-## src/routes/api.ts:34 [usage]
-→ [34]   router.use('/api/protected/*', handleAuth);
+<details>
+<summary><b>0-hit search → cross-convention + typo Did-you-mean (lev ≤ 2)</b></summary>
+
+```
+$ tilth searchSymbol --scope src/
+no matches for "searchSymbol" in src/
+> Did you mean: search_symbol (src/lib.rs:186)
+
+$ tilth readByt --scope src/
+no matches for "readByt" in src/
+> Did you mean: readByte, readBytes, readInt
+```
+</details>
+
+<details>
+<summary><b>Bare filename + <code>--section</code> — auto-picks the primary copy</b></summary>
+
+```
+$ tilth lib.rs --section symbol_search
+Resolved 'lib.rs' → src/lib.rs
+  (skipped 9 non-primary copies [benchmark/fixtures/repos/ripgrep/crates/cli/src/lib.rs,
+   benchmark/fixtures/repos/ripgrep/crates/globset/src/lib.rs, +7 more]).
+   Pass full path to override.
+...
 ```
 
-Multi-symbol search in one call (Aho-Corasick under the hood):
+Gitignore-aware, depth-ranked. Pass the full path to override.
+</details>
 
-```bash
-tilth "ServeHTTP, HandlersChain, Next" --scope .
+<details>
+<summary><b>Token-aware map — respects <code>.gitignore</code></b></summary>
+
 ```
-
-Callers query (structural, not text):
-
-```bash
-tilth isTrustedProxy --kind callers --scope .
-```
-
-When callers returns 0, you get a per-language hint about indirect dispatch (trait objects, interfaces, reflection, callbacks) instead of "not found".
-
-### Multi-hop callers (BFS)
-
-Trace callers transitively. Useful for "who ultimately triggers this?" without the agent looping manually.
-
-```bash
-tilth NewClient --callers --depth 2 --scope .
-tilth NewClient --callers --depth 3 --max-edges 300 --json
-```
-
-- `--depth N` — 1 (default, legacy) up to 5.
-- `--max-frontier K` — cap callers expanded per hop (default 50). Over-cap symbols are auto-promoted to hubs.
-- `--max-edges M` — global hard cap on edges across all hops (default 500). Deterministic truncation.
-- `--skip-hubs CSV` — explicit hub list (default: `new,clone,from,into,to_string,drop,fmt,default`). `--skip-hubs ""` disables.
-- `--json` — edge-list for agents. Top-level keys: `edges`, `stats`, `elided`, `depth_reached`, `elapsed_ms`, `disclaimer`.
-
-Each edge carries `from`, `from_file`, `from_line`, `to`, and `call_text` (the actual call-site line). `stats.suspicious_hops` flags hops with cross-package name collisions — read it before trusting transitive edges.
-
-## Map
-
-```bash
 $ tilth --map --scope .
+# .gitignore + git excludes applied
 .pi-lens/  (~175.9k tokens)        ← skip, too large to read
 .github/   (~1.0k tokens)          ← safe to read in full
 src/       (~14.9k tokens)
@@ -214,11 +206,13 @@ src/       (~14.9k tokens)
     outline/  (~3.7k tokens)
 ```
 
-Directory rollups show cumulative tokens of descendants. Auto k/M formatting.
+Token totals reflect what you'd actually read.
+</details>
 
-## Glob
+<details>
+<summary><b>Glob — token estimate + one-line preview</b></summary>
 
-```bash
+```
 $ tilth "*.rs" --scope src/
 src/budget.rs  (~774 tokens · Apply token budget to output paths)
 src/cache.rs   (~580 tokens · Tree-sitter parse cache with LRU eviction)
@@ -227,7 +221,8 @@ src/lib.rs     (~210 tokens · pub mod budget; pub mod cache;)
 3 of 41 files (offset 0). Next page: --offset 3 --limit 3.
 ```
 
-Every match includes a token estimate and a one-line preview. Pagination is stable across runs (deterministic sort).
+Stable pagination across runs (deterministic sort).
+</details>
 
 ## Speed
 
@@ -249,7 +244,7 @@ Search uses early termination via bloom-filter pruning + length-sorted memchr �
 - [jahala/tilth](https://github.com/jahala/tilth) — upstream
 - [ripgrep](https://github.com/BurntSushi/ripgrep) — content search internals (`grep-regex`, `grep-searcher`)
 - [tree-sitter](https://tree-sitter.github.io/) — AST parsing for 14 languages
-- [The Harness Problem](https://blog.can.ac/2026/02/12/the-harness-problem/) — inspired edit mode
+- [The Harness Problem](https://blog.can.ac/2026/02/12/the-harness-problem/) — inspired earlier edit-mode work (since removed in this fork)
 
 ## Name
 

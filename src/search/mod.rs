@@ -17,6 +17,8 @@ use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use indexmap::IndexMap;
+
 use crate::cache::OutlineCache;
 use crate::error::TilthError;
 use crate::format;
@@ -279,28 +281,27 @@ fn format_matches(
         .first()
         .is_some_and(|first| matches.iter().any(|m| m.path != first.path));
 
-    // Group consecutive non-definition matches by (path, enclosing_outline_idx).
-    // Definitions are never grouped — they need individual expand with callees/siblings.
     let groups = group_matches(matches, cache);
 
     for group in &groups {
-        if group.len() == 1 {
-            // Single match — format as before
-            format_single_match(
-                group[0],
-                scope,
-                cache,
-                session,
-                bloom,
-                expand_remaining,
-                expanded_files,
-                context_shown_files,
-                multi_file,
-                out,
-            );
-        } else {
-            // Multiple usages collapsed into one entry
-            format_grouped_usages(group, scope, cache, context_shown_files, out);
+        match group {
+            MatchGroup::Single(m) => {
+                format_single_match(
+                    m,
+                    scope,
+                    cache,
+                    session,
+                    bloom,
+                    expand_remaining,
+                    expanded_files,
+                    context_shown_files,
+                    multi_file,
+                    out,
+                );
+            }
+            MatchGroup::FileGroup(usages) => {
+                format_file_group(usages, scope, cache, context_shown_files, out);
+            }
         }
     }
 }
@@ -317,9 +318,17 @@ type DefKey<'a> = (
 
 /// Returns a Vec of groups, where each group is a slice of matches.
 /// Definitions and impl matches are always singleton groups.
-fn group_matches<'a>(matches: &'a [Match], cache: &OutlineCache) -> Vec<Vec<&'a Match>> {
-    let mut groups: Vec<Vec<&Match>> = Vec::new();
+enum MatchGroup<'a> {
+    Single(&'a Match),
+    FileGroup(Vec<&'a Match>),
+}
+
+/// Group matches for rendering: definitions/impls stay individual, usages grouped by file.
+fn group_matches<'a>(matches: &'a [Match], _cache: &OutlineCache) -> Vec<MatchGroup<'a>> {
+    let mut groups: Vec<MatchGroup<'a>> = Vec::new();
     let mut seen_defs: HashSet<DefKey<'_>> = HashSet::new();
+    // Collect usages per file (preserving order of first occurrence)
+    let mut file_usages: IndexMap<&Path, Vec<&'a Match>> = IndexMap::new();
 
     for m in matches {
         if m.is_definition || m.impl_target.is_some() {
@@ -333,37 +342,26 @@ fn group_matches<'a>(matches: &'a [Match], cache: &OutlineCache) -> Vec<Vec<&'a 
             if !seen_defs.insert(key) {
                 continue;
             }
+            groups.push(MatchGroup::Single(m));
+        } else {
+            file_usages.entry(m.path.as_path()).or_default().push(m);
         }
-        // Definitions and impls are never grouped
-        if m.is_definition || m.impl_target.is_some() {
-            groups.push(vec![m]);
-            continue;
-        }
-
-        // For usages: try to merge with previous group if same (path, outline_idx)
-        if let Some(last_group) = groups.last_mut() {
-            let prev = last_group[0];
-            // Only merge usages (previous must also be a usage in the same file)
-            if !prev.is_definition
-                && prev.impl_target.is_none()
-                && prev.path == m.path
-                && m.file_lines >= 50
-            {
-                let prev_idx = find_enclosing_outline_idx(&prev.path, prev.line, cache);
-                let curr_idx = find_enclosing_outline_idx(&m.path, m.line, cache);
-                if prev_idx.is_some() && prev_idx == curr_idx {
-                    last_group.push(m);
-                    continue;
-                }
-            }
-        }
-        groups.push(vec![m]);
     }
+
+    // Emit file-grouped usages after definitions
+    for (_path, usages) in file_usages {
+        if usages.len() == 1 {
+            groups.push(MatchGroup::Single(usages[0]));
+        } else {
+            groups.push(MatchGroup::FileGroup(usages));
+        }
+    }
+
     groups
 }
 
-/// Format a group of usages collapsed into a single entry.
-fn format_grouped_usages(
+/// Format a file-level group of usages: one header, outline once, compact list with fn names.
+fn format_file_group(
     group: &[&Match],
     scope: &Path,
     cache: &OutlineCache,
@@ -373,76 +371,43 @@ fn format_grouped_usages(
     let first = group[0];
     let path_str = rel_nonempty(&first.path, scope);
 
-    // Build comma-separated line list, collapsing consecutive runs (e.g. 55,56,57 → 55-57)
-    let lines: Vec<u32> = group.iter().map(|m| m.line).collect();
-    let line_str = format_line_list(&lines);
+    let _ = write!(out, "\n\n## {path_str} [{} usages]", group.len());
 
-    // Get enclosing function name from outline
-    let fn_name = get_outline_str(&first.path, cache).and_then(|outline_str| {
-        let outline_lines: Vec<&str> = outline_str.lines().collect();
-        let idx = outline_lines.iter().position(|line| {
-            extract_line_range(line).is_some_and(|(s, e)| first.line >= s && first.line <= e)
-        })?;
-        // Extract name: outline lines look like "  [45-79]      fn TestMiddlewareNoRoute"
-        let entry = outline_lines[idx].trim();
-        // Find the name after "fn " or similar keyword
-        entry.split_whitespace().last().map(String::from)
-    });
-
-    let _ = write!(out, "\n\n## {path_str}:{line_str} [{} usages", group.len());
-    if let Some(ref name) = fn_name {
-        let _ = write!(out, " in {name}");
-    }
-    out.push(']');
-
-    // Show outline context only once per file to avoid repeated imports/module noise.
+    // Show outline context once per file
     if context_shown_files.insert(first.path.clone()) {
         if let Some(context) = outline_context_for_match(&first.path, first.line, cache) {
             out.push_str(&context);
-        } else {
-            let _ = write!(out, "\n→ [{}]   {}", first.line, first.text);
         }
-    } else {
-        let _ = write!(
-            out,
-            "\n→ [{}]   {} [context shown earlier]",
-            first.line, first.text
-        );
+    }
+
+    // Compact list: one line per hit with enclosing fn annotation
+    for m in group {
+        let fn_name = enclosing_fn_name(&m.path, m.line, cache);
+        if let Some(name) = fn_name {
+            let _ = write!(out, "\n- :{:<6} {} ← {name}", m.line, m.text.trim());
+        } else {
+            let _ = write!(out, "\n- :{:<6} {}", m.line, m.text.trim());
+        }
     }
 }
 
-/// Format a comma-separated line list, collapsing consecutive runs.
-/// e.g. [50, 55, 56, 57, 58, 63, 67] → "50,55-58,63,67"
-fn format_line_list(lines: &[u32]) -> String {
-    if lines.is_empty() {
-        return String::new();
-    }
-    let mut parts: Vec<String> = Vec::new();
-    let mut run_start = lines[0];
-    let mut run_end = lines[0];
-    for &line in &lines[1..] {
-        if line == run_end + 1 {
-            run_end = line;
-        } else {
-            if run_end > run_start + 1 {
-                parts.push(format!("{run_start}-{run_end}"));
-            } else if run_end > run_start {
-                parts.push(format!("{run_start},{run_end}"));
-            } else {
-                parts.push(format!("{run_start}"));
+/// Get the enclosing function/symbol name for a given line from the outline.
+fn enclosing_fn_name(path: &Path, line: u32, cache: &OutlineCache) -> Option<String> {
+    let outline_str = get_outline_str(path, cache)?;
+    let mut best: Option<(&str, u32, u32)> = None;
+    for ol in outline_str.lines() {
+        if let Some((s, e)) = extract_line_range(ol) {
+            if line >= s && line <= e {
+                // Pick tightest enclosing range
+                if best.is_none() || (e - s) < (best.unwrap().2 - best.unwrap().1) {
+                    best = Some((ol, s, e));
+                }
             }
-            run_start = line;
-            run_end = line;
         }
     }
-    if run_end > run_start + 1 {
-        parts.push(format!("{run_start}-{run_end}"));
-    } else if run_end > run_start {
-        parts.push(format!("{run_start},{run_end}"));
-    } else {
-        parts.push(format!("{run_start}"));
-    }
-    parts.join(",")
+    let entry = best?.0.trim();
+    // Outline lines look like "  [45-79]      fn foo_bar"
+    entry.split_whitespace().last().map(String::from)
 }
 
 /// Format a single match entry (unchanged from original behavior).
@@ -1097,19 +1062,6 @@ fn get_outline_str(path: &std::path::Path, cache: &OutlineCache) -> Option<std::
         let buf = content.as_bytes();
         read::outline::generate(path, file_type, &content, buf, false)
     }))
-}
-
-/// Find the outline entry index that encloses the given line.
-fn find_enclosing_outline_idx(
-    path: &std::path::Path,
-    match_line: u32,
-    cache: &OutlineCache,
-) -> Option<usize> {
-    let outline_str = get_outline_str(path, cache)?;
-    let outline_lines: Vec<&str> = outline_str.lines().collect();
-    outline_lines.iter().position(|line| {
-        extract_line_range(line).is_some_and(|(s, e)| match_line >= s && match_line <= e)
-    })
 }
 
 /// Build outline context around a match — ±2 entries around the enclosing one.

@@ -1,5 +1,9 @@
 # srcwalk
 
+[![Crates.io](https://img.shields.io/crates/v/srcwalk)](https://crates.io/crates/srcwalk)
+[![npm](https://img.shields.io/npm/v/srcwalk)](https://www.npmjs.com/package/srcwalk)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Agent's code navigator CLI** — instantly outline, search, and trace call graphs across any language. One binary, one skill, zero config.
 
 > Tree-sitter outlines · symbol search · caller/callee graphs · blast-radius deps · token-aware maps

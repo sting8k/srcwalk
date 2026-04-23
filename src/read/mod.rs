@@ -234,8 +234,7 @@ pub fn read_file_with_budget(
         source: e,
     })?;
     let line_count = std::fs::read(path)
-        .map(|buf| memchr::memchr_iter(b'\n', &buf).count() as u32 + 1)
-        .unwrap_or(0);
+        .map_or(0, |buf| memchr::memchr_iter(b'\n', &buf).count() as u32 + 1);
     let header = format::file_header(path, meta.len(), line_count, ViewMode::Signatures);
     Ok(format!(
         "{header}\n\n> File too large for budget {b} tokens at any granularity. \

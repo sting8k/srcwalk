@@ -155,13 +155,15 @@ pub fn run_callers(
             glob,
             skip_hubs,
             json,
+            budget_tokens.map(|b| b as usize),
         )?,
         _ => search::callers::search_callers_expanded(
             target, scope, cache, &session, &bloom, expand, None, limit, offset, glob,
         )?,
     };
     if json {
-        // BFS JSON is already structured; don't budget-truncate.
+        // BFS JSON handles its own budget internally (edges array cap).
+        // Legacy callers JSON uses the generic budget::apply below.
         return Ok(output);
     }
     match budget_tokens {

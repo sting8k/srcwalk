@@ -9,6 +9,51 @@ use crate::lang::detect_file_type;
 use crate::read::outline;
 use crate::types::{estimate_tokens, FileType};
 
+struct WalkConfig {
+    hidden: bool,
+    git_ignore: bool,
+    git_global: bool,
+    git_exclude: bool,
+    ignore: bool,
+    parents: bool,
+}
+
+/// Build the "# Note:" header line listing which ignore sources the walker
+/// honours, derived from the actual `WalkConfig` (no hardcoded copy).
+fn format_walk_note(cfg: &WalkConfig) -> String {
+    let mut respects: Vec<&'static str> = Vec::new();
+    if cfg.git_ignore {
+        respects.push(".gitignore");
+    }
+    if cfg.git_exclude {
+        respects.push(".git/info/exclude");
+    }
+    if cfg.git_global {
+        respects.push("core.excludesFile");
+    }
+    if cfg.ignore {
+        respects.push(".ignore");
+    }
+    let scope_word = if cfg.parents { "+ parents" } else { "scope only" };
+
+    let respects_part = if respects.is_empty() {
+        "no ignore files".to_string()
+    } else {
+        format!("{} ({scope_word})", respects.join(", "))
+    };
+
+    let hidden_part = if cfg.hidden {
+        "dotfiles excluded"
+    } else {
+        "dotfiles included"
+    };
+
+    format!(
+        "# Note: respects {respects_part}; {hidden_part}; built-in SKIP_DIRS still apply \
+         (target, node_modules, …). Use `tilth <path>` to inspect an ignored file directly.\n",
+    )
+}
+
 /// Generate a structural codebase map.
 /// Code files show symbol names from outline cache.
 /// Non-code files show name + token estimate.
@@ -16,14 +61,23 @@ use crate::types::{estimate_tokens, FileType};
 pub fn generate(scope: &Path, depth: usize, budget: Option<u64>, cache: &OutlineCache) -> String {
     let mut tree: BTreeMap<PathBuf, Vec<FileEntry>> = BTreeMap::new();
 
+    let cfg = WalkConfig {
+        hidden: false,
+        git_ignore: true,
+        git_global: true,
+        git_exclude: true,
+        ignore: true,
+        parents: true,
+    };
+
     let walker = WalkBuilder::new(scope)
         .follow_links(true)
-        .hidden(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .ignore(false)
-        .parents(false)
+        .hidden(cfg.hidden)
+        .git_ignore(cfg.git_ignore)
+        .git_global(cfg.git_global)
+        .git_exclude(cfg.git_exclude)
+        .ignore(cfg.ignore)
+        .parents(cfg.parents)
         .filter_entry(|entry| {
             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 if let Some(name) = entry.file_name().to_str() {
@@ -96,6 +150,7 @@ pub fn generate(scope: &Path, depth: usize, budget: Option<u64>, cache: &Outline
     }
 
     let mut out = format!("# Map: {} (depth {})\n", scope.display(), depth);
+    out.push_str(&format_walk_note(&cfg));
     let totals = compute_dir_totals(&tree);
     format_tree(&tree, &totals, Path::new(""), 0, &mut out);
 

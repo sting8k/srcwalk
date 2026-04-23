@@ -81,7 +81,7 @@ cargo fmt --check
 
 # 2. Bump version (all three)
 # Cargo.toml, npm/package.json, then:
-cargo update -p srcwalk
+cargo update -p srcwalk   # refreshes Cargo.lock
 
 # 3. Commit & push, wait for CI green
 git add -A && git commit -m "chore: bump vX.Y.Z"

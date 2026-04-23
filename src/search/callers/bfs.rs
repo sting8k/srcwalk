@@ -237,7 +237,15 @@ pub fn search_callers_bfs(
             if m.calling_function == TOP_LEVEL {
                 stats.top_level_terminal += 1;
             } else if visited.insert(key) {
-                next_frontier.insert(m.calling_function.clone());
+                // calling_function is qualified ("Class.method" / "mod::func").
+                // Frontier needs the bare name since find_callers_batch matches
+                // by-name call sites, not qualified references.
+                let bare = m
+                    .calling_function
+                    .rsplit_once('.')
+                    .or_else(|| m.calling_function.rsplit_once("::"))
+                    .map_or(m.calling_function.as_str(), |(_, name)| name);
+                next_frontier.insert(bare.to_string());
             }
 
             // Reduce call_text to a single line — multi-line calls collapse to

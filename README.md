@@ -22,20 +22,23 @@ Small files come back whole, large files get a structural outline. Your agent re
 ## Install
 
 ```sh
-# From source
-cargo install --git https://github.com/sting8k/srcwalk --locked
-
-# Pre-built (macOS Apple Silicon)
-curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarch64-apple-darwin.tar.gz | tar xz -C /usr/local/bin
+# crates.io (recommended)
+cargo install srcwalk
 
 # npm
-npx srcwalk
+npm install -g srcwalk    # or: npx srcwalk
+
+# From source
+cargo install --git https://github.com/sting8k/srcwalk --locked
 ```
 
 <details>
-<summary>Other platforms</summary>
+<summary>Pre-built binaries</summary>
 
 ```sh
+# macOS Apple Silicon
+curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarch64-apple-darwin.tar.gz | tar xz -C /usr/local/bin
+
 # macOS Intel
 curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-x86_64-apple-darwin.tar.gz | tar xz -C /usr/local/bin
 

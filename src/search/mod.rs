@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use crate::cache::OutlineCache;
 use crate::error::TilthError;
 use crate::format;
-use crate::format::rel;
+use crate::format::{rel, rel_nonempty};
 use crate::read;
 use crate::session::Session;
 use crate::types::{estimate_tokens, FileType, Match, SearchResult};
@@ -371,7 +371,7 @@ fn format_grouped_usages(
     out: &mut String,
 ) {
     let first = group[0];
-    let path_str = rel(&first.path, scope);
+    let path_str = rel_nonempty(&first.path, scope);
 
     // Build comma-separated line list, collapsing consecutive runs (e.g. 55,56,57 → 55-57)
     let lines: Vec<u32> = group.iter().map(|m| m.line).collect();
@@ -472,15 +472,15 @@ fn format_single_match(
             let _ = write!(
                 out,
                 "\n\n## {}:{}-{} [{kind}]",
-                rel(&m.path, scope),
+                rel_nonempty(&m.path, scope),
                 start,
                 end
             );
         } else {
-            let _ = write!(out, "\n\n## {}:{} [{kind}]", rel(&m.path, scope), m.line);
+            let _ = write!(out, "\n\n## {}:{} [{kind}]", rel_nonempty(&m.path, scope), m.line);
         }
     } else {
-        let _ = write!(out, "\n\n## {}:{} [{kind}]", rel(&m.path, scope), m.line);
+        let _ = write!(out, "\n\n## {}:{} [{kind}]", rel_nonempty(&m.path, scope), m.line);
     }
 
     // Skip outline for small files — the expanded code speaks for itself.
@@ -509,7 +509,7 @@ fn format_single_match(
                 let _ = write!(
                     out,
                     "\n\n[shown earlier] {}:{}-{} {}",
-                    rel(&m.path, scope),
+                    rel_nonempty(&m.path, scope),
                     start,
                     end,
                     m.text
@@ -583,7 +583,7 @@ fn format_single_match(
                                             out,
                                             "\n  {}  {}:{}-{}",
                                             c.name,
-                                            rel(&c.file, scope),
+                                            rel_nonempty(&c.file, scope),
                                             c.start_line,
                                             c.end_line
                                         );
@@ -595,7 +595,7 @@ fn format_single_match(
                                                 out,
                                                 "\n    \u{2192} {}  {}:{}-{}",
                                                 child.name,
-                                                rel(&child.file, scope),
+                                                rel_nonempty(&child.file, scope),
                                                 child.start_line,
                                                 child.end_line
                                             );
@@ -634,7 +634,7 @@ fn format_single_match(
                                                     out,
                                                     "\n  {}  {}:{}-{}  {}",
                                                     s.name,
-                                                    rel(&m.path, scope),
+                                                    rel_nonempty(&m.path, scope),
                                                     s.start_line,
                                                     s.end_line,
                                                     s.signature,
@@ -797,7 +797,7 @@ fn basename_file_outline(
         return None;
     }
 
-    let rel_path = rel(&matched_path, scope);
+    let rel_path = rel_nonempty(&matched_path, scope);
     let line_count = content.lines().count();
     Some(format!(
         "### File overview: {rel_path} ({line_count} lines)\n{outline}"
@@ -877,7 +877,7 @@ fn format_search_result(
                 let _ = write!(
                     out,
                     "\n  {}:{} — {}",
-                    rel(&m.path, &result.scope),
+                    rel_nonempty(&m.path, &result.scope),
                     m.line,
                     m.text.trim()
                 );
@@ -1013,7 +1013,7 @@ fn expand_match(m: &Match, scope: &Path) -> Option<(String, String)> {
     }
 
     let mut out = String::new();
-    let _ = write!(out, "\n```{}:{}-{}", rel(&m.path, scope), start, end);
+    let _ = write!(out, "\n```{}:{}-{}", rel_nonempty(&m.path, scope), start, end);
 
     // Track consecutive blank lines for collapsing
     let mut prev_blank = false;
@@ -1187,7 +1187,7 @@ fn format_glob_result(result: &glob::GlobResult, scope: &Path) -> Result<String,
     }
 
     for file in &result.files {
-        let _ = write!(out, "\n  {}", rel(&file.path, scope));
+        let _ = write!(out, "\n  {}", rel_nonempty(&file.path, scope));
         if let Some(ref preview) = file.preview {
             let _ = write!(out, "  ({preview})");
         }

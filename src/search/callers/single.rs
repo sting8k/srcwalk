@@ -12,6 +12,7 @@ use crate::cache::OutlineCache;
 use crate::error::TilthError;
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
+use crate::format::rel_nonempty;
 use crate::session::Session;
 use crate::types::FileType;
 
@@ -623,11 +624,7 @@ pub fn search_callers_expanded(
         let _ = write!(
             output,
             "\n## {}:{} [caller: {}]\n",
-            caller
-                .path
-                .strip_prefix(scope)
-                .unwrap_or(&caller.path)
-                .display(),
+            rel_nonempty(&caller.path, scope),
             caller.line,
             caller.calling_function
         );
@@ -706,7 +703,7 @@ pub fn search_callers_expanded(
                         break;
                     }
 
-                    let rel_path = m.path.strip_prefix(scope).unwrap_or(&m.path).display();
+                    let rel_path = rel_nonempty(&m.path, scope);
                     let _ = writeln!(
                         output,
                         "  {:<20} {}:{}  \u{2192} {}",

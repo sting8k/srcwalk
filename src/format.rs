@@ -75,3 +75,35 @@ pub(crate) fn rel(path: &Path, scope: &Path) -> String {
         .display()
         .to_string()
 }
+
+/// Non-empty display path for headers.
+///
+/// If `rel(path, scope)` is empty (e.g. `--scope` points to the file itself),
+/// fall back to `dir/file` (or just `file` when parent dir is unavailable).
+pub(crate) fn rel_nonempty(path: &Path, scope: &Path) -> String {
+    let rel_path = rel(path, scope);
+    if !rel_path.is_empty() && rel_path != "." {
+        return rel_path;
+    }
+    short_path(path)
+}
+
+fn short_path(path: &Path) -> String {
+    let file = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let dir = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+
+    if !dir.is_empty() && !file.is_empty() {
+        format!("{dir}/{file}")
+    } else if !file.is_empty() {
+        file.to_string()
+    } else {
+        path.display().to_string()
+    }
+}

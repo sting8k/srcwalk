@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::OutlineCache;
 use crate::error::TilthError;
+use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
 use crate::lang::outline::{extract_import_source, get_outline_entries};
 use crate::read::imports::{is_external, is_import_line, resolve_related_files_with_content};
@@ -250,12 +251,7 @@ pub fn format_deps(result: &DepsResult, scope: &Path, budget: Option<usize>) -> 
     // ── Build sections (full fidelity first) ─────────────────────────────────
 
     // Header
-    let rel_target = result
-        .target
-        .strip_prefix(scope)
-        .unwrap_or(&result.target)
-        .display()
-        .to_string();
+    let rel_target = rel_nonempty(&result.target, scope);
     let header = format!(
         "# Deps: {} — {} local, {} external, {} dependent{}",
         rel_target,
@@ -427,12 +423,7 @@ fn format_uses_local(deps: &[LocalDep], scope: &Path, with_symbols: bool) -> Str
     }
     let mut out = String::from("## Uses (local)");
     for dep in deps {
-        let rel = dep
-            .path
-            .strip_prefix(scope)
-            .unwrap_or(&dep.path)
-            .display()
-            .to_string();
+        let rel = rel_nonempty(&dep.path, scope);
         if with_symbols && !dep.symbols.is_empty() {
             let _ = write!(out, "\n{:<30} {}", rel, dep.symbols.join(", "));
         } else {
@@ -461,12 +452,7 @@ fn format_used_by(deps: &[&Dependent], scope: &Path, heading: &str) -> String {
     }
     let mut out = String::from(heading);
     for dep in deps {
-        let rel = dep
-            .path
-            .strip_prefix(scope)
-            .unwrap_or(&dep.path)
-            .display()
-            .to_string();
+        let rel = rel_nonempty(&dep.path, scope);
         // Group by (caller, line) for readability — keep the earliest line per caller
         let mut by_caller: HashMap<&str, (u32, Vec<&str>)> = HashMap::new();
         for (caller, symbol, line) in &dep.symbols {

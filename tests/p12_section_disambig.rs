@@ -90,8 +90,14 @@ fn bare_filename_with_section_ambiguous_prod_fails_loud() {
 
     assert!(result.is_err(), "expected error for ambiguous prod paths");
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("exactly one"), "expected disambig error, got: {msg}");
-    assert!(msg.contains("Cart.php"), "expected candidate listing, got: {msg}");
+    assert!(
+        msg.contains("exactly one"),
+        "expected disambig error, got: {msg}"
+    );
+    assert!(
+        msg.contains("Cart.php"),
+        "expected candidate listing, got: {msg}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

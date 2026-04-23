@@ -7,8 +7,8 @@
 
 #![allow(clippy::pedantic)]
 
-use std::path::{Path, PathBuf};
 use srcwalk::cache::OutlineCache;
+use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -18,12 +18,7 @@ fn fixture_scope() -> PathBuf {
     repo_root().join("src")
 }
 
-fn run_callers(
-    target: &str,
-    scope: &Path,
-    depth: Option<usize>,
-    json: bool,
-) -> String {
+fn run_callers(target: &str, scope: &Path, depth: Option<usize>, json: bool) -> String {
     run_callers_capped(target, scope, depth, json, Some(20_000))
 }
 
@@ -36,19 +31,9 @@ fn run_callers_capped(
 ) -> String {
     let cache = OutlineCache::new();
     srcwalk::run_callers(
-        target,
-        scope,
-        /* expand */ 0,
-        /* budget_tokens */ None,
-        /* limit */ None,
-        /* offset */ 0,
-        /* glob */ None,
-        &cache,
-        depth,
-        /* max_frontier */ None,
-        max_edges,
-        /* skip_hubs */ None,
-        json,
+        target, scope, /* expand */ 0, /* budget_tokens */ None, /* limit */ None,
+        /* offset */ 0, /* glob */ None, &cache, depth, /* max_frontier */ None,
+        max_edges, /* skip_hubs */ None, json,
     )
     .expect("run_callers should succeed on fixture")
 }
@@ -62,10 +47,7 @@ fn strip_timing(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         // Look for pattern ", <digits> ms"
-        if bytes[i] == b','
-            && i + 1 < bytes.len()
-            && bytes[i + 1] == b' '
-        {
+        if bytes[i] == b',' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
             let mut j = i + 2;
             while j < bytes.len() && bytes[j].is_ascii_digit() {
                 j += 1;
@@ -168,10 +150,8 @@ fn deeper_bfs_superset_of_shallower() {
     // Every hop-1 edge in depth=2 must exist in depth=3.
     // (We compare hop-1 only — deeper hops may differ if frontier cap differs,
     //  but hop-1 is fully determined by the root symbol.)
-    let hop1_from_d2: std::collections::HashSet<_> =
-        e2.iter().filter(|e| e.0 == 1).collect();
-    let hop1_from_d3: std::collections::HashSet<_> =
-        e3.iter().filter(|e| e.0 == 1).collect();
+    let hop1_from_d2: std::collections::HashSet<_> = e2.iter().filter(|e| e.0 == 1).collect();
+    let hop1_from_d3: std::collections::HashSet<_> = e3.iter().filter(|e| e.0 == 1).collect();
     assert_eq!(
         hop1_from_d2, hop1_from_d3,
         "hop-1 edges must be identical regardless of max_depth"

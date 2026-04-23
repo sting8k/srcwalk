@@ -34,7 +34,11 @@ fn format_walk_note(cfg: &WalkConfig) -> String {
     if cfg.ignore {
         respects.push(".ignore");
     }
-    let scope_word = if cfg.parents { "+ parents" } else { "scope only" };
+    let scope_word = if cfg.parents {
+        "+ parents"
+    } else {
+        "scope only"
+    };
 
     let respects_part = if respects.is_empty() {
         "no ignore files".to_string()

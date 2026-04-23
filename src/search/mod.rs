@@ -442,10 +442,20 @@ fn format_single_match(
                 end
             );
         } else {
-            let _ = write!(out, "\n\n## {}:{} [{kind}]", rel_nonempty(&m.path, scope), m.line);
+            let _ = write!(
+                out,
+                "\n\n## {}:{} [{kind}]",
+                rel_nonempty(&m.path, scope),
+                m.line
+            );
         }
     } else {
-        let _ = write!(out, "\n\n## {}:{} [{kind}]", rel_nonempty(&m.path, scope), m.line);
+        let _ = write!(
+            out,
+            "\n\n## {}:{} [{kind}]",
+            rel_nonempty(&m.path, scope),
+            m.line
+        );
     }
 
     // Skip outline for small files — the expanded code speaks for itself.
@@ -978,7 +988,13 @@ fn expand_match(m: &Match, scope: &Path) -> Option<(String, String)> {
     }
 
     let mut out = String::new();
-    let _ = write!(out, "\n```{}:{}-{}", rel_nonempty(&m.path, scope), start, end);
+    let _ = write!(
+        out,
+        "\n```{}:{}-{}",
+        rel_nonempty(&m.path, scope),
+        start,
+        end
+    );
 
     // Track consecutive blank lines for collapsing
     let mut prev_blank = false;
@@ -1323,7 +1339,8 @@ mod tests {
     #[test]
     fn content_search_glob_restricts_results() {
         let scope = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let all = content::search("SrcwalkError", &scope, false, None, None).expect("search failed");
+        let all =
+            content::search("SrcwalkError", &scope, false, None, None).expect("search failed");
         let rs_only = content::search("SrcwalkError", &scope, false, None, Some("*.rs"))
             .expect("search with glob failed");
         let toml_only = content::search("SrcwalkError", &scope, false, None, Some("*.toml"))
@@ -1497,4 +1514,3 @@ mod tests {
         );
     }
 }
-

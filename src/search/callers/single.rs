@@ -10,9 +10,9 @@ use crate::lang::treesitter::{extract_definition_name, DEFINITION_KINDS};
 
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
+use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
-use crate::format::rel_nonempty;
 use crate::session::Session;
 use crate::types::FileType;
 
@@ -94,7 +94,9 @@ pub fn find_callers(
                 return ignore::WalkState::Continue;
             }
 
-            if file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD && crate::search::io::looks_minified(&bytes) {
+            if file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD
+                && crate::search::io::looks_minified(&bytes)
+            {
                 return ignore::WalkState::Continue;
             }
 
@@ -323,7 +325,9 @@ pub(crate) fn find_callers_batch(
                 return ignore::WalkState::Continue;
             }
 
-            if file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD && crate::search::io::looks_minified(&bytes) {
+            if file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD
+                && crate::search::io::looks_minified(&bytes)
+            {
                 return ignore::WalkState::Continue;
             }
 
@@ -677,7 +681,14 @@ pub fn search_callers_expanded(
     // Use all_caller_names (pre-truncation) for the fan-out threshold check,
     // but search for callers of the full set to capture transitive impact.
     if !all_caller_names.is_empty() && all_caller_names.len() <= IMPACT_FANOUT_THRESHOLD {
-        if let Ok(hop2) = find_callers_batch(&all_caller_names, scope, bloom, glob, Some(cache), Some(BATCH_EARLY_QUIT)) {
+        if let Ok(hop2) = find_callers_batch(
+            &all_caller_names,
+            scope,
+            bloom,
+            glob,
+            Some(cache),
+            Some(BATCH_EARLY_QUIT),
+        ) {
             // Filter out hop-1 matches (same file+line = same call site)
             let hop1_locations: HashSet<(PathBuf, u32)> = sorted_callers
                 .iter()
@@ -767,4 +778,3 @@ fn rank_callers(callers: &mut [CallerMatch], scope: &Path, context: Option<&Path
             .then_with(|| a.line.cmp(&b.line))
     });
 }
-

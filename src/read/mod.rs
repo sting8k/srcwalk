@@ -565,9 +565,7 @@ fn filter_entries_in_range(
     for e in entries {
         // For container entries (class/struct) that span beyond the range,
         // skip the parent — we'll include matching children directly.
-        if !e.children.is_empty()
-            && (e.start_line < range_start || e.end_line > range_end)
-        {
+        if !e.children.is_empty() && (e.start_line < range_start || e.end_line > range_end) {
             // Recurse into children
             for c in &e.children {
                 if c.start_line <= range_end && c.end_line >= range_start {
@@ -868,8 +866,7 @@ mod tests {
         assert!(tokens <= 800, "cascade overshot budget: {tokens} tokens");
         // Header relabelled, not [full].
         assert!(
-            out.contains("[outline (full requested, over budget)]")
-                || out.contains("[signatures"),
+            out.contains("[outline (full requested, over budget)]") || out.contains("[signatures"),
             "expected cascade header label, got: {}",
             &out[..out.len().min(200)]
         );
@@ -888,8 +885,14 @@ mod tests {
         let cache = OutlineCache::new();
         let out = read_file_with_budget(&path, None, true, Some(2000), &cache).unwrap();
 
-        assert!(out.contains("[full]"), "expected [full] label, got header in: {out}");
-        assert!(!out.contains("exceeded budget"), "no cascade note for fitting file");
+        assert!(
+            out.contains("[full]"),
+            "expected [full] label, got header in: {out}"
+        );
+        assert!(
+            !out.contains("exceeded budget"),
+            "no cascade note for fitting file"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

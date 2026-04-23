@@ -203,11 +203,12 @@ pub fn run_callees(
         return Ok(format!("# Callees: {target}\n\n(not a code file)"));
     };
 
-    let callee_names =
-        search::callees::extract_callee_names(&content, lang, def_match.def_range);
+    let callee_names = search::callees::extract_callee_names(&content, lang, def_match.def_range);
     if callee_names.is_empty() {
         let rel = format::rel_nonempty(&def_match.path, scope);
-        return Ok(format!("# Callees: {target} (in {rel})\n\n(no calls found)"));
+        return Ok(format!(
+            "# Callees: {target} (in {rel})\n\n(no calls found)"
+        ));
     }
 
     let depth_limit = depth.map(|d| d.min(5) as u32).unwrap_or(1);
@@ -236,7 +237,11 @@ pub fn run_callees(
         let c = &node.callee;
         let rel_c = format::rel_nonempty(&c.file, scope);
         let sig = c.signature.as_deref().unwrap_or("");
-        let _ = write!(out, "\n  {:<30} {}:{}-{}", c.name, rel_c, c.start_line, c.end_line);
+        let _ = write!(
+            out,
+            "\n  {:<30} {}:{}-{}",
+            c.name, rel_c, c.start_line, c.end_line
+        );
         if !sig.is_empty() {
             let _ = write!(out, "  {sig}");
         }
@@ -449,12 +454,7 @@ fn disambiguate_glob_for_section(
     let listing = candidates
         .iter()
         .take(5)
-        .map(|p| {
-            format!(
-                "  - {}",
-                p.strip_prefix(scope).unwrap_or(p).display()
-            )
-        })
+        .map(|p| format!("  - {}", p.strip_prefix(scope).unwrap_or(p).display()))
         .collect::<Vec<_>>()
         .join("\n");
     let more = if candidates.len() > 5 {

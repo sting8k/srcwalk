@@ -93,20 +93,13 @@ pub fn compute_suspicious_hops(edges: &[BfsEdge]) -> Vec<SuspicionInfo> {
             Some(p) if !p.is_empty() => p,
             _ => continue,
         };
-        let prev_dirs: HashSet<&Path> = prev
-            .iter()
-            .filter_map(|e| e.from_file.parent())
-            .collect();
+        let prev_dirs: HashSet<&Path> = prev.iter().filter_map(|e| e.from_file.parent()).collect();
         if prev_dirs.is_empty() {
             continue;
         }
         let related = list
             .iter()
-            .filter(|e| {
-                e.from_file
-                    .parent()
-                    .is_some_and(|p| prev_dirs.contains(p))
-            })
+            .filter(|e| e.from_file.parent().is_some_and(|p| prev_dirs.contains(p)))
             .count();
         // related / total < NUM / DEN  ⇔  related * DEN < total * NUM
         if related * SUSPICION_RELATED_DEN < total * SUSPICION_RELATED_NUM {
@@ -250,13 +243,7 @@ pub fn search_callers_bfs(
             // Reduce call_text to a single line — multi-line calls collapse to
             // their first line. Mirrors legacy --callers convention; bounds
             // per-edge token cost without truncating mid-token.
-            let call_text = m
-                .call_text
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let call_text = m.call_text.lines().next().unwrap_or("").trim().to_string();
 
             edges.push(BfsEdge {
                 hop,
@@ -369,8 +356,13 @@ fn format_bfs(
                 .then_with(|| a.to.cmp(&b.to))
                 .then_with(|| a.from.cmp(&b.from))
         });
-        let _ = writeln!(out, "\n── hop {} ({} edge{}) ──", hop, list.len(),
-            if list.len() == 1 { "" } else { "s" });
+        let _ = writeln!(
+            out,
+            "\n── hop {} ({} edge{}) ──",
+            hop,
+            list.len(),
+            if list.len() == 1 { "" } else { "s" }
+        );
         for e in list {
             let rel = e.from_file.strip_prefix(scope).unwrap_or(&e.from_file);
             // Match legacy `--callers` convention: payload is the call-site
@@ -409,7 +401,11 @@ fn format_bfs(
         parts.sort();
         let preview: Vec<String> = parts.iter().take(6).cloned().collect();
         let more = parts.len().saturating_sub(preview.len());
-        let suffix = if more > 0 { format!(", +{more} more") } else { String::new() };
+        let suffix = if more > 0 {
+            format!(", +{more} more")
+        } else {
+            String::new()
+        };
         notes.push(format!(
             "{} symbol(s) auto-promoted to hub (≥{} edges/hop): {}{}",
             parts.len(),
@@ -424,7 +420,11 @@ fn format_bfs(
         uniq.dedup();
         let preview: Vec<String> = uniq.iter().take(6).map(|s| (*s).clone()).collect();
         let more = uniq.len().saturating_sub(preview.len());
-        let suffix = if more > 0 { format!(", +{more} more") } else { String::new() };
+        let suffix = if more > 0 {
+            format!(", +{more} more")
+        } else {
+            String::new()
+        };
         notes.push(format!(
             "{} hub symbol(s) skipped: {}{}",
             uniq.len(),
@@ -433,7 +433,10 @@ fn format_bfs(
         ));
     }
     if stats.top_level_terminal > 0 {
-        notes.push(format!("{} top-level terminal edge(s)", stats.top_level_terminal));
+        notes.push(format!(
+            "{} top-level terminal edge(s)",
+            stats.top_level_terminal
+        ));
     }
     if stats.unresolved_symbols > 0 {
         notes.push(format!(
@@ -566,8 +569,7 @@ fn format_bfs_json(
         "disclaimer": "Static by-name call graph only. May miss indirect dispatch, reflection, macros, and calls from files > 500KB or from languages without a tree-sitter call query.",
     });
 
-    serde_json::to_string_pretty(&payload)
-        .expect("serde_json::Value is always serializable")
+    serde_json::to_string_pretty(&payload).expect("serde_json::Value is always serializable")
 }
 
 #[cfg(test)]

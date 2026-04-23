@@ -14,6 +14,6 @@ mod single;
 pub use bfs::{
     compute_suspicious_hops, search_callers_bfs, BfsEdge, BfsStats, HopStats, SuspicionInfo,
 };
+pub(crate) use single::find_callers_batch;
 #[allow(unused_imports)]
 pub use single::{find_callers, search_callers_expanded, CallerMatch};
-pub(crate) use single::find_callers_batch;

@@ -39,7 +39,11 @@ impl std::fmt::Display for SrcwalkError {
                 }
                 Ok(())
             }
-            Self::NoMatches { query, scope, suggestion } => {
+            Self::NoMatches {
+                query,
+                scope,
+                suggestion,
+            } => {
                 write!(f, "no matches for \"{query}\" in {}", scope.display())?;
                 if let Some(s) = suggestion {
                     write!(f, "\n> Did you mean: {s}")?;

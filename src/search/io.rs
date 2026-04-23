@@ -129,7 +129,10 @@ pub(crate) fn read_file_bytes(path: &Path, size: u64) -> Option<FileBytes> {
 /// Build a parallel directory walker that searches ALL files except known junk directories.
 /// Does NOT respect .gitignore — ensures gitignored but locally-relevant files are found.
 /// When `glob` is Some, applies a file-pattern override (whitelist or negation).
-pub(crate) fn walker(scope: &Path, glob: Option<&str>) -> Result<ignore::WalkParallel, SrcwalkError> {
+pub(crate) fn walker(
+    scope: &Path,
+    glob: Option<&str>,
+) -> Result<ignore::WalkParallel, SrcwalkError> {
     let threads = std::env::var("SRCWALK_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())

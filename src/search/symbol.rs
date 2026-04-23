@@ -141,7 +141,8 @@ fn find_definitions_batch(
                 return ignore::WalkState::Continue;
             }
 
-            if file_size >= super::io::MINIFIED_CHECK_THRESHOLD && super::io::looks_minified(&bytes) {
+            if file_size >= super::io::MINIFIED_CHECK_THRESHOLD && super::io::looks_minified(&bytes)
+            {
                 return ignore::WalkState::Continue;
             }
             let Ok(content) = std::str::from_utf8(&bytes) else {
@@ -421,7 +422,8 @@ fn find_definitions(
 
             // Content-based minified detection for large files that slipped
             // through filename check (e.g. `app.js` actually minified).
-            if file_size >= super::io::MINIFIED_CHECK_THRESHOLD && super::io::looks_minified(&bytes) {
+            if file_size >= super::io::MINIFIED_CHECK_THRESHOLD && super::io::looks_minified(&bytes)
+            {
                 return ignore::WalkState::Continue;
             }
 
@@ -909,8 +911,7 @@ pub fn suggest(
                         continue;
                     }
                     let start = i;
-                    while i < bytes.len()
-                        && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
                     {
                         i += 1;
                     }
@@ -940,7 +941,9 @@ pub fn suggest(
                 }
             }
             if !local.is_empty() {
-                let mut h = hits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut h = hits
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 for (spelling, line) in local {
                     h.entry(spelling)
                         .or_insert_with(|| (path.to_path_buf(), line));
@@ -1221,7 +1224,10 @@ end
         );
 
         let no_match = suggest("CompletelyUnrelatedXyz", &dir, None, 3);
-        assert!(no_match.is_empty(), "no fuzzy hit expected, got: {no_match:?}");
+        assert!(
+            no_match.is_empty(),
+            "no fuzzy hit expected, got: {no_match:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="sting8k/tilth"
+REPO="sting8k/srcwalk"
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -12,7 +12,7 @@ esac
 
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
-echo "Installing tilth for ${OS}-${ARCH}..."
+echo "Installing srcwalk for ${OS}-${ARCH}..."
 
 # Get latest version tag
 VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
@@ -21,17 +21,17 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
-URL="https://github.com/${REPO}/releases/download/v${VERSION}/tilth-${VERSION}-${OS}-${ARCH}.tar.gz"
+URL="https://github.com/${REPO}/releases/download/v${VERSION}/srcwalk-${VERSION}-${OS}-${ARCH}.tar.gz"
 echo "  Downloading v${VERSION}..."
 
 curl -fsSL "$URL" | tar xz -C "$INSTALL_DIR/"
-chmod +x "${INSTALL_DIR}/tilth-${VERSION}-${OS}-${ARCH}"
-mv "${INSTALL_DIR}/tilth-${VERSION}-${OS}-${ARCH}" "${INSTALL_DIR}/tilth"
+chmod +x "${INSTALL_DIR}/srcwalk-${VERSION}-${OS}-${ARCH}"
+mv "${INSTALL_DIR}/srcwalk-${VERSION}-${OS}-${ARCH}" "${INSTALL_DIR}/srcwalk"
 
 echo ""
-echo "tilth v${VERSION} installed to ${INSTALL_DIR}/tilth"
+echo "srcwalk v${VERSION} installed to ${INSTALL_DIR}/srcwalk"
 echo ""
 echo "MCP config (add to your AI tool settings):"
-echo '  { "command": "tilth", "args": ["--mcp"] }'
+echo '  { "command": "srcwalk", "args": ["--mcp"] }'
 echo ""
-echo "Or install from source: cargo install tilth"
+echo "Or install from source: cargo install srcwalk"

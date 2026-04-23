@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Compare old tilth (built-in tools) vs new tilth (MCP-only) exploration patterns.
+Compare old srcwalk (built-in tools) vs new srcwalk (MCP-only) exploration patterns.
 """
 
 import json
@@ -18,7 +18,7 @@ def parse_jsonl(file_path: str) -> List[Dict]:
     return results
 
 def main():
-    results_dir = Path("/Users/flysikring/conductor/workspaces/tilth/almaty/benchmark/results")
+    results_dir = Path("/Users/flysikring/conductor/workspaces/srcwalk/almaty/benchmark/results")
 
     old_file = results_dir / "benchmark_20260213_131246.jsonl"
     new_file = results_dir / "benchmark_20260213_135039.jsonl"
@@ -31,7 +31,7 @@ def main():
     new_runs = [r for r in new_runs if 'error' not in r]
 
     print("="*80)
-    print("OLD TILTH (with built-in tools) vs NEW TILTH (MCP-only)")
+    print("OLD SRCWALK (with built-in tools) vs NEW SRCWALK (MCP-only)")
     print("="*80)
 
     print(f"\nOld file: {old_file.name}")
@@ -50,29 +50,29 @@ def main():
     old_groups = group_by_task_mode(old_runs)
     new_groups = group_by_task_mode(new_runs)
 
-    # Compare tilth runs only
+    # Compare srcwalk runs only
     print("\n" + "="*80)
-    print("TILTH MODE COMPARISON (Old built-in vs New MCP-only)")
+    print("SRCWALK MODE COMPARISON (Old built-in vs New MCP-only)")
     print("="*80)
 
-    all_tasks = sorted(set(k[0] for k in old_groups.keys() if k[1] == 'tilth'))
+    all_tasks = sorted(set(k[0] for k in old_groups.keys() if k[1] == 'srcwalk'))
 
     for task in all_tasks:
-        old_tilth = old_groups.get((task, 'tilth'), [])
-        new_tilth = new_groups.get((task, 'tilth'), [])
+        old_srcwalk = old_groups.get((task, 'srcwalk'), [])
+        new_srcwalk = new_groups.get((task, 'srcwalk'), [])
 
-        if old_tilth and new_tilth:
+        if old_srcwalk and new_srcwalk:
             print(f"\n{'='*80}")
             print(f"Task: {task}")
             print(f"{'='*80}")
 
-            for old, new in zip(old_tilth, new_tilth):
-                print(f"\nOLD (built-in): {old.get('tilth_version', 'unknown')}")
+            for old, new in zip(old_srcwalk, new_srcwalk):
+                print(f"\nOLD (built-in): {old.get('srcwalk_version', 'unknown')}")
                 print(f"  Turns: {old['num_turns']}, Tool calls: {old['num_tool_calls']}")
                 print(f"  Tools: {old['tool_calls']}")
                 print(f"  Correct: {old['correct']}")
 
-                print(f"\nNEW (MCP-only): {new.get('tilth_version', 'unknown')}")
+                print(f"\nNEW (MCP-only): {new.get('srcwalk_version', 'unknown')}")
                 print(f"  Turns: {new['num_turns']}, Tool calls: {new['num_tool_calls']}")
                 print(f"  Tools: {new['tool_calls']}")
                 print(f"  Correct: {new['correct']}")
@@ -91,8 +91,8 @@ def main():
     print("SUMMARY STATISTICS")
     print("="*80)
 
-    old_tilth_runs = [r for r in old_runs if r['mode'] == 'tilth' and r['model'] == 'sonnet']
-    new_tilth_runs = [r for r in new_runs if r['mode'] == 'tilth' and r['model'] == 'sonnet']
+    old_srcwalk_runs = [r for r in old_runs if r['mode'] == 'srcwalk' and r['model'] == 'sonnet']
+    new_srcwalk_runs = [r for r in new_runs if r['mode'] == 'srcwalk' and r['model'] == 'sonnet']
 
     def avg(runs, key):
         values = [r[key] for r in runs if key in r]
@@ -107,16 +107,16 @@ def main():
     ]
 
     for key, label in metrics:
-        old_avg = avg(old_tilth_runs, key)
-        new_avg = avg(new_tilth_runs, key)
+        old_avg = avg(old_srcwalk_runs, key)
+        new_avg = avg(new_srcwalk_runs, key)
         delta = new_avg - old_avg
         print(f"{label:<30} {old_avg:>20.2f} {new_avg:>20.2f} {delta:>15.2f}")
 
     # Correctness comparison
-    old_correct = sum(1 for r in old_tilth_runs if r.get('correct'))
-    new_correct = sum(1 for r in new_tilth_runs if r.get('correct'))
+    old_correct = sum(1 for r in old_srcwalk_runs if r.get('correct'))
+    new_correct = sum(1 for r in new_srcwalk_runs if r.get('correct'))
 
-    print(f"\n{'Correctness':<30} {old_correct}/{len(old_tilth_runs):>18} {new_correct}/{len(new_tilth_runs):>18} {new_correct - old_correct:>15}")
+    print(f"\n{'Correctness':<30} {old_correct}/{len(old_srcwalk_runs):>18} {new_correct}/{len(new_srcwalk_runs):>18} {new_correct - old_correct:>15}")
 
     # Tool mix comparison
     print("\n" + "="*80)
@@ -130,8 +130,8 @@ def main():
                 tool_counts[tool] = tool_counts.get(tool, 0) + count
         return tool_counts
 
-    old_tools = count_tools(old_tilth_runs)
-    new_tools = count_tools(new_tilth_runs)
+    old_tools = count_tools(old_srcwalk_runs)
+    new_tools = count_tools(new_srcwalk_runs)
 
     all_tools = sorted(set(list(old_tools.keys()) + list(new_tools.keys())))
 

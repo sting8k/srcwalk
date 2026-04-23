@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-/// Every error tilth can produce. Displayed as user-facing messages with suggestions.
+/// Every error srcwalk can produce. Displayed as user-facing messages with suggestions.
 #[derive(Debug)]
-pub enum TilthError {
+pub enum SrcwalkError {
     NotFound {
         path: PathBuf,
         suggestion: Option<String>,
@@ -29,7 +29,7 @@ pub enum TilthError {
     },
 }
 
-impl std::fmt::Display for TilthError {
+impl std::fmt::Display for SrcwalkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound { path, suggestion } => {
@@ -62,9 +62,9 @@ impl std::fmt::Display for TilthError {
     }
 }
 
-impl std::error::Error for TilthError {}
+impl std::error::Error for SrcwalkError {}
 
-impl TilthError {
+impl SrcwalkError {
     /// Exit code matching the spec.
     #[must_use]
     pub fn exit_code(&self) -> i32 {

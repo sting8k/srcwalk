@@ -50,7 +50,7 @@ fn format_walk_note(cfg: &WalkConfig) -> String {
 
     format!(
         "# Note: respects {respects_part}; {hidden_part}; built-in SKIP_DIRS still apply \
-         (target, node_modules, …). Use `tilth <path>` to inspect an ignored file directly.\n",
+         (target, node_modules, …). Use `srcwalk <path>` to inspect an ignored file directly.\n",
     )
 }
 

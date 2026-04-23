@@ -363,7 +363,7 @@ impl MyTrait for Foo {
     fn do_thing(&self) {}
 }
 "#;
-        let dir = std::env::temp_dir().join("tilth_test_extract_symbols");
+        let dir = std::env::temp_dir().join("srcwalk_test_extract_symbols");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.rs");
         let mut f = fs::File::create(&path).unwrap();
@@ -392,7 +392,7 @@ impl MyTrait for Foo {
     #[test]
     fn test_index_file() {
         let content = "pub fn hello() {}\npub fn world() {}";
-        let dir = std::env::temp_dir().join("tilth_test_index_file");
+        let dir = std::env::temp_dir().join("srcwalk_test_index_file");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.rs");
         fs::write(&path, content).unwrap();
@@ -425,7 +425,7 @@ impl MyTrait for Foo {
     #[test]
     fn test_lookup_definitions_filter() {
         let content = "pub fn target() {}";
-        let dir = std::env::temp_dir().join("tilth_test_lookup_defs");
+        let dir = std::env::temp_dir().join("srcwalk_test_lookup_defs");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.rs");
         fs::write(&path, content).unwrap();
@@ -462,7 +462,7 @@ interface Printable {
     print(): void;
 }
 "#;
-        let dir = std::env::temp_dir().join("tilth_test_extract_ts");
+        let dir = std::env::temp_dir().join("srcwalk_test_extract_ts");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.ts");
         fs::write(&path, content).unwrap();
@@ -496,7 +496,7 @@ class MyClass:
     def method(self):
         pass
 "#;
-        let dir = std::env::temp_dir().join("tilth_test_extract_py");
+        let dir = std::env::temp_dir().join("srcwalk_test_extract_py");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.py");
         fs::write(&path, content).unwrap();

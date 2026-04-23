@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::cache::OutlineCache;
-use crate::error::TilthError;
+use crate::error::SrcwalkError;
 
 use super::single::{find_callers_batch, TOP_LEVEL};
 
@@ -161,7 +161,7 @@ pub fn search_callers_bfs(
     glob: Option<&str>,
     skip_hubs: Option<&str>,
     json: bool,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let t_start = std::time::Instant::now();
     let user_hubs = parse_hubs(skip_hubs);
     // Auto-promoted hubs: symbols producing >= AUTO_HUB_THRESHOLD edges per hop.
@@ -348,7 +348,7 @@ fn format_bfs(
         let _ = writeln!(
             out,
             "\nNo call sites found. Symbol may be invoked via indirect dispatch \
-             (trait objects, interfaces, callbacks, reflection, macros) — tilth \
+             (trait objects, interfaces, callbacks, reflection, macros) — srcwalk \
              only sees direct by-name calls."
         );
         return out;

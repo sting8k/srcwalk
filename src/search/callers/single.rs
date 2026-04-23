@@ -9,7 +9,7 @@ use streaming_iterator::StreamingIterator;
 use crate::lang::treesitter::{extract_definition_name, DEFINITION_KINDS};
 
 use crate::cache::OutlineCache;
-use crate::error::TilthError;
+use crate::error::SrcwalkError;
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
 use crate::format::rel_nonempty;
@@ -48,7 +48,7 @@ pub fn find_callers(
     bloom: &crate::index::bloom::BloomFilterCache,
     glob: Option<&str>,
     cache: Option<&crate::cache::OutlineCache>,
-) -> Result<Vec<CallerMatch>, TilthError> {
+) -> Result<Vec<CallerMatch>, SrcwalkError> {
     let matches: Mutex<Vec<CallerMatch>> = Mutex::new(Vec::new());
     let found_count = AtomicUsize::new(0);
     let needle = target.as_bytes();
@@ -248,7 +248,7 @@ pub(crate) fn find_callers_batch(
     glob: Option<&str>,
     cache: Option<&crate::cache::OutlineCache>,
     early_quit: Option<usize>,
-) -> Result<Vec<(String, CallerMatch)>, TilthError> {
+) -> Result<Vec<(String, CallerMatch)>, SrcwalkError> {
     let matches: Mutex<Vec<(String, CallerMatch)>> = Mutex::new(Vec::new());
     let found_count = AtomicUsize::new(0);
 
@@ -568,20 +568,20 @@ pub fn search_callers_expanded(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let max_matches = limit.unwrap_or(usize::MAX);
     let callers = find_callers(target, scope, bloom, glob, Some(cache))?;
 
     if callers.is_empty() {
         return Ok(format!(
             "# Callers of \"{}\" in {} — no call sites found\n\n\
-             Tip: tilth detects only direct, by-name call sites. The symbol may still be invoked via:\n\
+             Tip: srcwalk detects only direct, by-name call sites. The symbol may still be invoked via:\n\
                - Rust trait objects (`dyn Trait`) or generic bounds\n\
                - Go interface dispatch or function values stored in structs\n\
                - Java/Kotlin interface or abstract methods, reflection\n\
                - TypeScript/JS class hierarchies, callbacks, or dynamic property access\n\
                - Python duck typing, `getattr`, decorators\n\n\
-             Try `tilth(\"{}\")` (symbol search) to find the declaring interface/trait, \
+             Try `srcwalk(\"{}\")` (symbol search) to find the declaring interface/trait, \
              then run `callers` on that name, or search for implementors.",
             target,
             scope.display(),

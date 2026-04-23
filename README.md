@@ -1,44 +1,44 @@
-# another-tilth
+# another-srcwalk
 
-A personal fork of [tilth](https://github.com/jahala/tilth) — code-intelligence CLI for AI agents — tuned for heavier real-world workflows.
+A personal fork of [srcwalk](https://github.com/jahala/srcwalk) — code-intelligence CLI for AI agents — tuned for heavier real-world workflows.
 
 Same core idea as upstream (small files come back whole, large files get a structural outline), with extra polish around: **multi-hop caller graphs (BFS)**, output economy under token budgets, search ergonomics when the agent guesses the symbol name wrong, and a CLI-only surface that drops protocol cruft (no MCP, no edit mode, no diff subcommand).
 
-> Your agent will **love** reaching for this — cheap outlines first, drill on demand, never blow the token budget. Drop the skill in once and watch it quietly prefer `tilth` over `cat` and `grep`. 😼
+> Your agent will **love** reaching for this — cheap outlines first, drill on demand, never blow the token budget. Drop the skill in once and watch it quietly prefer `srcwalk` over `cat` and `grep`. 😼
 
 ## Why this fork
 
 Driven by real agent sessions across 8 cross-language codebases (Rust, TypeScript, Python, Go, PHP, Java, C#) plus a side-by-side audit experiment.
 
-**Same agent, same prompt, same conclusion — a breadth-first code review on a large codebase, with vs without tilth:**
+**Same agent, same prompt, same conclusion — a breadth-first code review on a large codebase, with vs without srcwalk:**
 
-| | tilth-on | bash-only |
+| | srcwalk-on | bash-only |
 |---|---|---|
 | Tool-result bytes consumed | **198 KB** | 230 KB (−14%) |
 | Avg tool-result size | **3.2 KB** | 4.3 KB (−26%) |
 | Files surveyed in adjacent surface the agent found on its own | **8** | 0 |
 | Findings reported | 1 | 1 |
 
-Same answer, less context burned, and the tilth-on run swept a whole adjacent surface that bash-only missed entirely. Headline numbers are modest; the real win is **fewer false-negatives on breadth-first work** because outlines are cheap enough that the agent looks around.
+Same answer, less context burned, and the srcwalk-on run swept a whole adjacent surface that bash-only missed entirely. Headline numbers are modest; the real win is **fewer false-negatives on breadth-first work** because outlines are cheap enough that the agent looks around.
 
 What that pressure-tested into the fork:
 
-- A real **multi-hop caller graph** (BFS), not just one-hop callers — agents stop looping `tilth caller-of-caller-of-…` manually.
+- A real **multi-hop caller graph** (BFS), not just one-hop callers — agents stop looping `srcwalk caller-of-caller-of-…` manually.
 - Cascade behaviour for `--full` over `--budget` so big files degrade gracefully (`outline → signatures`) with explicit labels — no silent truncation.
 - Search that **routes around dead ends**: cross-naming-convention + typo-tolerant Did-you-mean, bare-filename `--section` auto-pick (gitignore + depth-ranked), filename suggestions on concept-search misses.
 - Map / glob that respect `.gitignore` so token totals reflect what you'd actually have to read, not what's on disk.
-- A leaner CLI surface — MCP server, edit mode, hashline-edit, `tilth diff`, `tilth install`, `--files`, content-search dispatch all removed (overlap with `rg`/`fd`/native edit tools).
+- A leaner CLI surface — MCP server, edit mode, hashline-edit, `srcwalk diff`, `srcwalk install`, `--files`, content-search dispatch all removed (overlap with `rg`/`fd`/native edit tools).
 - Performance pass: mmap walkers, Aho-Corasick + length-sorted memchr, tree-sitter parse cache, rayon-parallel multi-symbol search, mimalloc, minified-file skip.
 - Elixir language support.
 
-Most of this lives in [PR #64](https://github.com/jahala/tilth/pull/64) upstream (rationale + before/after).
+Most of this lives in [PR #64](https://github.com/jahala/srcwalk/pull/64) upstream (rationale + before/after).
 
 ## Headline feature: multi-hop caller BFS
 
 Trace callers transitively (up to 5 hops) in one call. Hub guard, deterministic edge cap, per-edge call-site source, and a cross-package collision warning — designed so the agent can trust deep hops or know exactly when not to.
 
 ```
-$ tilth NewClient --callers --depth 3 --json
+$ srcwalk NewClient --callers --depth 3 --json
 {
   "edges": [
     { "hop": 1, "from": "newDefaultClient", "from_file": "client/factory.go", "from_line": 42,
@@ -57,7 +57,7 @@ $ tilth NewClient --callers --depth 3 --json
 
 `call_text` is the actual call-site line, so overloaded names disambiguate themselves. `suspicious_hops` flags cross-package name collisions. `auto_hubs_promoted` tells you which symbols got fan-out-capped so the graph stays readable.
 
-Skill prompt teaches agents how to read this; flags / syntax live in [`skills/tilth/SKILL.md`](./skills/tilth/SKILL.md).
+Skill prompt teaches agents how to read this; flags / syntax live in [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md).
 
 ## Install
 
@@ -65,10 +65,10 @@ Skill prompt teaches agents how to read this; flags / syntax live in [`skills/ti
 
 ```sh
 # Cargo (latest from this branch)
-cargo install --git https://github.com/sting8k/tilth --branch another-tilth --locked tilth
+cargo install --git https://github.com/sting8k/srcwalk --branch another-srcwalk --locked srcwalk
 
-# Upstream tilth (no fork extras)
-cargo install tilth
+# Upstream srcwalk (no fork extras)
+cargo install srcwalk
 ```
 
 <details>
@@ -76,28 +76,28 @@ cargo install tilth
 
 ```sh
 # macOS Apple Silicon
-curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-aarch64-apple-darwin.tar.gz | tar xz -C /usr/local/bin
+curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarch64-apple-darwin.tar.gz | tar xz -C /usr/local/bin
 
 # macOS Intel
-curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-x86_64-apple-darwin.tar.gz | tar xz -C /usr/local/bin
+curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-x86_64-apple-darwin.tar.gz | tar xz -C /usr/local/bin
 
 # Linux x86_64 (static musl)
-curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-x86_64-unknown-linux-musl.tar.gz | tar xz -C ~/.local/bin
+curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-x86_64-unknown-linux-musl.tar.gz | tar xz -C ~/.local/bin
 
 # Linux aarch64 (static musl)
-curl -L https://github.com/sting8k/tilth/releases/latest/download/tilth-aarch64-unknown-linux-musl.tar.gz | tar xz -C ~/.local/bin
+curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarch64-unknown-linux-musl.tar.gz | tar xz -C ~/.local/bin
 ```
 
-Windows: download `tilth-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/sting8k/tilth/releases/latest) and unzip.
+Windows: download `srcwalk-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/sting8k/srcwalk/releases/latest) and unzip.
 
-Verify build provenance: `gh attestation verify tilth-<target>.tar.gz --owner sting8k`. Pin to a tagged release with `--tag v0.8.1` instead of `--branch …`.
+Verify build provenance: `gh attestation verify srcwalk-<target>.tar.gz --owner sting8k`. Pin to a tagged release with `--tag v0.8.1` instead of `--branch …`.
 
 </details>
 
-**Agent skill** — teaches your coding agent the command vocabulary, when to fall back to `rg`/`cat`/`fd`, how to read Did-you-mean / cascade labels / BFS edge JSON. Ships at [`skills/tilth/SKILL.md`](./skills/tilth/SKILL.md).
+**Agent skill** — teaches your coding agent the command vocabulary, when to fall back to `rg`/`cat`/`fd`, how to read Did-you-mean / cascade labels / BFS edge JSON. Ships at [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md).
 
 ```sh
-npx skills add sting8k/tilth
+npx skills add sting8k/srcwalk
 ```
 
 Works with Claude Code, Cursor, codex, droid — any agent that follows the `<skill-name>/SKILL.md` convention.
@@ -106,9 +106,9 @@ Works with Claude Code, Cursor, codex, droid — any agent that follows the `<sk
 <summary>Manual skill install</summary>
 
 ```sh
-mkdir -p ~/.<your-agent>/skills/tilth && \
-curl -L https://raw.githubusercontent.com/sting8k/tilth/another-tilth/skills/tilth/SKILL.md \
-  -o ~/.<your-agent>/skills/tilth/SKILL.md
+mkdir -p ~/.<your-agent>/skills/srcwalk && \
+curl -L https://raw.githubusercontent.com/sting8k/srcwalk/another-srcwalk/skills/srcwalk/SKILL.md \
+  -o ~/.<your-agent>/skills/srcwalk/SKILL.md
 ```
 
 Common paths: `~/.claude/skills/`, `~/.pi/agent/skills/`, `~/.cursor/skills/`. For agents that use a single rules file (Cursor rules, Windsurf), paste the body of `SKILL.md` (without the YAML frontmatter) into your rules / custom-instructions file.
@@ -123,7 +123,7 @@ A few snapshots — see the skill for the full command vocabulary.
 <summary><b>Outline of a large file</b></summary>
 
 ```
-$ tilth src/auth.ts
+$ srcwalk src/auth.ts
 # src/auth.ts (258 lines, ~3.4k tokens) [outline]
 
 [1-12]   imports: express(2), jsonwebtoken, @/config
@@ -150,7 +150,7 @@ $ tilth src/auth.ts
 <summary><b>Symbol search — definitions first, with resolved callees</b></summary>
 
 ```
-$ tilth handleAuth --scope src/
+$ srcwalk handleAuth --scope src/
 # Search: "handleAuth" in src/ — 6 matches (2 definitions, 4 usages)
 
 ## src/auth.ts:44-89 [definition]
@@ -170,11 +170,11 @@ $ tilth handleAuth --scope src/
 <summary><b>0-hit search → cross-convention + typo Did-you-mean (lev ≤ 2)</b></summary>
 
 ```
-$ tilth searchSymbol --scope src/
+$ srcwalk searchSymbol --scope src/
 no matches for "searchSymbol" in src/
 > Did you mean: search_symbol (src/lib.rs:186)
 
-$ tilth readByt --scope src/
+$ srcwalk readByt --scope src/
 no matches for "readByt" in src/
 > Did you mean: readByte, readBytes, readInt
 ```
@@ -184,7 +184,7 @@ no matches for "readByt" in src/
 <summary><b>Bare filename + <code>--section</code> — auto-picks the primary copy</b></summary>
 
 ```
-$ tilth lib.rs --section symbol_search
+$ srcwalk lib.rs --section symbol_search
 Resolved 'lib.rs' → src/lib.rs
   (skipped 9 non-primary copies [benchmark/fixtures/repos/ripgrep/crates/cli/src/lib.rs,
    benchmark/fixtures/repos/ripgrep/crates/globset/src/lib.rs, +7 more]).
@@ -199,7 +199,7 @@ Gitignore-aware, depth-ranked. Pass the full path to override.
 <summary><b>Token-aware map — respects <code>.gitignore</code></b></summary>
 
 ```
-$ tilth --map --scope .
+$ srcwalk --map --scope .
 # .gitignore + git excludes applied
 .pi-lens/  (~175.9k tokens)        ← skip, too large to read
 .github/   (~1.0k tokens)          ← safe to read in full
@@ -215,7 +215,7 @@ Token totals reflect what you'd actually read.
 <summary><b>Glob — token estimate + one-line preview</b></summary>
 
 ```
-$ tilth "*.rs" --scope src/
+$ srcwalk "*.rs" --scope src/
 src/budget.rs  (~774 tokens · Apply token budget to output paths)
 src/cache.rs   (~580 tokens · Tree-sitter parse cache with LRU eviction)
 src/lib.rs     (~210 tokens · pub mod budget; pub mod cache;)
@@ -243,14 +243,14 @@ Search uses early termination via bloom-filter pruning + length-sorted memchr �
 
 ## Related
 
-- [jahala/tilth](https://github.com/jahala/tilth) — upstream
+- [jahala/srcwalk](https://github.com/jahala/srcwalk) — upstream
 - [ripgrep](https://github.com/BurntSushi/ripgrep) — content search internals (`grep-regex`, `grep-searcher`)
 - [tree-sitter](https://tree-sitter.github.io/) — AST parsing for 14 languages
 - [The Harness Problem](https://blog.can.ac/2026/02/12/the-harness-problem/) — inspired earlier edit-mode work (since removed in this fork)
 
 ## Name
 
-**tilth** — the state of soil that's been prepared for planting. Your codebase is the soil; tilth gives it structure so you can find where to dig. **another-tilth** is just another take on it.
+**srcwalk** — the state of soil that's been prepared for planting. Your codebase is the soil; srcwalk gives it structure so you can find where to dig. **another-srcwalk** is just another take on it.
 
 ## License
 

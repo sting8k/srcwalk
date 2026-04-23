@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use globset::Glob;
 
-use crate::error::TilthError;
+use crate::error::SrcwalkError;
 use crate::types::estimate_tokens;
 
 const DEFAULT_LIMIT: usize = 20;
@@ -38,8 +38,8 @@ pub fn search(
     scope: &Path,
     limit: Option<usize>,
     offset: usize,
-) -> Result<GlobResult, TilthError> {
-    let glob = Glob::new(pattern).map_err(|e| TilthError::InvalidQuery {
+) -> Result<GlobResult, SrcwalkError> {
+    let glob = Glob::new(pattern).map_err(|e| SrcwalkError::InvalidQuery {
         query: pattern.to_string(),
         reason: e.to_string(),
     })?;

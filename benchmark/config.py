@@ -32,7 +32,7 @@ BENCHMARK_DIR = Path(__file__).parent
 FIXTURES_DIR = BENCHMARK_DIR / "fixtures"
 SYNTHETIC_REPO = FIXTURES_DIR / "repo"
 RESULTS_DIR = BENCHMARK_DIR / "results"
-REPOS_DIR = Path("/tmp/tilth_bench/repos")
+REPOS_DIR = Path("/tmp/srcwalk_bench/repos")
 
 
 @dataclass
@@ -84,7 +84,7 @@ MODES = {
     "baseline": ModeConfig(
         name="baseline",
         tools=["Read", "Edit", "Grep", "Glob", "Bash"],
-        description="Built-in tools (Bash includes tilth CLI)",
+        description="Built-in tools (Bash includes srcwalk CLI)",
     ),
 }
 

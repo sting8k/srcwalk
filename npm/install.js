@@ -21,7 +21,7 @@ const key = `${process.platform}-${process.arch}`;
 const target = PLATFORM_MAP[key];
 
 if (!target) {
-  console.error(`tilth: unsupported platform ${key}`);
+  console.error(`srcwalk: unsupported platform ${key}`);
   console.error(`Supported: ${Object.keys(PLATFORM_MAP).join(", ")}`);
   process.exit(1);
 }
@@ -29,8 +29,8 @@ if (!target) {
 const version = require("./package.json").version;
 const isWindows = process.platform === "win32";
 const ext = isWindows ? "zip" : "tar.gz";
-const binName = isWindows ? "tilth.exe" : "tilth";
-const url = `https://github.com/sting8k/tilth/releases/download/v${version}/tilth-${target}.${ext}`;
+const binName = isWindows ? "srcwalk.exe" : "srcwalk";
+const url = `https://github.com/sting8k/srcwalk/releases/download/v${version}/srcwalk-${target}.${ext}`;
 
 const binDir = path.join(__dirname, "bin");
 const binPath = path.join(binDir, binName);
@@ -42,24 +42,24 @@ if (fs.existsSync(binPath)) {
 
 fs.mkdirSync(binDir, { recursive: true });
 
-console.log(`tilth: downloading ${target} binary...`);
+console.log(`srcwalk: downloading ${target} binary...`);
 
 function follow(url, callback) {
   const mod = url.startsWith("https") ? https : http;
-  mod.get(url, { headers: { "User-Agent": "tilth-npm" } }, (res) => {
+  mod.get(url, { headers: { "User-Agent": "srcwalk-npm" } }, (res) => {
     if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
       follow(res.headers.location, callback);
     } else if (res.statusCode !== 200) {
-      console.error(`tilth: download failed (HTTP ${res.statusCode})`);
+      console.error(`srcwalk: download failed (HTTP ${res.statusCode})`);
       console.error(`URL: ${url}`);
-      console.error("Install manually: cargo install tilth");
+      console.error("Install manually: cargo install srcwalk");
       process.exit(1);
     } else {
       callback(res);
     }
   }).on("error", (err) => {
-    console.error(`tilth: download failed: ${err.message}`);
-    console.error("Install manually: cargo install tilth");
+    console.error(`srcwalk: download failed: ${err.message}`);
+    console.error("Install manually: cargo install srcwalk");
     process.exit(1);
   });
 }
@@ -67,7 +67,7 @@ function follow(url, callback) {
 follow(url, (res) => {
   if (isWindows) {
     // For Windows, save zip and extract with tar (available on modern Windows)
-    const tmpZip = path.join(binDir, "tilth.zip");
+    const tmpZip = path.join(binDir, "srcwalk.zip");
     const out = fs.createWriteStream(tmpZip);
     res.pipe(out);
     out.on("finish", () => {
@@ -76,7 +76,7 @@ follow(url, (res) => {
         execSync(`tar -xf "${tmpZip}" -C "${binDir}"`, { stdio: "ignore" });
         fs.unlinkSync(tmpZip);
       } catch {
-        console.error("tilth: failed to extract. Install manually: cargo install tilth");
+        console.error("srcwalk: failed to extract. Install manually: cargo install srcwalk");
         process.exit(1);
       }
     });
@@ -88,11 +88,11 @@ follow(url, (res) => {
     res.pipe(tar.stdin);
     tar.on("close", (code) => {
       if (code !== 0) {
-        console.error("tilth: failed to extract. Install manually: cargo install tilth");
+        console.error("srcwalk: failed to extract. Install manually: cargo install srcwalk");
         process.exit(1);
       }
       fs.chmodSync(binPath, 0o755);
-      console.log("tilth: installed successfully");
+      console.log("srcwalk: installed successfully");
     });
   }
 });

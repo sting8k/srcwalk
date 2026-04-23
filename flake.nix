@@ -1,5 +1,5 @@
 {
-  description = "tilth — tree-sitter indexed lookups — smart code reading for AI agents";
+  description = "srcwalk — tree-sitter indexed lookups — smart code reading for AI agents";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
@@ -27,9 +27,9 @@
             cargoLock.lockFile = ./Cargo.lock;
             meta = {
               inherit (cargoToml.package) description;
-              homepage = "https://github.com/sting8k/tilth";
+              homepage = "https://github.com/sting8k/srcwalk";
               license = lib.licenses.mit;
-              mainProgram = "tilth";
+              mainProgram = "srcwalk";
             };
           };
         }

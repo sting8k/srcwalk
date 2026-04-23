@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Benchmark runner for tilth performance evaluation.
+Benchmark runner for srcwalk performance evaluation.
 
 Executes `claude -p` for each combination of (task, mode, model, repetition).
 Records token usage, cost, correctness, and tool usage to JSONL format.
@@ -35,15 +35,15 @@ from tasks import TASKS
 from fixtures.reset import reset_repo, ensure_repo_clean
 
 
-def _tilth_version() -> Optional[str]:
-    """Get installed tilth version via `tilth --version`."""
+def _srcwalk_version() -> Optional[str]:
+    """Get installed srcwalk version via `srcwalk --version`."""
     try:
         result = subprocess.run(
-            ["/Users/flysikring/.cargo/bin/tilth", "--version"],
+            ["/Users/flysikring/.cargo/bin/srcwalk", "--version"],
             capture_output=True, text=True, timeout=5,
         )
-        # Output: "tilth 0.2.1"
-        return result.stdout.strip().removeprefix("tilth ") if result.returncode == 0 else None
+        # Output: "srcwalk 0.2.1"
+        return result.stdout.strip().removeprefix("srcwalk ") if result.returncode == 0 else None
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
 
@@ -89,7 +89,7 @@ def run_single(
 
     Args:
         task_name: Name of task to run
-        mode_name: Mode (baseline or tilth)
+        mode_name: Mode (baseline or srcwalk)
         model_name: Model (haiku, sonnet, opus)
         repetition: Repetition number
         verbose: Whether to print detailed output
@@ -194,7 +194,7 @@ def run_single(
         "mode": mode_name,
         "model": model_name,
         "repetition": repetition,
-        "tilth_version": _tilth_version() if "tilth" in mode_name else None,
+        "srcwalk_version": _srcwalk_version() if "srcwalk" in mode_name else None,
         "num_turns": run_result.num_turns,
         "num_tool_calls": sum(tool_breakdown.values()),
         "tool_calls": tool_breakdown,
@@ -230,13 +230,13 @@ def parse_comma_list(value: str, valid_options: dict, name: str) -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run tilth benchmarks",
+        description="Run srcwalk benchmarks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python run.py --models sonnet --reps 5 --tasks all --modes all
-  python run.py --models haiku --reps 1 --tasks find_definition --modes baseline,tilth
-  python run.py --models sonnet,opus --reps 3 --tasks find_definition,edit_task --modes tilth
+  python run.py --models haiku --reps 1 --tasks find_definition --modes baseline,srcwalk
+  python run.py --models sonnet,opus --reps 3 --tasks find_definition,edit_task --modes srcwalk
         """,
     )
 
@@ -329,7 +329,7 @@ Examples:
 
     # Print configuration summary
     print("=" * 70)
-    print("tilth Benchmark Runner")
+    print("srcwalk Benchmark Runner")
     print("=" * 70)
     print(f"Models:      {', '.join(models)}")
     print(f"Tasks:       {', '.join(tasks_list)}")

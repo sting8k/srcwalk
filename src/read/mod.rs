@@ -7,7 +7,7 @@ use std::path::Path;
 use memmap2::Mmap;
 
 use crate::cache::OutlineCache;
-use crate::error::TilthError;
+use crate::error::SrcwalkError;
 use crate::format;
 use crate::lang::detect_file_type;
 use crate::lang::outline::get_outline_entries as lang_get_outline_entries;
@@ -17,9 +17,9 @@ pub(crate) const TOKEN_THRESHOLD: u64 = 6_000;
 const FILE_SIZE_CAP: u64 = 500_000; // 500KB
 
 /// Sections exceeding this token count are degraded to an outline of the range.
-/// Override with `TILTH_SECTION_SOFT_LIMIT` env var.
+/// Override with `SRCWALK_SECTION_SOFT_LIMIT` env var.
 fn section_token_limit() -> u64 {
-    std::env::var("TILTH_SECTION_SOFT_LIMIT")
+    std::env::var("SRCWALK_SECTION_SOFT_LIMIT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5_000)
@@ -28,9 +28,9 @@ fn section_token_limit() -> u64 {
 /// Max file size for `full=true` reads. Files above this threshold get a
 /// warning header + outline instead of raw content, preventing multi-megabyte
 /// responses that cause MCP client timeouts.
-/// Override with `TILTH_FULL_SIZE_CAP` env var (bytes). Default: 2MB.
+/// Override with `SRCWALK_FULL_SIZE_CAP` env var (bytes). Default: 2MB.
 fn full_read_size_cap() -> u64 {
-    std::env::var("TILTH_FULL_SIZE_CAP")
+    std::env::var("SRCWALK_FULL_SIZE_CAP")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(2_000_000)
@@ -42,22 +42,22 @@ pub fn read_file(
     section: Option<&str>,
     full: bool,
     cache: &OutlineCache,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let meta = match fs::metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(TilthError::NotFound {
+            return Err(SrcwalkError::NotFound {
                 path: path.to_path_buf(),
                 suggestion: suggest_similar(path),
             });
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            return Err(TilthError::PermissionDenied {
+            return Err(SrcwalkError::PermissionDenied {
                 path: path.to_path_buf(),
             });
         }
         Err(e) => {
-            return Err(TilthError::IoError {
+            return Err(SrcwalkError::IoError {
                 path: path.to_path_buf(),
                 source: e,
             });
@@ -82,11 +82,11 @@ pub fn read_file(
     }
 
     // Binary detection
-    let file = fs::File::open(path).map_err(|e| TilthError::IoError {
+    let file = fs::File::open(path).map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
     })?;
-    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| TilthError::IoError {
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
     })?;
@@ -146,7 +146,7 @@ pub fn read_file(
         return Ok(format!(
             "{header}\n\n> **full=true capped**: file is {file_mb:.1}MB (cap: {cap_mb:.1}MB). \
              Showing first {shown} of {line_count} lines. \
-             Continue with `section=\"{next_start}-<end>\"` or set TILTH_FULL_SIZE_CAP={byte_len} to override.\n\n\
+             Continue with `section=\"{next_start}-<end>\"` or set SRCWALK_FULL_SIZE_CAP={byte_len} to override.\n\n\
              {numbered_head}\n\n## Outline\n\n{outline}"
         ));
     }
@@ -200,7 +200,7 @@ pub fn read_file_with_budget(
     full: bool,
     budget: Option<u64>,
     cache: &OutlineCache,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     // Fast path: not a full-file budgeted request → defer to read_file.
     let Some(b) = budget else {
         return read_file(path, section, full, cache);
@@ -229,7 +229,7 @@ pub fn read_file_with_budget(
     }
 
     // Step 4: terminal — header + advice only.
-    let meta = std::fs::metadata(path).map_err(|e| TilthError::IoError {
+    let meta = std::fs::metadata(path).map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
     })?;
@@ -247,12 +247,12 @@ fn render_outline_view(
     path: &Path,
     cache: &OutlineCache,
     mode: ViewMode,
-) -> Result<String, TilthError> {
-    let meta = std::fs::metadata(path).map_err(|e| TilthError::IoError {
+) -> Result<String, SrcwalkError> {
+    let meta = std::fs::metadata(path).map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
     })?;
-    let buf = std::fs::read(path).map_err(|e| TilthError::IoError {
+    let buf = std::fs::read(path).map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
     })?;
@@ -270,7 +270,7 @@ fn render_outline_view(
 /// Signatures-only view: keep top-level outline lines (no nested children body).
 /// Heuristic: drop indented continuation lines from the outline, preserving
 /// only the first non-indented entry per block.
-fn render_signatures_view(path: &Path, cache: &OutlineCache) -> Result<String, TilthError> {
+fn render_signatures_view(path: &Path, cache: &OutlineCache) -> Result<String, SrcwalkError> {
     let outline_full = render_outline_view(path, cache, ViewMode::Signatures)?;
     let mut lines = outline_full.lines();
     let header = lines.next().unwrap_or("");
@@ -446,12 +446,12 @@ fn suggest_headings(buf: &[u8], query: &str, top_n: usize) -> Vec<String> {
 /// Read a specific line range from a file.
 /// Uses memchr to find the Nth newline offset and slice the mmap buffer directly
 /// instead of collecting all lines into a Vec.
-fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<String, TilthError> {
-    let file = fs::File::open(path).map_err(|e| TilthError::IoError {
+fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<String, SrcwalkError> {
+    let file = fs::File::open(path).map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
     })?;
-    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| TilthError::IoError {
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
     })?;
@@ -470,7 +470,7 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
                     suggestions.join("\n  ")
                 )
             };
-            TilthError::InvalidQuery {
+            SrcwalkError::InvalidQuery {
                 query: range.to_string(),
                 reason,
             }
@@ -482,7 +482,7 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
         // Symbol name like "isCustomization" or "handleRequest"
         r
     } else {
-        return Err(TilthError::InvalidQuery {
+        return Err(SrcwalkError::InvalidQuery {
             query: range.to_string(),
             reason:
                 "not a valid line range (e.g. \"45-89\"), heading (e.g. \"## Foo\"), or symbol name in this file"
@@ -501,7 +501,7 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
     let e = end.min(total);
 
     if s >= e {
-        return Err(TilthError::InvalidQuery {
+        return Err(SrcwalkError::InvalidQuery {
             query: range.to_string(),
             reason: format!("range out of bounds (file has {total} lines)"),
         });
@@ -643,9 +643,9 @@ fn find_symbol_in_entries(entries: &[OutlineEntry], symbol: &str) -> Option<(usi
 }
 
 /// List directory contents — treat as glob on dir/*.
-fn list_directory(path: &Path) -> Result<String, TilthError> {
+fn list_directory(path: &Path) -> Result<String, SrcwalkError> {
     let mut entries: Vec<String> = Vec::new();
-    let read_dir = fs::read_dir(path).map_err(|e| TilthError::IoError {
+    let read_dir = fs::read_dir(path).map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
     })?;
@@ -819,7 +819,7 @@ mod tests {
         use std::io::Write;
 
         // Create a temp file larger than our small cap (100 bytes)
-        let path = std::env::temp_dir().join("tilth_test_large.rs");
+        let path = std::env::temp_dir().join("srcwalk_test_large.rs");
         let mut f = std::fs::File::create(&path).unwrap();
         // Write enough to exceed the cap — 200 bytes of Rust code
         for i in 0..20 {
@@ -828,7 +828,7 @@ mod tests {
         drop(f);
 
         // Set a tiny cap so the guard triggers
-        std::env::set_var("TILTH_FULL_SIZE_CAP", "100");
+        std::env::set_var("SRCWALK_FULL_SIZE_CAP", "100");
 
         let cache = OutlineCache::new();
         let result = read_file(&path, None, true, &cache).unwrap();
@@ -843,7 +843,7 @@ mod tests {
             "expected head/outline content in output"
         );
 
-        std::env::remove_var("TILTH_FULL_SIZE_CAP");
+        std::env::remove_var("SRCWALK_FULL_SIZE_CAP");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -857,7 +857,7 @@ mod tests {
             ));
         }
         body.push_str("}\n");
-        let path = std::env::temp_dir().join("tilth_p11_cascade.php");
+        let path = std::env::temp_dir().join("srcwalk_p11_cascade.php");
         std::fs::write(&path, body.as_bytes()).unwrap();
 
         let cache = OutlineCache::new();
@@ -882,7 +882,7 @@ mod tests {
     #[test]
     fn budget_cascade_passthrough_when_fits() {
         // Tiny file fits in budget → unchanged behavior (full content).
-        let path = std::env::temp_dir().join("tilth_p11_tiny.php");
+        let path = std::env::temp_dir().join("srcwalk_p11_tiny.php");
         std::fs::write(&path, b"<?php\nclass Tiny { public function f() {} }\n").unwrap();
 
         let cache = OutlineCache::new();

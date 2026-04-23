@@ -40,7 +40,7 @@ impl BloomFilter {
     /// # Examples
     ///
     /// ```
-    /// use tilth::index::bloom::BloomFilter;
+    /// use srcwalk::index::bloom::BloomFilter;
     ///
     /// let bf = BloomFilter::new(100, 0.01);
     /// assert!(!bf.contains("hello"));

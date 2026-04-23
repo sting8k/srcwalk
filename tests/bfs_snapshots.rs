@@ -1,6 +1,6 @@
 //! BFS multi-hop regression + determinism + auto-hub guards.
 //!
-//! Fixture scope: the tilth repo itself, src/ subtree (small, stable, Rust).
+//! Fixture scope: the srcwalk repo itself, src/ subtree (small, stable, Rust).
 //! These tests lock behavior after the P0 fix (f8a3d3f) so future refactors
 //! can't silently regress byte-exact legacy output, determinism, or
 //! data-driven auto-hub promotion.
@@ -8,7 +8,7 @@
 #![allow(clippy::pedantic)]
 
 use std::path::{Path, PathBuf};
-use tilth::cache::OutlineCache;
+use srcwalk::cache::OutlineCache;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -35,7 +35,7 @@ fn run_callers_capped(
     max_edges: Option<usize>,
 ) -> String {
     let cache = OutlineCache::new();
-    tilth::run_callers(
+    srcwalk::run_callers(
         target,
         scope,
         /* expand */ 0,
@@ -270,7 +270,7 @@ fn json_schema_top_level_keys() {
 // d=2 returned 3 different hashes). The fix sorts hop_matches by
 // (from_file, from_line, callee, caller) before the truncation loop.
 //
-// This test exercises the cap code path on the tilth repo itself
+// This test exercises the cap code path on the srcwalk repo itself
 // (Session d=4 with max_edges=50 trips the cap at hop 2).
 
 #[test]

@@ -1,5 +1,5 @@
 //! File-level dependency analysis: what a file imports and what imports it.
-//! Used by `tilth_deps` for blast-radius checks before breaking changes.
+//! Used by `srcwalk_deps` for blast-radius checks before breaking changes.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cache::OutlineCache;
-use crate::error::TilthError;
+use crate::error::SrcwalkError;
 use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
 use crate::lang::outline::{extract_import_source, get_outline_entries};
@@ -59,14 +59,14 @@ pub fn analyze_deps(
     scope: &Path,
     cache: &OutlineCache,
     bloom: &crate::index::bloom::BloomFilterCache,
-) -> Result<DepsResult, TilthError> {
+) -> Result<DepsResult, SrcwalkError> {
     // Canonicalize for reliable path comparison (callers return absolute paths).
-    let path = &path.canonicalize().map_err(|e| TilthError::IoError {
+    let path = &path.canonicalize().map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
     })?;
 
-    let content = fs::read_to_string(path).map_err(|e| TilthError::IoError {
+    let content = fs::read_to_string(path).map_err(|e| SrcwalkError::IoError {
         path: path.clone(),
         source: e,
     })?;

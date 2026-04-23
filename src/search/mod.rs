@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 
 use crate::cache::OutlineCache;
-use crate::error::TilthError;
+use crate::error::SrcwalkError;
 use crate::format;
 use crate::format::{rel, rel_nonempty};
 use crate::read;
@@ -68,7 +68,7 @@ pub fn search_symbol(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let mut result = symbol::search(query, scope, Some(cache), None, glob)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
@@ -89,7 +89,7 @@ pub fn search_symbol_expanded(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let _ = index;
 
     let mut result = symbol::search(query, scope, Some(cache), context, glob)?;
@@ -111,7 +111,7 @@ pub fn search_multi_symbol_expanded(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let _ = index; // Available but not yet used for search fast-path
 
     let mut sections: Vec<String> = Vec::with_capacity(queries.len());
@@ -170,7 +170,7 @@ pub fn search_regex(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let mut result = content::search(pattern, scope, true, None, glob)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
@@ -187,7 +187,7 @@ pub fn search_content_expanded(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let (pattern, is_regex) = parse_pattern(query);
     let mut result = content::search(pattern, scope, is_regex, context, glob)?;
     paginate(&mut result, limit, offset);
@@ -206,7 +206,7 @@ pub fn search_regex_expanded(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let mut result = content::search(pattern, scope, true, context, glob)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
@@ -218,7 +218,7 @@ pub fn search_symbol_raw(
     query: &str,
     scope: &Path,
     glob: Option<&str>,
-) -> Result<SearchResult, TilthError> {
+) -> Result<SearchResult, SrcwalkError> {
     symbol::search(query, scope, None, None, glob)
 }
 
@@ -227,7 +227,7 @@ pub fn search_content_raw(
     query: &str,
     scope: &Path,
     glob: Option<&str>,
-) -> Result<SearchResult, TilthError> {
+) -> Result<SearchResult, SrcwalkError> {
     let (pattern, is_regex) = parse_pattern(query);
     content::search(pattern, scope, is_regex, None, glob)
 }
@@ -237,7 +237,7 @@ pub fn search_regex_raw(
     pattern: &str,
     scope: &Path,
     glob: Option<&str>,
-) -> Result<SearchResult, TilthError> {
+) -> Result<SearchResult, SrcwalkError> {
     content::search(pattern, scope, true, None, glob)
 }
 
@@ -245,7 +245,7 @@ pub fn search_regex_raw(
 pub fn format_raw_result(
     result: &SearchResult,
     cache: &OutlineCache,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let bloom = crate::index::bloom::BloomFilterCache::new();
     format_search_result(result, cache, None, &bloom, 0)
 }
@@ -256,7 +256,7 @@ pub fn search_glob(
     _cache: &OutlineCache,
     limit: Option<usize>,
     offset: usize,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let result = glob::search(pattern, scope, limit, offset)?;
     format_glob_result(&result, scope)
 }
@@ -775,7 +775,7 @@ fn format_search_result(
     session: Option<&Session>,
     bloom: &crate::index::bloom::BloomFilterCache,
     expand: usize,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let header = format::search_header(
         &result.query,
         &result.scope,
@@ -1118,7 +1118,7 @@ fn extract_line_range(line: &str) -> Option<(u32, u32)> {
 }
 
 /// Format glob search results (file list with previews + pagination hint).
-fn format_glob_result(result: &glob::GlobResult, scope: &Path) -> Result<String, TilthError> {
+fn format_glob_result(result: &glob::GlobResult, scope: &Path) -> Result<String, SrcwalkError> {
     let header = format!(
         "# Glob: \"{}\" in {} — {} of {} files (offset {})",
         result.pattern,
@@ -1255,7 +1255,7 @@ mod tests {
         let scope = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let result = walker(&scope, Some("[unclosed"));
         match result {
-            Err(TilthError::InvalidQuery { query, reason }) => {
+            Err(SrcwalkError::InvalidQuery { query, reason }) => {
                 assert_eq!(query, "[unclosed");
                 assert!(
                     reason.contains("invalid glob"),
@@ -1323,17 +1323,17 @@ mod tests {
     #[test]
     fn content_search_glob_restricts_results() {
         let scope = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let all = content::search("TilthError", &scope, false, None, None).expect("search failed");
-        let rs_only = content::search("TilthError", &scope, false, None, Some("*.rs"))
+        let all = content::search("SrcwalkError", &scope, false, None, None).expect("search failed");
+        let rs_only = content::search("SrcwalkError", &scope, false, None, Some("*.rs"))
             .expect("search with glob failed");
-        let toml_only = content::search("TilthError", &scope, false, None, Some("*.toml"))
+        let toml_only = content::search("SrcwalkError", &scope, false, None, Some("*.toml"))
             .expect("search with toml glob failed");
 
-        assert!(all.total_found > 0, "unfiltered should find TilthError");
-        assert!(rs_only.total_found > 0, "*.rs should find TilthError");
+        assert!(all.total_found > 0, "unfiltered should find SrcwalkError");
+        assert!(rs_only.total_found > 0, "*.rs should find SrcwalkError");
         assert_eq!(
             toml_only.total_found, 0,
-            "*.toml should not find TilthError in Rust source"
+            "*.toml should not find SrcwalkError in Rust source"
         );
         for m in &rs_only.matches {
             assert_eq!(

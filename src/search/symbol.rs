@@ -10,7 +10,7 @@ use crate::lang::treesitter::{
     extract_implemented_interfaces, is_elixir_definition, DEFINITION_KINDS,
 };
 
-use crate::error::TilthError;
+use crate::error::SrcwalkError;
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
 use crate::search::rank;
@@ -29,7 +29,7 @@ pub fn search_batch(
     cache: Option<&crate::cache::OutlineCache>,
     context: Option<&Path>,
     glob: Option<&str>,
-) -> Result<Vec<SearchResult>, TilthError> {
+) -> Result<Vec<SearchResult>, SrcwalkError> {
     if queries.is_empty() {
         return Ok(Vec::new());
     }
@@ -38,7 +38,7 @@ pub fn search_batch(
     }
 
     // Build aho-corasick automaton for byte-level any-of gate.
-    let ac = aho_corasick::AhoCorasick::new(queries).map_err(|e| TilthError::InvalidQuery {
+    let ac = aho_corasick::AhoCorasick::new(queries).map_err(|e| SrcwalkError::InvalidQuery {
         query: queries.join(","),
         reason: e.to_string(),
     })?;
@@ -50,7 +50,7 @@ pub fn search_batch(
         .collect::<Vec<_>>()
         .join("|");
     let pattern = format!(r"\b(?:{alt})\b");
-    let matcher = RegexMatcher::new(&pattern).map_err(|e| TilthError::InvalidQuery {
+    let matcher = RegexMatcher::new(&pattern).map_err(|e| SrcwalkError::InvalidQuery {
         query: queries.join(","),
         reason: e.to_string(),
     })?;
@@ -100,7 +100,7 @@ fn find_definitions_batch(
     scope: &Path,
     glob: Option<&str>,
     cache: Option<&crate::cache::OutlineCache>,
-) -> Result<Vec<Vec<Match>>, TilthError> {
+) -> Result<Vec<Vec<Match>>, SrcwalkError> {
     let buckets: Mutex<Vec<Vec<Match>>> = Mutex::new(vec![Vec::new(); queries.len()]);
     let walker = super::walker(scope, glob)?;
 
@@ -210,7 +210,7 @@ fn find_usages_batch(
     matcher: &RegexMatcher,
     scope: &Path,
     glob: Option<&str>,
-) -> Result<Vec<Vec<Match>>, TilthError> {
+) -> Result<Vec<Vec<Match>>, SrcwalkError> {
     let buckets: Mutex<Vec<Vec<Match>>> = Mutex::new(vec![Vec::new(); queries.len()]);
     let walker = super::walker(scope, glob)?;
 
@@ -307,10 +307,10 @@ pub fn search(
     cache: Option<&crate::cache::OutlineCache>,
     context: Option<&Path>,
     glob: Option<&str>,
-) -> Result<SearchResult, TilthError> {
+) -> Result<SearchResult, SrcwalkError> {
     // Compile regex once, share across both arms
     let word_pattern = format!(r"\b{}\b", regex_syntax::escape(query));
-    let matcher = RegexMatcher::new(&word_pattern).map_err(|e| TilthError::InvalidQuery {
+    let matcher = RegexMatcher::new(&word_pattern).map_err(|e| SrcwalkError::InvalidQuery {
         query: query.to_string(),
         reason: e.to_string(),
     })?;
@@ -367,7 +367,7 @@ fn find_definitions(
     scope: &Path,
     glob: Option<&str>,
     cache: Option<&crate::cache::OutlineCache>,
-) -> Result<Vec<Match>, TilthError> {
+) -> Result<Vec<Match>, SrcwalkError> {
     let matches: Mutex<Vec<Match>> = Mutex::new(Vec::new());
     // Relaxed is correct: walker.run() joins all threads before we read the final value.
     // Early-quit checks are approximate by design — one extra iteration is harmless.
@@ -701,7 +701,7 @@ fn find_usages(
     matcher: &RegexMatcher,
     scope: &Path,
     glob: Option<&str>,
-) -> Result<Vec<Match>, TilthError> {
+) -> Result<Vec<Match>, SrcwalkError> {
     let matches: Mutex<Vec<Match>> = Mutex::new(Vec::new());
     // Relaxed: same reasoning as find_definitions — approximate early-quit, joined before read
     let found_count = AtomicUsize::new(0);
@@ -1205,7 +1205,7 @@ end
 
     #[test]
     fn suggest_finds_case_variant() {
-        let dir = std::env::temp_dir().join(format!("tilth_p13_suggest_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("srcwalk_p13_suggest_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("foo.rs");
         std::fs::write(
@@ -1228,7 +1228,7 @@ end
 
     #[test]
     fn suggest_crosses_naming_convention() {
-        let dir = std::env::temp_dir().join(format!("tilth_p13fix_conv_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("srcwalk_p13fix_conv_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("foo.rs");
         std::fs::write(
@@ -1256,7 +1256,7 @@ end
 
     #[test]
     fn suggest_handles_lev1_typo() {
-        let dir = std::env::temp_dir().join(format!("tilth_p13fix_typo_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("srcwalk_p13fix_typo_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("foo.rs");
         std::fs::write(&path, "pub fn run_inner() {}\n").unwrap();
@@ -1272,7 +1272,7 @@ end
 
     #[test]
     fn suggest_skips_non_source_files() {
-        let dir = std::env::temp_dir().join(format!("tilth_p13fix_skip_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("srcwalk_p13fix_skip_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // JSON i18n bundle — must NOT match
         std::fs::write(dir.join("es.json"), r#"{"sesion": "iniciar"}"#).unwrap();

@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use ignore::WalkBuilder;
 
-use crate::error::TilthError;
+use crate::error::SrcwalkError;
 
 // Directories that are always skipped — build artifacts, dependencies, VCS internals.
 // We skip these explicitly instead of relying on .gitignore so that locally-relevant
@@ -129,8 +129,8 @@ pub(crate) fn read_file_bytes(path: &Path, size: u64) -> Option<FileBytes> {
 /// Build a parallel directory walker that searches ALL files except known junk directories.
 /// Does NOT respect .gitignore — ensures gitignored but locally-relevant files are found.
 /// When `glob` is Some, applies a file-pattern override (whitelist or negation).
-pub(crate) fn walker(scope: &Path, glob: Option<&str>) -> Result<ignore::WalkParallel, TilthError> {
-    let threads = std::env::var("TILTH_THREADS")
+pub(crate) fn walker(scope: &Path, glob: Option<&str>) -> Result<ignore::WalkParallel, SrcwalkError> {
+    let threads = std::env::var("SRCWALK_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or_else(|| {
@@ -139,7 +139,7 @@ pub(crate) fn walker(scope: &Path, glob: Option<&str>) -> Result<ignore::WalkPar
             // Heuristic: use logical cores up to 8, then 75% beyond that.
             // - 2 cores → 2, 4 cores → 4, 8 cores → 8 (typical dev laptop sweet spot)
             // - 16 cores → 12, 32 cores → 24, 64 cores → 48 (server cap to avoid IO thrash)
-            // Override via TILTH_THREADS env var.
+            // Override via SRCWALK_THREADS env var.
             std::thread::available_parallelism().map_or(4, |n| {
                 let logical = n.get();
                 if logical <= 8 {
@@ -174,11 +174,11 @@ pub(crate) fn walker(scope: &Path, glob: Option<&str>) -> Result<ignore::WalkPar
             let mut overrides = ignore::overrides::OverrideBuilder::new(scope);
             overrides
                 .add(pattern)
-                .map_err(|e| TilthError::InvalidQuery {
+                .map_err(|e| SrcwalkError::InvalidQuery {
                     query: pattern.to_string(),
                     reason: format!("invalid glob: {e}"),
                 })?;
-            builder.overrides(overrides.build().map_err(|e| TilthError::InvalidQuery {
+            builder.overrides(overrides.build().map_err(|e| SrcwalkError::InvalidQuery {
                 query: pattern.to_string(),
                 reason: format!("invalid glob: {e}"),
             })?);

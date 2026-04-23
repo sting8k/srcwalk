@@ -31,7 +31,7 @@ use std::path::Path;
 
 use cache::OutlineCache;
 use classify::classify;
-use error::TilthError;
+use error::SrcwalkError;
 use types::QueryType;
 
 /// Holds expanded search dependencies, allocated once.
@@ -54,7 +54,7 @@ pub fn run(
     offset: usize,
     glob: Option<&str>,
     cache: &OutlineCache,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     run_inner(
         query,
         scope,
@@ -79,7 +79,7 @@ pub fn run_full(
     offset: usize,
     glob: Option<&str>,
     cache: &OutlineCache,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     run_inner(
         query,
         scope,
@@ -106,7 +106,7 @@ pub fn run_expanded(
     offset: usize,
     glob: Option<&str>,
     cache: &OutlineCache,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     run_inner(
         query,
         scope,
@@ -137,7 +137,7 @@ pub fn run_callers(
     max_edges: Option<usize>,
     skip_hubs: Option<&str>,
     json: bool,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let session = session::Session::new();
     let bloom = index::bloom::BloomFilterCache::new();
     let expand = if expand > 0 { expand } else { 1 };
@@ -177,7 +177,7 @@ pub fn run_callees(
     budget_tokens: Option<u64>,
     cache: &OutlineCache,
     depth: Option<usize>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     use std::fmt::Write;
     let bloom = index::bloom::BloomFilterCache::new();
 
@@ -187,13 +187,13 @@ pub fn run_callees(
         .matches
         .iter()
         .find(|m| m.is_definition && m.def_range.is_some())
-        .ok_or_else(|| TilthError::NoMatches {
+        .ok_or_else(|| SrcwalkError::NoMatches {
             query: target.to_string(),
             scope: scope.to_path_buf(),
             suggestion: symbol_or_file_suggestion(scope, target, None),
         })?;
 
-    let content = std::fs::read_to_string(&def_match.path).map_err(|e| TilthError::IoError {
+    let content = std::fs::read_to_string(&def_match.path).map_err(|e| SrcwalkError::IoError {
         path: def_match.path.clone(),
         source: e,
     })?;
@@ -277,7 +277,7 @@ pub fn run_deps(
     scope: &Path,
     budget_tokens: Option<u64>,
     cache: &OutlineCache,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let bloom = index::bloom::BloomFilterCache::new();
     let result = search::deps::analyze_deps(path, scope, cache, &bloom)?;
     let budget_usize = budget_tokens.map(|b| b as usize);
@@ -362,7 +362,7 @@ fn disambiguate_glob_for_section(
     pattern: &str,
     scope: &Path,
     original_query: &str,
-) -> Result<Option<(std::path::PathBuf, Option<String>)>, TilthError> {
+) -> Result<Option<(std::path::PathBuf, Option<String>)>, SrcwalkError> {
     let result = search::glob::search(pattern, scope, Some(200), 0)?;
     if result.files.is_empty() {
         return Ok(None);
@@ -462,7 +462,7 @@ fn disambiguate_glob_for_section(
     } else {
         String::new()
     };
-    Err(TilthError::InvalidQuery {
+    Err(SrcwalkError::InvalidQuery {
         query: original_query.to_string(),
         reason: format!(
             "matches {total} files; --section needs exactly one. Candidates:\n{listing}{more}\nPass full path or narrow --scope."
@@ -481,7 +481,7 @@ fn run_inner(
     offset: usize,
     glob: Option<&str>,
     cache: &OutlineCache,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     let query_type = classify(query, scope);
 
     // P1.2 — disambiguate bare-filename + --section.
@@ -524,7 +524,7 @@ fn run_inner(
             .collect();
         let all_identifiers = parts.iter().all(|p| classify::is_identifier(p));
         if parts.len() > 5 && all_identifiers {
-            return Err(TilthError::InvalidQuery {
+            return Err(SrcwalkError::InvalidQuery {
                 query: query.to_string(),
                 reason: "multi-symbol search supports 2-5 symbols".to_string(),
             });
@@ -596,7 +596,7 @@ fn run_query_expanded(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     match query_type {
         QueryType::Symbol(name) => search::search_symbol_expanded(
             name,
@@ -662,7 +662,7 @@ fn run_query_basic(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, TilthError> {
+) -> Result<String, SrcwalkError> {
     match query_type {
         QueryType::Symbol(name) => search::search_symbol(name, scope, cache, limit, offset, glob),
         QueryType::Concept(text) if text.contains(' ') => {
@@ -696,7 +696,7 @@ fn single_query_search(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, error::TilthError> {
+) -> Result<String, error::SrcwalkError> {
     let mut sym_result = search::search_symbol_raw(text, scope, glob)?;
     let accept_sym = if prefer_definitions {
         sym_result.definitions > 0
@@ -721,7 +721,7 @@ fn single_query_search(
         return search::format_raw_result(&sym_result, cache);
     }
 
-    Err(error::TilthError::NoMatches {
+    Err(error::SrcwalkError::NoMatches {
         query: text.to_string(),
         scope: scope.to_path_buf(),
         suggestion: symbol_or_file_suggestion(scope, text, glob),
@@ -736,7 +736,7 @@ fn multi_word_concept_search(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
-) -> Result<String, error::TilthError> {
+) -> Result<String, error::SrcwalkError> {
     // Try exact phrase match first
     let mut content_result = search::search_content_raw(text, scope, glob)?;
     content_result.query = text.to_string();
@@ -772,7 +772,7 @@ fn multi_word_concept_search(
     }
 
     let first_word = words.first().copied().unwrap_or(text);
-    Err(error::TilthError::NoMatches {
+    Err(error::SrcwalkError::NoMatches {
         query: text.to_string(),
         scope: scope.to_path_buf(),
         suggestion: symbol_or_file_suggestion(scope, first_word, glob),

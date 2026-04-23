@@ -131,7 +131,7 @@ static QUERY_CACHE: LazyLock<Mutex<HashMap<(usize, usize), tree_sitter::Query>>>
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Stable cache key for a tree-sitter language. Uses `(symbol_count,
-/// field_count)` which is unique for every grammar shipped with tilth.
+/// field_count)` which is unique for every grammar shipped with srcwalk.
 fn lang_cache_key(ts_lang: &tree_sitter::Language) -> (usize, usize) {
     (ts_lang.node_kind_count(), ts_lang.field_count())
 }

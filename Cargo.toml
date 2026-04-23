@@ -1,16 +1,16 @@
 [package]
-name = "tilth"
+name = "srcwalk"
 version = "0.8.5"
 edition = "2021"
 description = "Tree-sitter indexed lookups — smart code reading for AI agents"
 license = "MIT"
-repository = "https://github.com/sting8k/tilth"
+repository = "https://github.com/sting8k/srcwalk"
 readme = "README.md"
 keywords = ["code-search", "tree-sitter", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
-name = "tilth"
+name = "srcwalk"
 path = "src/main.rs"
 
 [dependencies]
@@ -86,7 +86,7 @@ lto = "thin"
 codegen-units = 8
 strip = false
 
-# Unix signal handling: reset SIGPIPE to SIG_DFL so `tilth ... | head` exits
+# Unix signal handling: reset SIGPIPE to SIG_DFL so `srcwalk ... | head` exits
 # cleanly (Rust default masks SIGPIPE → BrokenPipe panic on stdout writes).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

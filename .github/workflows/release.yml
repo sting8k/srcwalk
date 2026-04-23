@@ -92,9 +92,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }} --bin tilth
+            cross build --release --locked --target ${{ matrix.target }} --bin srcwalk
           else
-            cargo build --release --locked --target ${{ matrix.target }} --bin tilth
+            cargo build --release --locked --target ${{ matrix.target }} --bin srcwalk
           fi
 
       - name: Package (unix)
@@ -103,9 +103,9 @@ jobs:
         run: |
           set -euo pipefail
           cd target/${{ matrix.target }}/release
-          tar czf ../../../tilth-${{ matrix.target }}.tar.gz tilth
+          tar czf ../../../srcwalk-${{ matrix.target }}.tar.gz srcwalk
           cd ../../..
-          shasum -a 256 tilth-${{ matrix.target }}.tar.gz > tilth-${{ matrix.target }}.tar.gz.sha256
+          shasum -a 256 srcwalk-${{ matrix.target }}.tar.gz > srcwalk-${{ matrix.target }}.tar.gz.sha256
 
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
@@ -113,19 +113,19 @@ jobs:
         run: |
           set -euo pipefail
           cd target/${{ matrix.target }}/release
-          7z a ../../../tilth-${{ matrix.target }}.zip tilth.exe
+          7z a ../../../srcwalk-${{ matrix.target }}.zip srcwalk.exe
           cd ../../..
-          sha256sum tilth-${{ matrix.target }}.zip > tilth-${{ matrix.target }}.zip.sha256
+          sha256sum srcwalk-${{ matrix.target }}.zip > srcwalk-${{ matrix.target }}.zip.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: tilth-${{ matrix.target }}
+          name: srcwalk-${{ matrix.target }}
           path: |
-            tilth-${{ matrix.target }}.tar.gz
-            tilth-${{ matrix.target }}.tar.gz.sha256
-            tilth-${{ matrix.target }}.zip
-            tilth-${{ matrix.target }}.zip.sha256
+            srcwalk-${{ matrix.target }}.tar.gz
+            srcwalk-${{ matrix.target }}.tar.gz.sha256
+            srcwalk-${{ matrix.target }}.zip
+            srcwalk-${{ matrix.target }}.zip.sha256
           if-no-files-found: ignore
           retention-days: 7
 
@@ -155,16 +155,16 @@ jobs:
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: |
-            dist/tilth-*.tar.gz
-            dist/tilth-*.zip
+            dist/srcwalk-*.tar.gz
+            dist/srcwalk-*.zip
 
       - name: Create release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: |
-            dist/tilth-*.tar.gz
-            dist/tilth-*.tar.gz.sha256
-            dist/tilth-*.zip
-            dist/tilth-*.zip.sha256
+            dist/srcwalk-*.tar.gz
+            dist/srcwalk-*.tar.gz.sha256
+            dist/srcwalk-*.zip
+            dist/srcwalk-*.zip.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true

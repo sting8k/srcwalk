@@ -1,9 +1,9 @@
 {
-  "name": "tilth",
+  "name": "srcwalk",
   "version": "0.8.5",
   "description": "Tree-sitter indexed lookups — smart code reading for AI agents",
   "bin": {
-    "tilth": "run.js"
+    "srcwalk": "run.js"
   },
   "scripts": {
     "postinstall": "node install.js"
@@ -15,7 +15,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sting8k/tilth.git"
+    "url": "git+https://github.com/sting8k/srcwalk.git"
   },
   "keywords": [
     "mcp",

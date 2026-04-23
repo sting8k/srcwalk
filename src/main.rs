@@ -10,10 +10,10 @@ use clap_complete::Shell;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// tilth — Tree-sitter indexed lookups, smart code reading for AI agents.
+/// srcwalk — Tree-sitter indexed lookups, smart code reading for AI agents.
 /// One tool replaces `read_file`, grep, glob, `ast_grep`, and find.
 #[derive(Parser)]
-#[command(name = "tilth", version, about)]
+#[command(name = "srcwalk", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -129,7 +129,7 @@ fn main() {
 
     // Shell completions
     if let Some(shell) = cli.completions {
-        clap_complete::generate(shell, &mut Cli::command(), "tilth", &mut io::stdout());
+        clap_complete::generate(shell, &mut Cli::command(), "srcwalk", &mut io::stdout());
         return;
     }
 
@@ -138,7 +138,7 @@ fn main() {
         match cmd {
             Command::Overview => {
                 let cwd = std::env::current_dir().unwrap_or_default();
-                let output = tilth::overview::fingerprint(&cwd);
+                let output = srcwalk::overview::fingerprint(&cwd);
                 if output.is_empty() {
                     eprintln!("No project fingerprint could be generated.");
                     process::exit(1);
@@ -153,9 +153,9 @@ fn main() {
 
     // Map mode
     if cli.map {
-        let cache = tilth::cache::OutlineCache::new();
+        let cache = srcwalk::cache::OutlineCache::new();
         let scope = cli.scope.canonicalize().unwrap_or(cli.scope);
-        let output = tilth::map::generate(&scope, 3, cli.budget, &cache);
+        let output = srcwalk::map::generate(&scope, 3, cli.budget, &cache);
         emit_output(&output, is_tty);
         return;
     }
@@ -164,11 +164,11 @@ fn main() {
     let query = if let Some(q) = cli.query {
         q
     } else {
-        eprintln!("usage: tilth <query> [--scope DIR] [--section N-M] [--budget N]");
+        eprintln!("usage: srcwalk <query> [--scope DIR] [--section N-M] [--budget N]");
         process::exit(3);
     };
 
-    let cache = tilth::cache::OutlineCache::new();
+    let cache = srcwalk::cache::OutlineCache::new();
     let scope = cli.scope.canonicalize().unwrap_or(cli.scope);
 
     // Smart view by default (outline for large files). Use --full to force raw content.
@@ -188,7 +188,7 @@ fn main() {
     // Callers mode
     if cli.callers {
         let bfs_json = cli.json && matches!(cli.depth, Some(d) if d >= 2);
-        let result = tilth::run_callers(
+        let result = srcwalk::run_callers(
             &query,
             &scope,
             expand,
@@ -220,7 +220,7 @@ fn main() {
 
     // Callees mode
     if cli.callees {
-        let result = tilth::run_callees(
+        let result = srcwalk::run_callees(
             &query,
             &scope,
             cli.budget,
@@ -248,13 +248,13 @@ fn main() {
                 }
             }
         };
-        let result = tilth::run_deps(&path, &scope, cli.budget, &cache);
+        let result = srcwalk::run_deps(&path, &scope, cli.budget, &cache);
         emit_result(result, &query, cli.json, is_tty);
         return;
     }
 
     let result = if expand > 0 {
-        tilth::run_expanded(
+        srcwalk::run_expanded(
             &query,
             &scope,
             cli.section.as_deref(),
@@ -267,7 +267,7 @@ fn main() {
             &cache,
         )
     } else if full {
-        tilth::run_full(
+        srcwalk::run_full(
             &query,
             &scope,
             cli.section.as_deref(),
@@ -278,7 +278,7 @@ fn main() {
             &cache,
         )
     } else {
-        tilth::run(
+        srcwalk::run(
             &query,
             &scope,
             cli.section.as_deref(),
@@ -294,7 +294,7 @@ fn main() {
 }
 
 fn emit_result(
-    result: Result<String, tilth::error::TilthError>,
+    result: Result<String, srcwalk::error::SrcwalkError>,
     query: &str,
     json: bool,
     is_tty: bool,
@@ -359,11 +359,11 @@ fn terminal_height() -> usize {
 
 /// Configure rayon global thread pool to limit CPU usage.
 ///
-/// Defaults to min(cores / 2, 6). Override with `TILTH_THREADS` env var.
+/// Defaults to min(cores / 2, 6). Override with `SRCWALK_THREADS` env var.
 /// This matters for long-lived MCP sessions where back-to-back searches
 /// can sustain high CPU (see #27).
 fn configure_thread_pools() {
-    let num_threads = std::env::var("TILTH_THREADS")
+    let num_threads = std::env::var("SRCWALK_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or_else(|| {

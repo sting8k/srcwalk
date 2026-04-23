@@ -4,7 +4,7 @@ use std::fs;
 
 fn setup_repo() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "tilth_p12_{}_{}",
+        "srcwalk_p12_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -32,8 +32,8 @@ fn setup_repo() -> std::path::PathBuf {
 #[test]
 fn bare_filename_with_section_auto_resolves_to_prod() {
     let dir = setup_repo();
-    let cache = tilth::cache::OutlineCache::new();
-    let out = tilth::run("Cart.php", &dir, Some("10-15"), None, None, 0, None, &cache).unwrap();
+    let cache = srcwalk::cache::OutlineCache::new();
+    let out = srcwalk::run("Cart.php", &dir, Some("10-15"), None, None, 0, None, &cache).unwrap();
 
     assert!(
         out.contains("Resolved 'Cart.php'"),
@@ -54,8 +54,8 @@ fn bare_filename_with_section_auto_resolves_to_prod() {
 #[test]
 fn bare_filename_no_section_unchanged() {
     let dir = setup_repo();
-    let cache = tilth::cache::OutlineCache::new();
-    let out = tilth::run("Cart.php", &dir, None, None, None, 0, None, &cache).unwrap();
+    let cache = srcwalk::cache::OutlineCache::new();
+    let out = srcwalk::run("Cart.php", &dir, None, None, None, 0, None, &cache).unwrap();
 
     // Glob output, not a section view.
     assert!(
@@ -73,7 +73,7 @@ fn bare_filename_no_section_unchanged() {
 #[test]
 fn bare_filename_with_section_ambiguous_prod_fails_loud() {
     let dir = std::env::temp_dir().join(format!(
-        "tilth_p12_amb_{}_{}",
+        "srcwalk_p12_amb_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -85,8 +85,8 @@ fn bare_filename_with_section_ambiguous_prod_fails_loud() {
     fs::write(dir.join("src/a/Cart.php"), "// a\n").unwrap();
     fs::write(dir.join("src/b/Cart.php"), "// b\n").unwrap();
 
-    let cache = tilth::cache::OutlineCache::new();
-    let result = tilth::run("Cart.php", &dir, Some("1-1"), None, None, 0, None, &cache);
+    let cache = srcwalk::cache::OutlineCache::new();
+    let result = srcwalk::run("Cart.php", &dir, Some("1-1"), None, None, 0, None, &cache);
 
     assert!(result.is_err(), "expected error for ambiguous prod paths");
     let msg = format!("{}", result.unwrap_err());
@@ -101,7 +101,7 @@ fn bare_filename_respects_gitignore_for_disambig() {
     // Repo with a bespoke "benchmark/" dir NOT in NON_PROD_DIR_SEGMENTS.
     // Only .gitignore marks it as non-primary.
     let dir = std::env::temp_dir().join(format!(
-        "tilth_p12fix_gi_{}_{}",
+        "srcwalk_p12fix_gi_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -114,8 +114,8 @@ fn bare_filename_respects_gitignore_for_disambig() {
     fs::write(dir.join("src/lib.rs"), "// main\n").unwrap();
     fs::write(dir.join("benchmark/nested/lib.rs"), "// bench copy\n").unwrap();
 
-    let cache = tilth::cache::OutlineCache::new();
-    let out = tilth::run("lib.rs", &dir, Some("1-1"), None, None, 0, None, &cache).unwrap();
+    let cache = srcwalk::cache::OutlineCache::new();
+    let out = srcwalk::run("lib.rs", &dir, Some("1-1"), None, None, 0, None, &cache).unwrap();
 
     assert!(
         out.contains("Resolved 'lib.rs'") && out.contains("src/lib.rs"),
@@ -134,7 +134,7 @@ fn bare_filename_depth_rank_picks_shallowest() {
     // Two primary candidates (no .gitignore filter). Depth-rank tiebreaker
     // should pick the shallowest.
     let dir = std::env::temp_dir().join(format!(
-        "tilth_p12fix_depth_{}_{}",
+        "srcwalk_p12fix_depth_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -146,8 +146,8 @@ fn bare_filename_depth_rank_picks_shallowest() {
     fs::write(dir.join("src/main.rs"), "// shallow\n").unwrap();
     fs::write(dir.join("pkg/deep/nested/main.rs"), "// deep\n").unwrap();
 
-    let cache = tilth::cache::OutlineCache::new();
-    let out = tilth::run("main.rs", &dir, Some("1-1"), None, None, 0, None, &cache).unwrap();
+    let cache = srcwalk::cache::OutlineCache::new();
+    let out = srcwalk::run("main.rs", &dir, Some("1-1"), None, None, 0, None, &cache).unwrap();
 
     assert!(
         out.contains("Resolved 'main.rs'"),
@@ -167,7 +167,7 @@ fn no_match_concept_query_offers_symbol_suggestion() {
     // P1.3.fix-edge — concept/fallthrough miss should suggest cross-convention
     // symbol via search::symbol::suggest, not just file-name lookup.
     let dir = std::env::temp_dir().join(format!(
-        "tilth_nomatch_{}_{}",
+        "srcwalk_nomatch_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -181,10 +181,10 @@ fn no_match_concept_query_offers_symbol_suggestion() {
     )
     .unwrap();
 
-    let cache = tilth::cache::OutlineCache::new();
+    let cache = srcwalk::cache::OutlineCache::new();
     // bare lowercase token → Concept path → no symbol/content hit → must
     // surface the cross-convention suggestion.
-    let err = tilth::run("processrequst", &dir, None, None, None, 0, None, &cache)
+    let err = srcwalk::run("processrequst", &dir, None, None, None, 0, None, &cache)
         .expect_err("expected NoMatches");
     let msg = format!("{err}");
     assert!(

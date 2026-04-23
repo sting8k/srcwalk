@@ -460,7 +460,7 @@ mod tests {
         }
         // Known extensionless filename that doesn't exist → glob
         match classify("Dockerfile", &scope) {
-            QueryType::FilePath(_) => {} // exists in tilth repo
+            QueryType::FilePath(_) => {} // exists in srcwalk repo
             QueryType::Glob(pattern) => {
                 assert_eq!(pattern, "**/Dockerfile");
             }

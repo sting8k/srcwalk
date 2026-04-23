@@ -23,7 +23,7 @@ pub fn fingerprint(root: &Path) -> String {
     let elapsed = start.elapsed();
     if elapsed.as_millis() > 250 {
         eprintln!(
-            "[tilth] fingerprint took {}ms (>250ms budget)",
+            "[srcwalk] fingerprint took {}ms (>250ms budget)",
             elapsed.as_millis()
         );
     }
@@ -143,7 +143,7 @@ fn fingerprint_inner(root: &Path) -> String {
     // Header line
     let dir_count = modules.len();
     lines.push(format!(
-        "[tilth] {lang_name} project — {total_files} source files, {dir_count} directories"
+        "[srcwalk] {lang_name} project — {total_files} source files, {dir_count} directories"
     ));
 
     // Directories (cap at 10, sorted by file count descending)
@@ -923,7 +923,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_fingerprint_on_tilth() {
+    fn test_fingerprint_on_srcwalk() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let output = fingerprint(root);
 
@@ -933,7 +933,7 @@ mod tests {
             "should detect Rust as primary language"
         );
         assert!(output.contains("Cargo.toml"), "should detect manifest");
-        assert!(output.contains("tilth"), "should find project name");
+        assert!(output.contains("srcwalk"), "should find project name");
 
         // Token budget: output should be compact
         let estimated_tokens = output.len() / 4;
@@ -962,7 +962,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let info = parse_cargo_toml(root).expect("should parse Cargo.toml");
 
-        assert_eq!(info.name.as_deref(), Some("tilth"));
+        assert_eq!(info.name.as_deref(), Some("srcwalk"));
         assert!(info.version.is_some(), "should have a version");
         assert!(
             info.deps.iter().any(|d| d == "clap"),

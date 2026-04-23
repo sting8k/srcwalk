@@ -7,7 +7,10 @@ fn srcwalk() -> Command {
 }
 
 fn fixture_dir() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/callees"))
+    Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/callees"
+    ))
 }
 
 /// Set up a minimal fixture with known call structure.

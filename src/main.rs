@@ -241,7 +241,14 @@ fn main() {
 
     // Callees mode
     if cli.callees {
-        let result = srcwalk::run_callees(&query, &scope, effective_budget, &cache, cli.depth, cli.detailed);
+        let result = srcwalk::run_callees(
+            &query,
+            &scope,
+            effective_budget,
+            &cache,
+            cli.depth,
+            cli.detailed,
+        );
         emit_result(result, &query, cli.json, is_tty);
         return;
     }

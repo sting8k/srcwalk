@@ -161,8 +161,7 @@ pub fn run_callers(
             let mut callers_out = search::callers::search_callers_expanded(
                 target, scope, cache, &session, &bloom, expand, None, limit, offset, glob,
             )?;
-            callers_out
-                .push_str("\n\n> Tip: use --depth N for transitive callers (max 5)");
+            callers_out.push_str("\n\n> Tip: use --depth N for transitive callers (max 5)");
             callers_out
         }
     };
@@ -596,9 +595,7 @@ fn run_inner(
                     out.push_str("\n\n> Related: ");
                     out.push_str(&hints.join(", "));
                 }
-                out.push_str(
-                    "\n> Tip: use --deps to see imports and dependents (blast radius)",
-                );
+                out.push_str("\n> Tip: use --deps to see imports and dependents (blast radius)");
             }
             out
         }
@@ -824,8 +821,16 @@ fn symbol_or_file_suggestion(scope: &Path, query: &str, glob: Option<&str>) -> O
     let hits = search::symbol::suggest(query, scope, glob, 1);
     if let Some((name, path, line)) = hits.into_iter().next() {
         // Skip case-only variants to avoid suggest loops (foo→Foo→foo).
-        let q_low: String = query.chars().filter(|c| *c != '_').flat_map(|c| c.to_lowercase()).collect();
-        let n_low: String = name.chars().filter(|c| *c != '_').flat_map(|c| c.to_lowercase()).collect();
+        let q_low: String = query
+            .chars()
+            .filter(|c| *c != '_')
+            .flat_map(char::to_lowercase)
+            .collect();
+        let n_low: String = name
+            .chars()
+            .filter(|c| *c != '_')
+            .flat_map(char::to_lowercase)
+            .collect();
         if q_low == n_low {
             return None;
         }

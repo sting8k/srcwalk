@@ -21,7 +21,6 @@ pub struct ResolvedCallee {
 /// A call site with contextual information: arguments, return variable, line.
 #[derive(Debug, Clone)]
 pub struct CallSite {
-    pub name: String,
     pub line: u32,
     /// Full call text, e.g. `parse_hubs(skip_hubs)`
     pub call_text: String,
@@ -302,8 +301,10 @@ pub fn extract_call_sites(
                 let call_node = find_call_ancestor(cap.node);
                 // Skip if we didn't find a real call expression — e.g. type params.
                 let ck = call_node.kind();
-                if !ck.contains("call") && !ck.contains("invocation")
-                    && !ck.contains("creation") && !ck.contains("macro")
+                if !ck.contains("call")
+                    && !ck.contains("invocation")
+                    && !ck.contains("creation")
+                    && !ck.contains("macro")
                 {
                     continue;
                 }
@@ -319,11 +320,9 @@ pub fn extract_call_sites(
                     .trim()
                     .to_string();
 
-                let (return_var, is_return) =
-                    find_assignment_context(call_node, content_bytes);
+                let (return_var, is_return) = find_assignment_context(call_node, content_bytes);
 
                 sites.push(CallSite {
-                    name,
                     line,
                     call_text,
                     return_var,
@@ -341,9 +340,15 @@ pub fn extract_call_sites(
         let keep: Vec<bool> = (0..sites.len())
             .map(|i| {
                 let (start_i, end_i) = call_ranges[i];
-                !call_ranges.iter().enumerate().any(|(j, &(start_j, end_j))| {
-                    j != i && start_j <= start_i && end_j >= end_i && (start_j < start_i || end_j > end_i)
-                })
+                !call_ranges
+                    .iter()
+                    .enumerate()
+                    .any(|(j, &(start_j, end_j))| {
+                        j != i
+                            && start_j <= start_i
+                            && end_j >= end_i
+                            && (start_j < start_i || end_j > end_i)
+                    })
             })
             .collect();
         let mut idx = 0;
@@ -365,7 +370,9 @@ fn find_call_ancestor(node: tree_sitter::Node) -> tree_sitter::Node {
     for _ in 0..5 {
         if let Some(p) = cur.parent() {
             let k = p.kind();
-            if k.contains("call") || k.contains("invocation") || k.contains("creation")
+            if k.contains("call")
+                || k.contains("invocation")
+                || k.contains("creation")
                 || k.contains("macro_invocation")
             {
                 return p;
@@ -380,11 +387,11 @@ fn find_call_ancestor(node: tree_sitter::Node) -> tree_sitter::Node {
 
 /// From a call expression node, check immediate parent/grandparent for
 /// assignment or return context. Max 2 levels — avoids per-lang heuristic mess.
-fn find_assignment_context(
-    call_node: tree_sitter::Node,
-    content: &[u8],
-) -> (Option<String>, bool) {
-    for ancestor in [call_node.parent(), call_node.parent().and_then(|p| p.parent())] {
+fn find_assignment_context(call_node: tree_sitter::Node, content: &[u8]) -> (Option<String>, bool) {
+    for ancestor in [
+        call_node.parent(),
+        call_node.parent().and_then(|p| p.parent()),
+    ] {
         let Some(p) = ancestor else { continue };
         let k = p.kind();
 
@@ -395,13 +402,22 @@ fn find_assignment_context(
 
         // Assignment / variable declaration — extract LHS.
         // Skip function/class/type definitions that happen to contain "declaration".
-        if (k.contains("assignment") || k == "variable_declarator"
-            || k == "let_declaration" || k == "short_var_declaration"
-            || k == "lexical_declaration" || k == "local_variable_declaration"
+        if (k.contains("assignment")
+            || k == "variable_declarator"
+            || k == "let_declaration"
+            || k == "short_var_declaration"
+            || k == "lexical_declaration"
+            || k == "local_variable_declaration"
             || k == "declaration")
-            && !k.contains("function") && !k.contains("method") && !k.contains("class")
-            && !k.contains("struct") && !k.contains("enum") && !k.contains("protocol")
-            && !k.contains("interface") && !k.contains("trait") && !k.contains("impl")
+            && !k.contains("function")
+            && !k.contains("method")
+            && !k.contains("class")
+            && !k.contains("struct")
+            && !k.contains("enum")
+            && !k.contains("protocol")
+            && !k.contains("interface")
+            && !k.contains("trait")
+            && !k.contains("impl")
         {
             let lhs = p
                 .child_by_field_name("name")

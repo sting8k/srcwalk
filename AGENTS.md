@@ -71,6 +71,27 @@ Update all three, then tag:
 3. `cargo update -p srcwalk` — refreshes `Cargo.lock`
 4. Tag `vX.Y.Z` → CI builds binaries for 5 platforms + creates GitHub Release.
 
+## Release flow
+
+```bash
+# 1. Validate
+cargo test
+cargo clippy -- -D warnings
+cargo fmt --check
+
+# 2. Bump version (all three)
+# Cargo.toml, npm/package.json, then:
+cargo update -p srcwalk
+
+# 3. Commit & push, wait for CI green
+git add -A && git commit -m "chore: bump vX.Y.Z"
+git push srcwalk main
+# Wait for CI ✅
+
+# 4. Tag & release (triggers build + publish)
+git tag vX.Y.Z && git push srcwalk vX.Y.Z
+```
+
 ## Key conventions
 
 - **Split-on-touch**: modifying a mega-file (>800 LOC) >50 LOC? Split the affected concern first.

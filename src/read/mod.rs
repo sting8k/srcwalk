@@ -173,6 +173,121 @@ pub fn would_outline(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| !m.is_dir() && estimate_tokens(m.len()) > TOKEN_THRESHOLD)
 }
 
+/// Wrapper around `read_file` that, for `--full` requests with `--budget`,
+/// degrades gracefully instead of letting the post-hoc `budget::apply`
+/// truncate body bytes mid-function and leave a misleading `[full]` header.
+///
+/// Cascade (when `full=true` and rendered output exceeds `budget`):
+///   1. full file        → if fits, return as-is.
+///   2. outline           → labelled `[outline (full requested, over budget)]` + note.
+///   3. signatures only   → labelled `[signatures (...)]` + note (outline still overflows).
+///   4. header + advice   → file too large at any granularity for this budget.
+///
+/// For `section`, non-`full`, or no-budget paths, behaves identically to `read_file`
+/// (caller still applies `budget::apply` for byte-level cap if needed).
+pub fn read_file_with_budget(
+    path: &Path,
+    section: Option<&str>,
+    full: bool,
+    budget: Option<u64>,
+    cache: &OutlineCache,
+) -> Result<String, TilthError> {
+    // Fast path: not a full-file budgeted request → defer to read_file.
+    let Some(b) = budget else {
+        return read_file(path, section, full, cache);
+    };
+    if !full || section.is_some() {
+        return read_file(path, section, full, cache);
+    }
+
+    let full_out = read_file(path, section, full, cache)?;
+    if estimate_tokens(full_out.len() as u64) <= b {
+        return Ok(full_out);
+    }
+
+    // Step 2: outline cascade.
+    let outline_out = render_outline_view(path, cache, ViewMode::OutlineCascade)?;
+    let with_note = append_cascade_note(&outline_out, "full body", full_out.len(), b);
+    if estimate_tokens(with_note.len() as u64) <= b {
+        return Ok(with_note);
+    }
+
+    // Step 3: signatures only.
+    let sig_out = render_signatures_view(path, cache)?;
+    let sig_with_note = append_cascade_note(&sig_out, "outline", outline_out.len(), b);
+    if estimate_tokens(sig_with_note.len() as u64) <= b {
+        return Ok(sig_with_note);
+    }
+
+    // Step 4: terminal — header + advice only.
+    let meta = std::fs::metadata(path).map_err(|e| TilthError::IoError {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let line_count = std::fs::read(path)
+        .map(|buf| memchr::memchr_iter(b'\n', &buf).count() as u32 + 1)
+        .unwrap_or(0);
+    let header = format::file_header(path, meta.len(), line_count, ViewMode::Signatures);
+    Ok(format!(
+        "{header}\n\n> File too large for budget {b} tokens at any granularity. \
+         Drill: `--section <fn-name>` or raise `--budget`."
+    ))
+}
+
+fn render_outline_view(
+    path: &Path,
+    cache: &OutlineCache,
+    mode: ViewMode,
+) -> Result<String, TilthError> {
+    let meta = std::fs::metadata(path).map_err(|e| TilthError::IoError {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let buf = std::fs::read(path).map_err(|e| TilthError::IoError {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let content = String::from_utf8_lossy(&buf);
+    let line_count = memchr::memchr_iter(b'\n', &buf).count() as u32 + 1;
+    let file_type = detect_file_type(path);
+    let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let outline = cache.get_or_compute(path, mtime, || {
+        outline::generate(path, file_type, &content, &buf, true)
+    });
+    let header = format::file_header(path, meta.len(), line_count, mode);
+    Ok(format!("{header}\n\n{outline}"))
+}
+
+/// Signatures-only view: keep top-level outline lines (no nested children body).
+/// Heuristic: drop indented continuation lines from the outline, preserving
+/// only the first non-indented entry per block.
+fn render_signatures_view(path: &Path, cache: &OutlineCache) -> Result<String, TilthError> {
+    let outline_full = render_outline_view(path, cache, ViewMode::Signatures)?;
+    let mut lines = outline_full.lines();
+    let header = lines.next().unwrap_or("");
+    let mut kept: Vec<&str> = vec![header];
+    for line in lines {
+        // Keep blank separators and lines starting at column 0 or with one level of indent.
+        if line.is_empty() {
+            kept.push(line);
+            continue;
+        }
+        let indent = line.chars().take_while(|c| *c == ' ').count();
+        if indent <= 2 {
+            kept.push(line);
+        }
+    }
+    Ok(kept.join("\n"))
+}
+
+fn append_cascade_note(body: &str, prev_kind: &str, prev_bytes: usize, budget: u64) -> String {
+    let prev_tokens = estimate_tokens(prev_bytes as u64);
+    format!(
+        "{body}\n\n> Note: {prev_kind} ({prev_tokens} tokens) exceeded budget ({budget}). \
+         Drill: `--section <fn-name>` for specific symbol, or raise `--budget`."
+    )
+}
+
 /// Resolve a heading address to a line range in a markdown file.
 /// Returns `(start_line, end_line)` as 1-indexed inclusive range.
 /// Returns `None` if heading not found.
@@ -636,6 +751,53 @@ mod tests {
         );
 
         std::env::remove_var("TILTH_FULL_SIZE_CAP");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn budget_cascade_full_to_outline() {
+        // Build a file large enough that --full would emit ~5k tokens.
+        let mut body = String::from("<?php\nclass Big {\n");
+        for i in 0..120 {
+            body.push_str(&format!(
+                "    public function method_{i}() {{\n        $x = {i}; // padding line {i}\n        return $x * 2;\n    }}\n"
+            ));
+        }
+        body.push_str("}\n");
+        let path = std::env::temp_dir().join("tilth_p11_cascade.php");
+        std::fs::write(&path, body.as_bytes()).unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_file_with_budget(&path, None, true, Some(800), &cache).unwrap();
+
+        // Budget honored.
+        let tokens = estimate_tokens(out.len() as u64);
+        assert!(tokens <= 800, "cascade overshot budget: {tokens} tokens");
+        // Header relabelled, not [full].
+        assert!(
+            out.contains("[outline (full requested, over budget)]")
+                || out.contains("[signatures"),
+            "expected cascade header label, got: {}",
+            &out[..out.len().min(200)]
+        );
+        // Cascade note present.
+        assert!(out.contains("exceeded budget"), "missing cascade note");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn budget_cascade_passthrough_when_fits() {
+        // Tiny file fits in budget → unchanged behavior (full content).
+        let path = std::env::temp_dir().join("tilth_p11_tiny.php");
+        std::fs::write(&path, b"<?php\nclass Tiny { public function f() {} }\n").unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_file_with_budget(&path, None, true, Some(2000), &cache).unwrap();
+
+        assert!(out.contains("[full]"), "expected [full] label, got header in: {out}");
+        assert!(!out.contains("exceeded budget"), "no cascade note for fitting file");
+
         let _ = std::fs::remove_file(&path);
     }
 }

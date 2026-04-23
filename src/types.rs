@@ -57,6 +57,10 @@ pub enum FileType {
 pub enum ViewMode {
     Full,
     Outline,
+    /// Outline emitted because a `--full` request would exceed `--budget`.
+    OutlineCascade,
+    /// Top-level signatures only — second cascade step when even outline overflows.
+    Signatures,
     Keys,
     #[allow(dead_code)]
     HeadTail,
@@ -74,6 +78,8 @@ impl std::fmt::Display for ViewMode {
         match self {
             Self::Full => write!(f, "full"),
             Self::Outline => write!(f, "outline"),
+            Self::OutlineCascade => write!(f, "outline (full requested, over budget)"),
+            Self::Signatures => write!(f, "signatures (full requested, over budget)"),
             Self::Keys => write!(f, "keys"),
             Self::HeadTail => write!(f, "head+tail"),
             Self::Empty => write!(f, "empty"),

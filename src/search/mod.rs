@@ -137,6 +137,7 @@ pub fn search_multi_symbol_expanded(
             result.matches.len(),
             result.definitions,
             result.usages,
+            result.comments,
         );
         let mut budget = expand_per_query;
         format_matches(
@@ -792,6 +793,7 @@ fn format_search_result(
         result.matches.len(),
         result.definitions,
         result.usages,
+        result.comments,
     );
     let mut out = header;
     let mut expand_remaining = expand;
@@ -895,6 +897,20 @@ fn format_search_result(
                 &mut context_shown_files,
                 &mut out,
             );
+        }
+
+        if !faceted.comments.is_empty() {
+            let _ = write!(out, "\n\n### Comment mentions ({})", faceted.comments.len());
+            // Compact format — one line per match, no expand budget consumed
+            for m in &faceted.comments {
+                let _ = write!(
+                    out,
+                    "\n  {}:{} — {}",
+                    rel_nonempty(&m.path, &result.scope),
+                    m.line,
+                    m.text.trim()
+                );
+            }
         }
     } else {
         // Linear display for ≤5 matches

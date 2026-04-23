@@ -34,10 +34,13 @@ pub fn search_header(
     total: usize,
     defs: usize,
     usages: usize,
+    comments: usize,
 ) -> String {
-    let parts = match (defs, usages) {
-        (0, _) => format!("{total} matches"),
-        (d, u) => format!("{total} matches ({d} definitions, {u} usages)"),
+    let parts = match (defs, usages, comments) {
+        (0, _, 0) => format!("{total} matches"),
+        (0, _, c) => format!("{total} matches ({c} in comments)"),
+        (d, u, 0) => format!("{total} matches ({d} definitions, {u} usages)"),
+        (d, u, c) => format!("{total} matches ({d} definitions, {u} usages, {c} in comments)"),
     };
     format!("# Search: \"{query}\" in {} — {parts}", scope.display())
 }

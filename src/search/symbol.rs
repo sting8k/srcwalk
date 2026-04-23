@@ -78,7 +78,8 @@ pub fn search_batch(
             }
         }
         let total = merged.len();
-        let usage_count = total - def_count;
+        let comment_count = merged.iter().filter(|m| m.in_comment).count();
+        let usage_count = total - def_count - comment_count;
         rank::sort(&mut merged, query, scope, context);
         out.push(SearchResult {
             query: (*query).to_string(),
@@ -87,6 +88,7 @@ pub fn search_batch(
             total_found: total,
             definitions: def_count,
             usages: usage_count,
+            comments: comment_count,
             has_more: false,
             offset: 0,
         });
@@ -273,6 +275,7 @@ fn find_usages_batch(
                                 def_name: None,
                                 def_weight: 0,
                                 impl_target: None,
+                                in_comment: false,
                             });
                         }
                     }
@@ -295,9 +298,11 @@ fn find_usages_batch(
         })
     });
 
-    Ok(buckets
+    let mut buckets = buckets
         .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner))
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    tag_comment_matches(&mut buckets);
+    Ok(buckets)
 }
 
 /// Symbol search: find definitions via tree-sitter, usages via ripgrep, concurrently.
@@ -322,7 +327,9 @@ pub fn search(
     );
 
     let defs = defs?;
-    let usages = usages?;
+    let mut usages_vec = vec![usages?];
+    tag_comment_matches(&mut usages_vec);
+    let usages = usages_vec.into_iter().next().unwrap();
 
     // Deduplicate: remove usage matches that overlap with definition matches.
     // Linear scan — max ~30 defs from EARLY_QUIT_THRESHOLD, no allocation needed.
@@ -339,7 +346,8 @@ pub fn search(
     }
 
     let total = merged.len();
-    let usage_count = total - def_count;
+    let comment_count = merged.iter().filter(|m| m.in_comment).count();
+    let usage_count = total - def_count - comment_count;
 
     rank::sort(&mut merged, query, scope, context);
 
@@ -350,6 +358,7 @@ pub fn search(
         total_found: total,
         definitions: def_count,
         usages: usage_count,
+        comments: comment_count,
         has_more: false,
         offset: 0,
     })
@@ -555,6 +564,7 @@ fn walk_for_definitions(
                     def_name: Some(query.to_string()),
                     def_weight: definition_weight(node.kind()),
                     impl_target: None,
+                    in_comment: false,
                 });
             }
         }
@@ -586,6 +596,7 @@ fn walk_for_definitions(
                         def_name: Some(format!("impl {query} for {impl_type}")),
                         def_weight: 80,
                         impl_target: Some(query.to_string()),
+                        in_comment: false,
                     });
                 }
             }
@@ -614,6 +625,7 @@ fn walk_for_definitions(
                     def_name: Some(format!("{class_name} implements {query}")),
                     def_weight: 80,
                     impl_target: Some(query.to_string()),
+                    in_comment: false,
                 });
             }
         }
@@ -641,6 +653,7 @@ fn walk_for_definitions(
                     def_name: Some(query.to_string()),
                     def_weight: elixir_definition_weight(node, lines),
                     impl_target: None,
+                    in_comment: false,
                 });
             }
         }
@@ -688,6 +701,7 @@ fn find_defs_heuristic_buf(
                 def_name: Some(query.to_string()),
                 def_weight: 60,
                 impl_target: None,
+                in_comment: false,
             });
         }
     }
@@ -753,6 +767,7 @@ fn find_usages(
                         def_name: None,
                         def_weight: 0,
                         impl_target: None,
+                        in_comment: false,
                     });
                     Ok(true)
                 }),
@@ -1302,4 +1317,126 @@ end
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Collect sorted byte-offset ranges of all comment nodes in a tree-sitter tree.
+/// Works across all supported languages — tree-sitter grammars universally use
+/// node kinds containing "comment" for line, block, and doc comments.
+fn collect_comment_ranges(root: tree_sitter::Node) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut cursor = root.walk();
+    collect_comment_ranges_recursive(&mut cursor, &mut ranges);
+    ranges
+}
+
+fn collect_comment_ranges_recursive(
+    cursor: &mut tree_sitter::TreeCursor,
+    ranges: &mut Vec<(usize, usize)>,
+) {
+    loop {
+        let node = cursor.node();
+        if node.kind().contains("comment") {
+            ranges.push((node.start_byte(), node.end_byte()));
+        } else if cursor.goto_first_child() {
+            collect_comment_ranges_recursive(cursor, ranges);
+            cursor.goto_parent();
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
+}
+
+/// Check whether a byte offset falls inside any comment range (binary search).
+fn is_in_comment(offset: usize, comment_ranges: &[(usize, usize)]) -> bool {
+    comment_ranges
+        .binary_search_by(|&(start, end)| {
+            if offset < start {
+                std::cmp::Ordering::Greater
+            } else if offset >= end {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
+/// Tag `in_comment` on usage matches by parsing each file with tree-sitter.
+/// Only files that have at least one usage match are parsed.
+fn tag_comment_matches(buckets: &mut [Vec<Match>]) {
+    use std::collections::HashMap;
+
+    // Collect all unique file paths that need comment-checking.
+    let mut file_paths: HashMap<std::path::PathBuf, Vec<(usize, usize)>> = HashMap::new();
+    for bucket in buckets.iter() {
+        for m in bucket {
+            if !m.is_definition {
+                file_paths.entry(m.path.clone()).or_default();
+            }
+        }
+    }
+
+    // Parse each file once, collect comment ranges.
+    for (path, ranges) in &mut file_paths {
+        let lang = detect_file_type(path);
+        let ts_lang = match lang {
+            FileType::Code(l) => outline_language(l),
+            _ => None,
+        };
+        let Some(ts_lang) = ts_lang else { continue };
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&ts_lang).is_err() {
+            continue;
+        }
+        let Some(tree) = parser.parse(&content, None) else {
+            continue;
+        };
+        *ranges = collect_comment_ranges(tree.root_node());
+    }
+
+    // Tag each usage match.
+    for bucket in buckets.iter_mut() {
+        for m in bucket.iter_mut() {
+            if m.is_definition {
+                continue;
+            }
+            if let Some(ranges) = file_paths.get(&m.path) {
+                if ranges.is_empty() {
+                    continue;
+                }
+                // Convert line number to byte offset: read file and find line start.
+                // We need the byte offset of the match line to check against comment ranges.
+                // Since we already read the file above, re-read is cached by OS.
+                if let Ok(content) = std::fs::read_to_string(&m.path) {
+                    if let Some(byte_offset) = line_to_byte_offset(&content, m.line as usize) {
+                        m.in_comment = is_in_comment(byte_offset, ranges);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Convert 1-based line number to byte offset of that line's start.
+fn line_to_byte_offset(content: &str, line: usize) -> Option<usize> {
+    if line == 0 {
+        return None;
+    }
+    let mut current_line = 1usize;
+    if line == 1 {
+        return Some(0);
+    }
+    for (i, b) in content.bytes().enumerate() {
+        if b == b'\n' {
+            current_line += 1;
+            if current_line == line {
+                return Some(i + 1);
+            }
+        }
+    }
+    None
 }

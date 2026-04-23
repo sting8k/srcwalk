@@ -114,6 +114,9 @@ pub struct Match {
     /// For impl/implements matches: the trait or interface being implemented.
     /// None for primary definitions and plain usages.
     pub impl_target: Option<String>,
+    /// Whether this match sits inside a comment or doc-comment node.
+    /// Populated by tree-sitter post-processing on usage matches.
+    pub in_comment: bool,
 }
 
 /// Assembled search results before formatting.
@@ -125,6 +128,7 @@ pub struct SearchResult {
     pub total_found: usize,
     pub definitions: usize,
     pub usages: usize,
+    pub comments: usize,
     /// Whether more results exist beyond the current page.
     pub has_more: bool,
     /// Current offset (0-based) into the full result set.

@@ -76,6 +76,7 @@ pub fn search(
                         def_name: None,
                         def_weight: 0,
                         impl_target: None,
+                        in_comment: false,
                     });
                     Ok(true)
                 }),
@@ -107,6 +108,7 @@ pub fn search(
         total_found: total,
         definitions: 0,
         usages: total,
+        comments: 0,
         has_more: false,
         offset: 0,
     })

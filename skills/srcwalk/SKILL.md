@@ -65,6 +65,16 @@ Every definition hit reports its **line range** (e.g. `[38-690]` vs `[9-16]`). U
 - Tell overloads apart at a glance without opening each file.
 - Rank where to drill first when a symbol has many definitions.
 
+**Symbol search usages vs callers — pick the right tool:**
+
+| Need | Command | Precision |
+|------|---------|-----------|
+| Where is X defined? | `srcwalk X --scope .` | AST-based — precise |
+| Who calls X? | `srcwalk X --callers --scope .` | AST-based — only real call sites |
+| All mentions of X | `srcwalk X --scope .` | Text-based — includes comments/docs |
+
+Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but include comment/doc mentions. The output separates code usages from comment mentions in faceted sections. For accurate call-site enumeration, prefer `--callers`.
+
 ---
 
 ## When something isn't found

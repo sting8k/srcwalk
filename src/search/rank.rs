@@ -465,6 +465,7 @@ mod tests {
             def_name: def_name.map(ToString::to_string),
             def_weight: if is_definition { 80 } else { 0 },
             impl_target: None,
+            in_comment: false,
         }
     }
 

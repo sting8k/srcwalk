@@ -7,6 +7,7 @@ pub struct FacetedResult {
     pub definitions: Vec<Match>,
     pub implementations: Vec<Match>,
     pub tests: Vec<Match>,
+    pub comments: Vec<Match>,
     pub usages_local: Vec<Match>,
     pub usages_cross: Vec<Match>,
 }
@@ -25,6 +26,7 @@ pub fn facet_matches(matches: Vec<Match>, _scope: &Path) -> FacetedResult {
     let mut definitions = Vec::new();
     let mut implementations = Vec::new();
     let mut tests = Vec::new();
+    let mut comments = Vec::new();
     let mut usages_local = Vec::new();
     let mut usages_cross = Vec::new();
 
@@ -33,6 +35,8 @@ pub fn facet_matches(matches: Vec<Match>, _scope: &Path) -> FacetedResult {
             implementations.push(m);
         } else if m.is_definition {
             definitions.push(m);
+        } else if m.in_comment {
+            comments.push(m);
         } else if is_test_match(&m) {
             tests.push(m);
         } else if is_same_package(&m.path, primary_pkg.as_ref()) {
@@ -46,6 +50,7 @@ pub fn facet_matches(matches: Vec<Match>, _scope: &Path) -> FacetedResult {
         definitions,
         implementations,
         tests,
+        comments,
         usages_local,
         usages_cross,
     }

@@ -74,6 +74,15 @@ pub fn search_symbol(
     let bloom = crate::index::bloom::BloomFilterCache::new();
     let mut out = format_search_result(&result, cache, None, &bloom, 0)?;
     append_did_you_mean(&mut out, &result, scope, glob);
+    // Contextual hints
+    if result.definitions > 0 {
+        out.push_str("\n\n> Tip: use --expand to inline definition source");
+    }
+    if result.usages >= 5 {
+        out.push_str(
+            "\n> Tip: for precise call sites use --callers instead of text-based usages",
+        );
+    }
     Ok(out)
 }
 

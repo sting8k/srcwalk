@@ -17,6 +17,8 @@ srcwalk is a code-intelligence tool built on tree-sitter. It answers questions g
 srcwalk <args>
 ```
 
+**Follow output hints first:** srcwalk now prints contextual `> Tip:` footers (for `--section`, `--expand`, `--callers`, `--depth`, `--deps`, `--detailed`) in relevant outputs. Prefer those hints as next-step guidance before scanning this whole skill.
+
 ---
 
 ## Read a large file (outline + drill-in)
@@ -43,7 +45,7 @@ srcwalk <path> --budget 2000            # cap response to ~N tokens
 | `--full` over `--budget` | Cascades: outline first (label `outline (full requested, over budget)`), then signatures (`signatures (full requested, over budget)`) if outline still over. Not a bug — srcwalk degraded gracefully because the budget was tight. |
 | Pipe mode | Same smart view as TTY (use `--full` for raw bytes) |
 
-On large files, outlines are capped at a safe line count — when capped, drill in with `--section <symbol>` or a line range.
+On large files, outlines are capped at a safe line count — follow the footer hint to drill in with `--section <symbol>` or a line range.
 
 ---
 
@@ -74,7 +76,7 @@ Every definition hit reports its **line range** (e.g. `[38-690]` vs `[9-16]`). U
 | Who calls X? | `srcwalk X --callers --scope .` | AST-based — only real call sites |
 | All mentions of X | `srcwalk X --scope .` | Text-based — includes comments/docs |
 
-Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but include comment/doc mentions. The output separates code usages from comment mentions in faceted sections. For accurate call-site enumeration, prefer `--callers`.
+Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but include comment/doc mentions. The output separates code usages from comment mentions in faceted sections and prints a `--callers` tip when relevant.
 
 ---
 
@@ -138,11 +140,14 @@ Imports (what this file depends on) and dependents (what depends on it). Use bef
 ## Callees — forward call graph
 
 ```bash
-srcwalk <symbol> --callees --scope <dir>
-srcwalk <symbol> --callees --depth N --scope <dir>
+srcwalk <symbol> --callees --scope <dir>              # summary: resolved with sig + unresolved
+srcwalk <symbol> --callees --detailed --scope <dir>   # ordered call sites with assignments & returns
+srcwalk <symbol> --callees --depth N --scope <dir>    # transitive (up to 5 hops, cycle-safe)
 ```
 
-What does this function call? Resolved callees show file, line range, signature. Unresolved (stdlib/external) listed separately. `--depth N` for transitive callees (up to 5 hops, cycle-safe).
+What does this function call? Default output groups resolved callees (file, line range, signature) and unresolved (stdlib/external) separately, then prints a `> Tip: use --detailed ...` footer.
+
+`--detailed` shows **ordered call sites** as they appear in the function body — each line includes the call with assignment context (`result = foo(...)`) and return markers (`->ret`). Use this to understand control flow and data flow through the function.
 
 ---
 

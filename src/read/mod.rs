@@ -173,7 +173,9 @@ pub fn read_file(
         _ => ViewMode::Outline,
     };
     let header = format::file_header(path, byte_len, line_count, mode);
-    Ok(format!("{header}\n\n{outline}"))
+    Ok(format!(
+        "{header}\n\n{outline}\n\n> Tip: drill into a symbol with --section <name> or a line range"
+    ))
 }
 
 /// Would this file produce an outline (rather than full content) in default read mode?

@@ -157,9 +157,14 @@ pub fn run_callers(
             json,
             budget_tokens.map(|b| b as usize),
         )?,
-        _ => search::callers::search_callers_expanded(
-            target, scope, cache, &session, &bloom, expand, None, limit, offset, glob,
-        )?,
+        _ => {
+            let mut callers_out = search::callers::search_callers_expanded(
+                target, scope, cache, &session, &bloom, expand, None, limit, offset, glob,
+            )?;
+            callers_out
+                .push_str("\n\n> Tip: use --depth N for transitive callers (max 5)");
+            callers_out
+        }
     };
     if json {
         // BFS JSON handles its own budget internally (edges array cap).
@@ -179,6 +184,7 @@ pub fn run_callees(
     budget_tokens: Option<u64>,
     cache: &OutlineCache,
     depth: Option<usize>,
+    detailed: bool,
 ) -> Result<String, SrcwalkError> {
     use std::fmt::Write;
     let bloom = index::bloom::BloomFilterCache::new();
@@ -205,9 +211,37 @@ pub fn run_callees(
         return Ok(format!("# Callees: {target}\n\n(not a code file)"));
     };
 
+    let rel = format::rel_nonempty(&def_match.path, scope);
+
+    // Detailed mode: ordered call sites with args + assignment context.
+    if detailed {
+        let sites = search::callees::extract_call_sites(&content, lang, def_match.def_range);
+        if sites.is_empty() {
+            return Ok(format!("# Callees: {target} ({rel})\n\n(no calls found)"));
+        }
+        let mut out = format!("# Callees: {target} ({rel})\n");
+        for s in &sites {
+            let prefix = if s.is_return { "->ret " } else { "" };
+            match &s.return_var {
+                Some(var) => {
+                    let _ = write!(out, "\nL{} {}{} = {}", s.line, prefix, var, s.call_text);
+                }
+                None => {
+                    let _ = write!(out, "\nL{} {}{}", s.line, prefix, s.call_text);
+                }
+            }
+        }
+        // Collect unresolved (names not matching any site — skip for detailed, all are sites)
+        let output = match budget_tokens {
+            Some(b) => budget::apply(&out, b),
+            None => out,
+        };
+        return Ok(output);
+    }
+
+    // Default mode: resolved callees with transitive expansion.
     let callee_names = search::callees::extract_callee_names(&content, lang, def_match.def_range);
     if callee_names.is_empty() {
-        let rel = format::rel_nonempty(&def_match.path, scope);
         return Ok(format!(
             "# Callees: {target} (in {rel})\n\n(no calls found)"
         ));
@@ -224,7 +258,6 @@ pub fn run_callees(
         50,
     );
 
-    let rel = format::rel_nonempty(&def_match.path, scope);
     let mut out = format!("# Callees: {target} (in {rel})\n");
 
     // Unresolved callees
@@ -270,6 +303,8 @@ pub fn run_callees(
                 .join(", "),
         );
     }
+
+    out.push_str("\n\n> Tip: use --detailed for ordered call sites with args and assignments");
 
     let output = match budget_tokens {
         Some(b) => budget::apply(&out, b),
@@ -561,6 +596,9 @@ fn run_inner(
                     out.push_str("\n\n> Related: ");
                     out.push_str(&hints.join(", "));
                 }
+                out.push_str(
+                    "\n> Tip: use --deps to see imports and dependents (blast radius)",
+                );
             }
             out
         }
@@ -785,6 +823,12 @@ fn multi_word_concept_search(
 fn symbol_or_file_suggestion(scope: &Path, query: &str, glob: Option<&str>) -> Option<String> {
     let hits = search::symbol::suggest(query, scope, glob, 1);
     if let Some((name, path, line)) = hits.into_iter().next() {
+        // Skip case-only variants to avoid suggest loops (foo→Foo→foo).
+        let q_low: String = query.chars().filter(|c| *c != '_').flat_map(|c| c.to_lowercase()).collect();
+        let n_low: String = name.chars().filter(|c| *c != '_').flat_map(|c| c.to_lowercase()).collect();
+        if q_low == n_low {
+            return None;
+        }
         let rel = path.strip_prefix(scope).unwrap_or(&path).display();
         return Some(format!("{name} ({rel}:{line})"));
     }

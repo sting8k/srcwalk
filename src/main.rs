@@ -50,11 +50,15 @@ struct Cli {
     glob: Option<String>,
 
     /// Find all callers of a symbol.
-    #[arg(long, conflicts_with_all = ["deps", "map"])]
+    #[arg(long, conflicts_with_all = ["callees", "deps", "map"])]
     callers: bool,
 
-    /// BFS depth for --callers. 1 = current behavior (default). Capped at 5.
-    #[arg(long, value_name = "N", requires = "callers")]
+    /// Show what a symbol calls (forward call graph).
+    #[arg(long, conflicts_with_all = ["callers", "deps", "map"])]
+    callees: bool,
+
+    /// BFS depth for --callers/--callees. 1 = direct (default). Capped at 5.
+    #[arg(long, value_name = "N")]
     depth: Option<usize>,
 
     /// Max callers to expand per BFS hop (hub guard). Default: 50.
@@ -72,11 +76,11 @@ struct Cli {
     skip_hubs: Option<String>,
 
     /// Analyze blast-radius dependencies of a file.
-    #[arg(long, conflicts_with_all = ["callers", "map"])]
+    #[arg(long, conflicts_with_all = ["callers", "callees", "map"])]
     deps: bool,
 
     /// Generate a structural codebase map.
-    #[arg(long, conflicts_with_all = ["callers", "deps", "expand", "section", "full"])]
+    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "expand", "section", "full"])]
     map: bool,
 
     /// Max results. Default: unlimited (or 50 for interactive TTY).
@@ -210,6 +214,19 @@ fn main() {
             }
             return;
         }
+        emit_result(result, &query, cli.json, is_tty);
+        return;
+    }
+
+    // Callees mode
+    if cli.callees {
+        let result = tilth::run_callees(
+            &query,
+            &scope,
+            cli.budget,
+            &cache,
+            cli.depth,
+        );
         emit_result(result, &query, cli.json, is_tty);
         return;
     }

@@ -170,6 +170,107 @@ pub fn run_callers(
     }
 }
 
+/// Show what a symbol calls (forward call graph).
+pub fn run_callees(
+    target: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    cache: &OutlineCache,
+    depth: Option<usize>,
+) -> Result<String, TilthError> {
+    use std::fmt::Write;
+    let bloom = index::bloom::BloomFilterCache::new();
+
+    // Find definition of target symbol
+    let raw = search::search_symbol_raw(target, scope, None)?;
+    let def_match = raw
+        .matches
+        .iter()
+        .find(|m| m.is_definition && m.def_range.is_some())
+        .ok_or_else(|| TilthError::NoMatches {
+            query: target.to_string(),
+            scope: scope.to_path_buf(),
+            suggestion: symbol_or_file_suggestion(scope, target, None),
+        })?;
+
+    let content = std::fs::read_to_string(&def_match.path).map_err(|e| TilthError::IoError {
+        path: def_match.path.clone(),
+        source: e,
+    })?;
+
+    let file_type = lang::detect_file_type(&def_match.path);
+    let types::FileType::Code(lang) = file_type else {
+        return Ok(format!("# Callees: {target}\n\n(not a code file)"));
+    };
+
+    let callee_names =
+        search::callees::extract_callee_names(&content, lang, def_match.def_range);
+    if callee_names.is_empty() {
+        let rel = format::rel_nonempty(&def_match.path, scope);
+        return Ok(format!("# Callees: {target} (in {rel})\n\n(no calls found)"));
+    }
+
+    let depth_limit = depth.map(|d| d.min(5) as u32).unwrap_or(1);
+    let nodes = search::callees::resolve_callees_transitive(
+        &callee_names,
+        &def_match.path,
+        &content,
+        cache,
+        &bloom,
+        depth_limit,
+        50,
+    );
+
+    let rel = format::rel_nonempty(&def_match.path, scope);
+    let mut out = format!("# Callees: {target} (in {rel})\n");
+
+    // Unresolved callees
+    let resolved_names: std::collections::HashSet<&str> =
+        nodes.iter().map(|n| n.callee.name.as_str()).collect();
+    let unresolved: Vec<&String> = callee_names
+        .iter()
+        .filter(|n| !resolved_names.contains(n.as_str()))
+        .collect();
+
+    for node in &nodes {
+        let c = &node.callee;
+        let rel_c = format::rel_nonempty(&c.file, scope);
+        let sig = c.signature.as_deref().unwrap_or("");
+        let _ = write!(out, "\n  {:<30} {}:{}-{}", c.name, rel_c, c.start_line, c.end_line);
+        if !sig.is_empty() {
+            let _ = write!(out, "  {sig}");
+        }
+        for child in &node.children {
+            let rel_ch = format::rel_nonempty(&child.file, scope);
+            let _ = write!(
+                out,
+                "\n    {:<28} {}:{}-{}",
+                child.name, rel_ch, child.start_line, child.end_line
+            );
+            if let Some(ref s) = child.signature {
+                let _ = write!(out, "  {s}");
+            }
+        }
+    }
+
+    if !unresolved.is_empty() {
+        out.push_str("\n\n  (unresolved): ");
+        out.push_str(
+            &unresolved
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+
+    let output = match budget_tokens {
+        Some(b) => budget::apply(&out, b),
+        None => out,
+    };
+    Ok(output)
+}
+
 /// Analyze blast-radius dependencies of a file.
 pub fn run_deps(
     path: &Path,

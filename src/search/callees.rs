@@ -18,6 +18,19 @@ pub struct ResolvedCallee {
     pub signature: Option<String>,
 }
 
+/// A call site with contextual information: arguments, return variable, line.
+#[derive(Debug, Clone)]
+pub struct CallSite {
+    pub name: String,
+    pub line: u32,
+    /// Full call text, e.g. `parse_hubs(skip_hubs)`
+    pub call_text: String,
+    /// Variable the return value is assigned to, if any.
+    pub return_var: Option<String>,
+    /// True if this call is the direct return expression of the function.
+    pub is_return: bool,
+}
+
 /// A resolved callee with its own callees (2nd hop).
 #[derive(Debug)]
 pub struct ResolvedCalleeNode {
@@ -233,6 +246,193 @@ pub fn extract_callee_names(
     }
 
     names
+}
+
+/// Extract detailed call sites from a function body, ordered by line.
+/// Walks up from each `@callee` capture to find the enclosing call expression,
+/// assignment context, and return-expression status.
+pub fn extract_call_sites(
+    content: &str,
+    lang: Lang,
+    def_range: Option<(u32, u32)>,
+) -> Vec<CallSite> {
+    let Some(ts_lang) = outline_language(lang) else {
+        return Vec::new();
+    };
+    let Some(query_str) = callee_query_str(lang) else {
+        return Vec::new();
+    };
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return Vec::new();
+    };
+    let content_bytes = content.as_bytes();
+
+    let sites = with_callee_query(&ts_lang, query_str, |query| {
+        let Some(callee_idx) = query.capture_index_for_name("callee") else {
+            return (Vec::new(), Vec::new());
+        };
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), content_bytes);
+        let mut sites: Vec<CallSite> = Vec::new();
+        let mut call_ranges: Vec<(usize, usize)> = Vec::new();
+
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                if cap.index != callee_idx {
+                    continue;
+                }
+                let line = cap.node.start_position().row as u32 + 1;
+                if let Some((start, end)) = def_range {
+                    if line < start || line > end {
+                        continue;
+                    }
+                }
+                let name = match cap.node.utf8_text(content_bytes) {
+                    Ok(t) => t.to_string(),
+                    Err(_) => continue,
+                };
+                if lang == Lang::Elixir && is_elixir_keyword(&name) {
+                    continue;
+                }
+
+                let call_node = find_call_ancestor(cap.node);
+                // Skip if we didn't find a real call expression — e.g. type params.
+                let ck = call_node.kind();
+                if !ck.contains("call") && !ck.contains("invocation")
+                    && !ck.contains("creation") && !ck.contains("macro")
+                {
+                    continue;
+                }
+                let range = (call_node.start_byte(), call_node.end_byte());
+                call_ranges.push(range);
+
+                let call_text = call_node
+                    .utf8_text(content_bytes)
+                    .unwrap_or("")
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+
+                let (return_var, is_return) =
+                    find_assignment_context(call_node, content_bytes);
+
+                sites.push(CallSite {
+                    name,
+                    line,
+                    call_text,
+                    return_var,
+                    is_return,
+                });
+            }
+        }
+        (sites, call_ranges)
+    })
+    .unwrap_or_default();
+
+    let (sites, call_ranges) = sites;
+    let mut sites = sites;
+    if sites.len() > 1 {
+        let keep: Vec<bool> = (0..sites.len())
+            .map(|i| {
+                let (start_i, end_i) = call_ranges[i];
+                !call_ranges.iter().enumerate().any(|(j, &(start_j, end_j))| {
+                    j != i && start_j <= start_i && end_j >= end_i && (start_j < start_i || end_j > end_i)
+                })
+            })
+            .collect();
+        let mut idx = 0;
+        sites.retain(|_| {
+            let k = keep[idx];
+            idx += 1;
+            k
+        });
+    }
+    sites.sort_by_key(|s| s.line);
+    // Dedup same line + same call_text (method chains can produce duplicates).
+    sites.dedup_by(|a, b| a.line == b.line && a.call_text == b.call_text);
+    sites
+}
+
+/// Walk up from `@callee` name node to the enclosing call expression.
+fn find_call_ancestor(node: tree_sitter::Node) -> tree_sitter::Node {
+    let mut cur = node;
+    for _ in 0..5 {
+        if let Some(p) = cur.parent() {
+            let k = p.kind();
+            if k.contains("call") || k.contains("invocation") || k.contains("creation")
+                || k.contains("macro_invocation")
+            {
+                return p;
+            }
+            cur = p;
+        } else {
+            break;
+        }
+    }
+    node.parent().unwrap_or(node)
+}
+
+/// From a call expression node, check immediate parent/grandparent for
+/// assignment or return context. Max 2 levels — avoids per-lang heuristic mess.
+fn find_assignment_context(
+    call_node: tree_sitter::Node,
+    content: &[u8],
+) -> (Option<String>, bool) {
+    for ancestor in [call_node.parent(), call_node.parent().and_then(|p| p.parent())] {
+        let Some(p) = ancestor else { continue };
+        let k = p.kind();
+
+        // Return expression.
+        if k == "return_statement" || k == "return_expression" {
+            return (None, true);
+        }
+
+        // Assignment / variable declaration — extract LHS.
+        // Skip function/class/type definitions that happen to contain "declaration".
+        if (k.contains("assignment") || k == "variable_declarator"
+            || k == "let_declaration" || k == "short_var_declaration"
+            || k == "lexical_declaration" || k == "local_variable_declaration"
+            || k == "declaration")
+            && !k.contains("function") && !k.contains("method") && !k.contains("class")
+            && !k.contains("struct") && !k.contains("enum") && !k.contains("protocol")
+            && !k.contains("interface") && !k.contains("trait") && !k.contains("impl")
+        {
+            let lhs = p
+                .child_by_field_name("name")
+                .or_else(|| p.child_by_field_name("pattern"))
+                .or_else(|| p.child_by_field_name("left"))
+                .or_else(|| p.named_child(0));
+            if let Some(lhs_node) = lhs {
+                if lhs_node.id() != call_node.id() {
+                    if let Ok(text) = lhs_node.utf8_text(content) {
+                        let text = text.trim();
+                        if !text.is_empty() && text.len() < 60 {
+                            return (Some(text.to_string()), false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Implicit return: last expression in block (Rust/Ruby/Elixir).
+    if let Some(p) = call_node.parent() {
+        if p.kind() == "block" || p.kind() == "do_block" || p.kind() == "body_statement" {
+            if let Some(last) = p.named_child(p.named_child_count().saturating_sub(1)) {
+                if last.id() == call_node.id() {
+                    return (None, true);
+                }
+            }
+        }
+    }
+
+    (None, false)
 }
 
 /// Keywords that should not appear as callee names in Elixir.

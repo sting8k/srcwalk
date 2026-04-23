@@ -154,6 +154,7 @@ pub fn search_callers_bfs(
     glob: Option<&str>,
     skip_hubs: Option<&str>,
     json: bool,
+    budget_tokens: Option<usize>,
 ) -> Result<String, SrcwalkError> {
     let t_start = std::time::Instant::now();
     let user_hubs = parse_hubs(skip_hubs);
@@ -237,7 +238,15 @@ pub fn search_callers_bfs(
             if m.calling_function == TOP_LEVEL {
                 stats.top_level_terminal += 1;
             } else if visited.insert(key) {
-                next_frontier.insert(m.calling_function.clone());
+                // calling_function is qualified ("Class.method" / "mod::func").
+                // Frontier needs the bare name since find_callers_batch matches
+                // by-name call sites, not qualified references.
+                let bare = m
+                    .calling_function
+                    .rsplit_once('.')
+                    .or_else(|| m.calling_function.rsplit_once("::"))
+                    .map_or(m.calling_function.as_str(), |(_, name)| name);
+                next_frontier.insert(bare.to_string());
             }
 
             // Reduce call_text to a single line — multi-line calls collapse to
@@ -304,7 +313,14 @@ pub fn search_callers_bfs(
     });
 
     if json {
-        Ok(format_bfs_json(target, scope, &edges, &stats, max_depth))
+        Ok(format_bfs_json(
+            target,
+            scope,
+            &edges,
+            &stats,
+            max_depth,
+            budget_tokens,
+        ))
     } else {
         Ok(format_bfs(target, scope, &edges, &stats, max_depth))
     }
@@ -484,8 +500,9 @@ fn format_bfs_json(
     edges: &[BfsEdge],
     stats: &BfsStats,
     max_depth: usize,
+    budget_tokens: Option<usize>,
 ) -> String {
-    let edges_json: Vec<serde_json::Value> = edges
+    let all_edges_json: Vec<serde_json::Value> = edges
         .iter()
         .map(|e| {
             let rel = e
@@ -504,6 +521,23 @@ fn format_bfs_json(
             })
         })
         .collect();
+
+    // Budget enforcement: estimate ~30 tokens per edge (JSON field names + values).
+    // If budget given, cap the edges array and note how many were elided.
+    let tokens_per_edge: usize = 30;
+    let overhead_tokens: usize = 200; // stats, metadata, etc.
+    let (edges_json, edges_budget_elided) = match budget_tokens {
+        Some(b) if b > overhead_tokens => {
+            let max_edges_by_budget = (b - overhead_tokens) / tokens_per_edge;
+            if all_edges_json.len() > max_edges_by_budget {
+                let elided = all_edges_json.len() - max_edges_by_budget;
+                (all_edges_json[..max_edges_by_budget].to_vec(), Some(elided))
+            } else {
+                (all_edges_json, None)
+            }
+        }
+        _ => (all_edges_json, None),
+    };
 
     let per_hop: Vec<serde_json::Value> = stats
         .per_hop
@@ -546,11 +580,13 @@ fn format_bfs_json(
         .collect();
 
     let payload = serde_json::json!({
+        "query": format!("--callers {} --depth {}", target, max_depth),
         "root": target,
         "scope": scope.display().to_string(),
         "max_depth": max_depth,
         "depth_reached": stats.depth_reached,
         "edges_total": stats.edges_total,
+        "edges_returned": edges_json.len(),
         "elapsed_ms": stats.elapsed_ms,
         "edges": edges_json,
         "stats": {
@@ -561,6 +597,7 @@ fn format_bfs_json(
         },
         "elided": {
             "edges_cut_at_hop": stats.edges_cut_at_hop,
+            "edges_budget_elided": edges_budget_elided,
             "frontier_cuts": frontier_cuts,
             "hubs_skipped": hubs_sorted,
             "auto_hubs_promoted": auto_hubs_json,

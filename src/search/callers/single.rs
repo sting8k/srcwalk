@@ -36,6 +36,11 @@ pub struct CallerMatch {
     pub call_text: String,
     /// Line range of the calling function (for expand).
     pub caller_range: Option<(u32, u32)>,
+    /// Receiver object before `.method()` (e.g. `decomplib` in `decomplib.foo()`).
+    /// `None` for bare function calls.
+    pub receiver: Option<String>,
+    /// Number of arguments at the call site.
+    pub arg_count: Option<u8>,
     /// File content, already read during `find_callers` — avoids re-reading during expand.
     /// Shared across all call sites in the same file via reference counting.
     pub content: Arc<String>,
@@ -218,6 +223,14 @@ fn find_callers_treesitter(
                     text.to_string()
                 };
 
+                // Extract receiver: walk up from callee to find `obj.method()` pattern.
+                // The callee node is the method name; its parent may be a field_expression
+                // (Rust), member_expression (JS/TS), or similar with an `object` field.
+                let receiver = extract_receiver(cap.node, content_bytes);
+
+                // Extract arg count from the call expression's arguments node.
+                let arg_count = extract_arg_count(call_node);
+
                 // Walk up the tree to find the enclosing function
                 let (calling_function, caller_range) =
                     find_enclosing_function(cap.node, &lines, lang);
@@ -228,6 +241,8 @@ fn find_callers_treesitter(
                     calling_function,
                     call_text,
                     caller_range,
+                    receiver,
+                    arg_count,
                     content: Arc::clone(&shared_content),
                 });
             }
@@ -459,6 +474,9 @@ fn find_callers_treesitter_batch(
                 let (calling_function, caller_range) =
                     find_enclosing_function(cap.node, &lines, lang);
 
+                let receiver = extract_receiver(cap.node, content_bytes);
+                let arg_count = extract_arg_count(call_node);
+
                 callers.push((
                     matched_target,
                     CallerMatch {
@@ -467,6 +485,8 @@ fn find_callers_treesitter_batch(
                         calling_function,
                         call_text,
                         caller_range,
+                        receiver,
+                        arg_count,
                         content: Arc::clone(&shared_content),
                     },
                 ));
@@ -479,6 +499,129 @@ fn find_callers_treesitter_batch(
     };
 
     callers
+}
+
+/// Extract receiver from a call like `obj.method()` → `Some("obj")`.
+/// Returns `None` for bare calls like `method()`.
+fn extract_receiver(callee_node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let parent = callee_node.parent()?;
+    let kind = parent.kind();
+
+    match kind {
+        // obj.method / obj.field — Rust, JS/TS, Go, Python, C#, C/C++, PHP
+        "field_expression"
+        | "member_expression"
+        | "selector_expression"
+        | "attribute"
+        | "member_access_expression"
+        | "scoped_call_expression"
+        | "member_call_expression" => {
+            let obj = parent
+                .child_by_field_name("object")
+                .or_else(|| parent.child_by_field_name("receiver"))
+                .or_else(|| parent.child_by_field_name("expression"));
+            let obj = obj.or_else(|| {
+                // Fallback: first named child that isn't the callee itself
+                (0..parent.named_child_count())
+                    .filter_map(|i| parent.named_child(i))
+                    .find(|c| c.id() != callee_node.id())
+            });
+            let text = obj?.utf8_text(source).ok()?;
+            Some(if text.len() > 40 {
+                format!("{}…", &text[..37])
+            } else {
+                text.to_string()
+            })
+        }
+        // Java: method_invocation has "object" field
+        "method_invocation" => {
+            let text = parent
+                .child_by_field_name("object")?
+                .utf8_text(source)
+                .ok()?;
+            Some(if text.len() > 40 {
+                format!("{}…", &text[..37])
+            } else {
+                text.to_string()
+            })
+        }
+        // Rust Mod::func, C++ ns::func
+        "scoped_identifier" | "qualified_identifier" => {
+            let mut cursor = parent.walk();
+            let first = parent
+                .named_children(&mut cursor)
+                .find(|c| c.id() != callee_node.id())?;
+            Some(first.utf8_text(source).ok()?.to_string())
+        }
+        // Ruby: call node has "receiver" field directly
+        "call" => {
+            let text = parent
+                .child_by_field_name("receiver")?
+                .utf8_text(source)
+                .ok()?;
+            Some(if text.len() > 40 {
+                format!("{}…", &text[..37])
+            } else {
+                text.to_string()
+            })
+        }
+        // Kotlin: navigation_expression (logger.info)
+        "navigation_expression" => {
+            // First named child is the object, callee is the second
+            (0..parent.named_child_count())
+                .filter_map(|i| parent.named_child(i))
+                .find(|c| c.id() != callee_node.id())
+                .and_then(|obj| {
+                    let text = obj.utf8_text(source).ok()?;
+                    Some(if text.len() > 40 {
+                        format!("{}…", &text[..37])
+                    } else {
+                        text.to_string()
+                    })
+                })
+        }
+        // Swift: navigation_suffix → walk up to navigation_expression
+        "navigation_suffix" => {
+            let nav = parent.parent()?;
+            if nav.kind() != "navigation_expression" {
+                return None;
+            }
+            (0..nav.named_child_count())
+                .filter_map(|i| nav.named_child(i))
+                .find(|c| c.kind() != "navigation_suffix")
+                .and_then(|obj| {
+                    let text = obj.utf8_text(source).ok()?;
+                    Some(if text.len() > 40 {
+                        format!("{}…", &text[..37])
+                    } else {
+                        text.to_string()
+                    })
+                })
+        }
+        _ => None,
+    }
+}
+
+/// Count arguments at a call site.
+fn extract_arg_count(call_node: tree_sitter::Node) -> Option<u8> {
+    // Try the node itself, then its parent (for languages where the callee is captured
+    // inside a member_access/field_expression that is a child of the actual call node).
+    for node in [Some(call_node), call_node.parent()] {
+        let node = node?;
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "arguments" | "argument_list" | "actual_parameters" | "method_arguments"
+                | "value_arguments" | "call_suffix" => {
+                    let mut arg_cursor = child.walk();
+                    let count = child.named_children(&mut arg_cursor).count();
+                    return Some(count.min(255) as u8);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// Walk up the AST from a node to find the enclosing function definition.
@@ -624,14 +767,21 @@ pub fn search_callers_expanded(
     );
 
     for (i, caller) in sorted_callers.iter().enumerate() {
-        // Header: file:line [caller: calling_function]
+        // Header: file:line [caller: fn] [receiver: obj] [args: N]
         let _ = write!(
             output,
-            "\n## {}:{} [caller: {}]\n",
+            "\n## {}:{} [caller: {}]",
             rel_nonempty(&caller.path, scope),
             caller.line,
             caller.calling_function
         );
+        if let Some(ref recv) = caller.receiver {
+            let _ = write!(output, " [receiver: {recv}]");
+        }
+        if let Some(argc) = caller.arg_count {
+            let _ = write!(output, " [args: {argc}]");
+        }
+        let _ = writeln!(output);
 
         // Show the call text
         let _ = writeln!(output, "→ {}", caller.call_text);

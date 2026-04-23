@@ -62,6 +62,10 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["callers", "deps", "map"])]
     callees: bool,
 
+    /// Show ordered call sites with args and assignment context.
+    #[arg(long, requires = "callees")]
+    detailed: bool,
+
     /// BFS depth for --callers/--callees. 1 = direct (default). Capped at 5.
     #[arg(long, value_name = "N")]
     depth: Option<usize>,
@@ -237,7 +241,7 @@ fn main() {
 
     // Callees mode
     if cli.callees {
-        let result = srcwalk::run_callees(&query, &scope, effective_budget, &cache, cli.depth);
+        let result = srcwalk::run_callees(&query, &scope, effective_budget, &cache, cli.depth, cli.detailed);
         emit_result(result, &query, cli.json, is_tty);
         return;
     }

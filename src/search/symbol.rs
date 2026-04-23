@@ -945,7 +945,7 @@ pub fn suggest(
                     }
                     let w_norm = normalize_ident(word);
                     if w_norm == q_norm && word == query {
-                        // exact match — ignore (caller already handles hit path)
+                        // Exact match — caller already handles hit path.
                         continue;
                     }
                     let d = crate::read::edit_distance(&q_norm, &w_norm);

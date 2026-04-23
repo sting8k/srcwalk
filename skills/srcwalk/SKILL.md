@@ -17,6 +17,8 @@ srcwalk is a code-intelligence tool built on tree-sitter. It answers questions g
 srcwalk <args>
 ```
 
+**Follow output hints first:** srcwalk now prints contextual `> Tip:` footers (for `--section`, `--expand`, `--callers`, `--depth`, `--deps`, `--detailed`) in relevant outputs. Prefer those hints as next-step guidance before scanning this whole skill.
+
 ---
 
 ## Read a large file (outline + drill-in)
@@ -26,6 +28,7 @@ srcwalk <path>                          # outline if large, full if small
 srcwalk <path> --section 45-89          # exact line range
 srcwalk <path> --section "## Foo"       # markdown heading
 srcwalk <path> --section validateToken  # jump to a symbol's body by name
+srcwalk <path> --section "fn_a,fn_b"   # multiple symbols in one call
 srcwalk <path> --full                   # force full output with line numbers
 srcwalk <path> --budget 2000            # cap response to ~N tokens
 ```
@@ -42,7 +45,7 @@ srcwalk <path> --budget 2000            # cap response to ~N tokens
 | `--full` over `--budget` | Cascades: outline first (label `outline (full requested, over budget)`), then signatures (`signatures (full requested, over budget)`) if outline still over. Not a bug — srcwalk degraded gracefully because the budget was tight. |
 | Pipe mode | Same smart view as TTY (use `--full` for raw bytes) |
 
-On a heading miss, top-5 closest matches are suggested. Outlines are capped at a safe line count — when capped, drill in with `--section <symbol>` or a line range.
+On large files, outlines are capped at a safe line count — follow the footer hint to drill in with `--section <symbol>` or a line range.
 
 ---
 
@@ -73,29 +76,7 @@ Every definition hit reports its **line range** (e.g. `[38-690]` vs `[9-16]`). U
 | Who calls X? | `srcwalk X --callers --scope .` | AST-based — only real call sites |
 | All mentions of X | `srcwalk X --scope .` | Text-based — includes comments/docs |
 
-Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but include comment/doc mentions. The output separates code usages from comment mentions in faceted sections. For accurate call-site enumeration, prefer `--callers`.
-
----
-
-## When something isn't found
-
-srcwalk tries hard to convert misses into actionable suggestions. Trust the suggestion line before reformulating — it saves a round trip.
-
-- **0-hit symbol search** → srcwalk suggests close matches across naming
-  conventions (snake↔camel↔Pascal) and typo distance ≤ 2 (Levenshtein),
-  filtered to source files (no markdown, no JSON, no lockfiles). The
-  suggestion line `> Did you mean: <symbol> (<file>:<line>)` is reliable.
-  Example: query `searchSymbol` → suggests `search_symbol`. Query `readByt`
-  → suggests `readByte, readBytes, readInt`.
-
-- **Concept / multi-word miss** → format is
-  `no matches for "<query>" in <scope>`, followed by the same `> Did you
-  mean:` line when applicable. Treat this as a normal "try this instead",
-  not as an error to retry verbatim.
-
-- **No suggestion at all** → the query is genuinely far from anything
-  indexed. Reformulate (broader scope, partial name, related concept) or
-  fall back to `rg` for a text-level scan.
+Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but include comment/doc mentions. The output separates code usages from comment mentions in faceted sections and prints a `--callers` tip when relevant.
 
 ---
 
@@ -122,8 +103,6 @@ srcwalk <symbol> --callers --scope <dir>
 ```
 
 Structural (tree-sitter), not text-based. Includes type/constructor references (`new Foo()`, `Foo {}`), not just function calls.
-
-**When callers returns 0**, output includes a per-language hint about indirect dispatch (trait objects, interfaces, reflection, callbacks, duck typing). A symbol with zero direct callers is often still in use — check the hint before concluding it's dead code.
 
 ### Multi-hop callers (BFS)
 
@@ -161,11 +140,14 @@ Imports (what this file depends on) and dependents (what depends on it). Use bef
 ## Callees — forward call graph
 
 ```bash
-srcwalk <symbol> --callees --scope <dir>
-srcwalk <symbol> --callees --depth N --scope <dir>
+srcwalk <symbol> --callees --scope <dir>              # summary: resolved with sig + unresolved
+srcwalk <symbol> --callees --detailed --scope <dir>   # ordered call sites with assignments & returns
+srcwalk <symbol> --callees --depth N --scope <dir>    # transitive (up to 5 hops, cycle-safe)
 ```
 
-What does this function call? Resolved callees show file, line range, signature. Unresolved (stdlib/external) listed separately. `--depth N` for transitive callees (up to 5 hops, cycle-safe).
+What does this function call? Default output groups resolved callees (file, line range, signature) and unresolved (stdlib/external) separately, then prints a `> Tip: use --detailed ...` footer.
+
+`--detailed` shows **ordered call sites** as they appear in the function body — each line includes the call with assignment context (`result = foo(...)`) and return markers (`->ret`). Use this to understand control flow and data flow through the function.
 
 ---
 

@@ -271,3 +271,33 @@ fn bfs_deterministic_under_edge_cap() {
         "test fixture no longer trips the edge cap; pick a heavier target or lower the cap"
     );
 }
+
+// ── #7 Frontier bare-name extraction ─────────────────────────────────────
+// Guards the fix for qualified-name frontier bug: BFS used to push
+// "Class.method" into next_frontier, but find_callers_batch matches bare
+// names. Without rsplit on '.'/'::' hop 2+ would always be empty.
+//
+// Uses `search_callers_expanded` as target because its single caller
+// (`run_callers`) has a qualified name in hop 1. If hop 2 has zero edges,
+// the bare-name extraction regressed.
+
+#[test]
+fn bfs_hop2_finds_edges_after_qualified_frontier() {
+    let scope = fixture_scope();
+    let json = run_callers("search_callers_expanded", &scope, Some(3), true);
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    let per_hop = v["stats"]["per_hop"].as_array().expect("per_hop array");
+
+    // Must reach at least hop 2.
+    assert!(
+        per_hop.len() >= 2,
+        "expected at least 2 hops; got {}",
+        per_hop.len()
+    );
+    // Hop 2 must have edges (proves bare-name frontier works).
+    let hop2_edges = per_hop[1]["edges"].as_u64().unwrap_or(0);
+    assert!(
+        hop2_edges > 0,
+        "hop 2 must have >0 edges (frontier bare-name extraction); got 0"
+    );
+}

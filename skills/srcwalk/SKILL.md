@@ -1,6 +1,6 @@
 ---
 name: srcwalk
-compatible_srcwalk: ">=0.1.8"
+compatible_srcwalk: ">=0.1.9"
 description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'srcwalk' or 'outline'. Prefer this over cat/grep/find for any code-structure question. For plain text search, reading small files whose path you already know, or listing paths to pipe, use ripgrep / cat / fd directly."
 ---
 
@@ -26,6 +26,8 @@ srcwalk <args>
 
 ```bash
 srcwalk <path>                          # outline if large, full if small
+srcwalk <path>:123                      # focus exact hit line with small context
+srcwalk <path> --section 123            # same focused line context
 srcwalk <path> --section 45-89          # exact line range
 srcwalk <path> --section "## Foo"       # markdown heading
 srcwalk <path> --section validateToken  # jump to a symbol's body by name
@@ -36,6 +38,8 @@ srcwalk <path> --budget 2000            # cap response to ~N tokens
 ```
 
 **Smart view:** small text files print full line-numbered content; large files print structural outlines with line ranges. Binary/generated files are skipped or labeled. If `--full` exceeds `--budget`, srcwalk degrades to outline/signatures instead of dumping over-budget content.
+
+**Trace drill-in:** when search or caller rows show `path:line`, prefer `srcwalk path:line` to inspect that exact hit. This mirrors the common `rg → sed` trace loop without manually calculating a range.
 
 ---
 
@@ -84,7 +88,7 @@ srcwalk <symbol> --callers --scope <dir> --expand    # source context for top 2 
 srcwalk <symbol> --callers --scope <dir> --expand=5  # source context for top 5 callers
 ```
 
-Structural (tree-sitter), not text-based. Default output is token-light: caller function, file:line, receiver, and argument count when available. Use `--expand[=N]` only when you need source context around the call site.
+Structural (tree-sitter), not text-based. Default output is token-light: caller function, file:line, receiver, and argument count when available. Use `srcwalk <path>:<line>` to drill into a specific caller row; use `--expand[=N]` only when top-N source context is enough.
 
 Includes type/constructor references (`new Foo()`, `Foo {}`), not just function calls.
 

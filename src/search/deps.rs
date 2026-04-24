@@ -174,7 +174,7 @@ pub fn analyze_deps(
 
     // ── Phase 3: Reverse dependencies ────────────────────────────────────────
 
-    let mut used_by = if searched_count > 0 {
+    let used_by = if searched_count > 0 {
         let symbols_set: HashSet<String> = all_names.iter().cloned().collect();
         let raw_matches = find_callers_batch(&symbols_set, scope, bloom, None, None, Some(50))?;
 
@@ -224,7 +224,6 @@ pub fn analyze_deps(
     };
 
     let total_dependents = used_by.len();
-    used_by.truncate(MAX_DEPENDENTS);
 
     Ok(DepsResult {
         target: path.clone(),
@@ -244,9 +243,21 @@ pub fn analyze_deps(
 /// 2. Truncate "Uses (external)" to count only
 /// 3. Truncate "Uses (local)" symbol lists to file paths only
 /// 4. Never truncate the header line
-pub fn format_deps(result: &DepsResult, scope: &Path, budget: Option<usize>) -> String {
+pub fn format_deps(
+    result: &DepsResult,
+    scope: &Path,
+    budget: Option<usize>,
+    limit: Option<usize>,
+    offset: usize,
+) -> String {
     let dep_count = result.total_dependents;
-    let (prod_deps, test_deps): (Vec<_>, Vec<_>) = result.used_by.iter().partition(|d| !d.is_test);
+    let page_limit = limit.unwrap_or(MAX_DEPENDENTS).max(1);
+    let page_start = offset.min(result.used_by.len());
+    let page_end = page_start
+        .saturating_add(page_limit)
+        .min(result.used_by.len());
+    let page_deps = &result.used_by[page_start..page_end];
+    let (prod_deps, test_deps): (Vec<_>, Vec<_>) = page_deps.iter().partition(|d| !d.is_test);
 
     // ── Build sections (full fidelity first) ─────────────────────────────────
 
@@ -290,9 +301,9 @@ pub fn format_deps(result: &DepsResult, scope: &Path, budget: Option<usize>) -> 
     if !used_by_tests_section.is_empty() {
         parts.push(used_by_tests_section.clone());
     }
-    let truncated = result.total_dependents.saturating_sub(result.used_by.len());
-    if truncated > 0 {
-        parts.push(format!("... and {truncated} more dependents"));
+    let omitted = result.total_dependents.saturating_sub(page_end);
+    if omitted > 0 {
+        parts.push(format!("... and {omitted} more dependents"));
     }
     if !barrel_note.is_empty() {
         parts.push(barrel_note.clone());
@@ -322,11 +333,19 @@ pub fn format_deps(result: &DepsResult, scope: &Path, budget: Option<usize>) -> 
 
     let token_est = crate::types::estimate_tokens(output.len() as u64);
     let mut rendered = format!("{output}\n\n[~{token_est} tokens]");
-    if truncated > 0 {
-        rendered.push_str("\n\n> Tip: dependent list was capped. Narrow with --scope <dir>, or inspect a symbol with: srcwalk <exported_symbol> --callers --scope <dir> --limit <N>.");
+    if omitted > 0 {
+        let _ = write!(
+            rendered,
+            "\n\n> Tip: {omitted} more dependents available. Continue with --offset {page_end} --limit {page_limit}."
+        );
+    } else if offset > 0 {
+        let _ = write!(
+            rendered,
+            "\n\n> Tip: end of dependent results at offset {offset}."
+        );
     }
     if degraded_for_budget {
-        rendered.push_str("\n\n> Tip: deps output was compacted for budget. Retry with --budget <N>, narrow --scope, or inspect specific files with srcwalk <path>.");
+        rendered.push_str("\n\n> Tip: deps output was compacted for budget. Retry with --budget <N>, narrow with --scope <dir>, or inspect specific files with srcwalk <path>.");
     }
     rendered
 }

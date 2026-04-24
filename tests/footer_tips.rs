@@ -134,8 +134,7 @@ fn deps_budget_compaction_tip_is_footer() {
     );
 }
 
-#[test]
-fn deps_dependent_cap_tip_is_footer() {
+fn deps_pagination_fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::write(root.join("target.rs"), "fn exported() {}\n").unwrap();
@@ -146,7 +145,13 @@ fn deps_dependent_cap_tip_is_footer() {
         )
         .unwrap();
     }
+    dir
+}
 
+#[test]
+fn deps_dependents_default_page_has_continuation_tip() {
+    let dir = deps_pagination_fixture();
+    let root = dir.path();
     let out = srcwalk()
         .arg(root.join("target.rs"))
         .args(["--deps", "--scope"])
@@ -157,8 +162,42 @@ fn deps_dependent_cap_tip_is_footer() {
 
     assert!(
         stdout.contains("... and 5 more dependents")
-            && stdout.contains("> Tip: dependent list was capped"),
-        "expected dependent hard-cap footer tip:\n{stdout}"
+            && stdout.contains(
+                "> Tip: 5 more dependents available. Continue with --offset 15 --limit 15."
+            ),
+        "expected dependent pagination footer tip:\n{stdout}"
+    );
+}
+
+#[test]
+fn deps_dependents_limit_offset_page_and_end_tip() {
+    let dir = deps_pagination_fixture();
+    let root = dir.path();
+    let page = srcwalk()
+        .arg(root.join("target.rs"))
+        .args(["--deps", "--limit", "7", "--offset", "7", "--scope"])
+        .arg(root)
+        .output()
+        .unwrap();
+    let page_stdout = String::from_utf8_lossy(&page.stdout);
+    assert!(
+        page_stdout.contains("... and 6 more dependents")
+            && page_stdout.contains(
+                "> Tip: 6 more dependents available. Continue with --offset 14 --limit 7."
+            ),
+        "expected second deps page continuation tip:\n{page_stdout}"
+    );
+
+    let end = srcwalk()
+        .arg(root.join("target.rs"))
+        .args(["--deps", "--limit", "7", "--offset", "21", "--scope"])
+        .arg(root)
+        .output()
+        .unwrap();
+    let end_stdout = String::from_utf8_lossy(&end.stdout);
+    assert!(
+        end_stdout.contains("> Tip: end of dependent results at offset 21."),
+        "expected deps end-of-results footer tip:\n{end_stdout}"
     );
 }
 

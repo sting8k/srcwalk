@@ -101,7 +101,7 @@ struct Cli {
     symbols: bool,
 
     /// Max results. Default: unlimited (or 50 for interactive TTY).
-    /// Applies to: symbol/content/regex/callers search.
+    /// Applies to: symbol/content/regex/callers search and deps dependents.
     /// NOTE: multi-symbol ("A,B,C") applies the limit per-query, not total.
     #[arg(long, value_name = "N")]
     limit: Option<usize>,
@@ -292,7 +292,14 @@ fn main() {
                 }
             }
         };
-        let result = srcwalk::run_deps(&path, &scope, effective_budget, &cache);
+        let result = srcwalk::run_deps(
+            &path,
+            &scope,
+            effective_budget,
+            &cache,
+            cli.limit,
+            cli.offset,
+        );
         emit_result(result, &query, cli.json, is_tty);
         return;
     }

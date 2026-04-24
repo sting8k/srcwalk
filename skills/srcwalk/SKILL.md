@@ -17,7 +17,7 @@ srcwalk is a code-intelligence tool built on tree-sitter. It answers questions g
 srcwalk <args>
 ```
 
-**Follow output hints first:** srcwalk now prints contextual `> Tip:` footers (for `--section`, `--expand`, `--callers`, `--depth`, `--deps`, `--detailed`) in relevant outputs. Prefer those hints as next-step guidance before scanning this whole skill.
+**Follow output hints first:** srcwalk prints contextual `> Tip:` footers for pagination, budget/cap truncation, section drill-in, callers/callees/deps, and graph traversal. Prefer those hints as next-step guidance before scanning this whole skill.
 
 ---
 
@@ -136,6 +136,8 @@ srcwalk <file> --deps
 
 Imports (what this file depends on) and dependents (what depends on it). Use before modifying a file to understand impact.
 
+Dependents are paginated: default output shows the first 15 dependent files. Use the footer tip or pass `--limit N --offset M` to continue.
+
 ---
 
 ## Callees — forward call graph
@@ -163,18 +165,20 @@ srcwalk --map --scope <dir> --symbols  # include symbol names
 reflect what you would actually have to read, not the unfiltered tree on
 disk. A header note calls out when ignores are active.
 
+Default `--map` is intentionally compact; use `--symbols` only when you need symbol names.
+
 ---
 
 ## Pagination
 
-`--limit N` and `--offset N` work on symbol search, callers, and deps. Ordering is stable across runs (deterministic sort), so retries return identical pages.
+`--limit N` and `--offset N` work on symbol/content search, glob results, callers, and deps dependents. Ordering is stable across runs (deterministic sort), so retries return identical pages.
 
 ```bash
 srcwalk <symbol> --scope . --limit 10              # first page
 srcwalk <symbol> --scope . --limit 10 --offset 10  # second page
 ```
 
-Output ends with `Next page: --offset N --limit M.` or `(end of results)`. No silent caps — at ≥100k matches you get a soft warning but the result set is still complete.
+Paginated outputs end with `> Tip:` footer guidance, e.g. `Continue with --offset X --limit Y` or an end-of-results tip. No silent caps — at ≥100k matches you get a soft warning but the result set is still complete.
 
 ---
 

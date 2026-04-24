@@ -137,6 +137,7 @@ pub fn search_multi_symbol_expanded(
     let mut expanded_files = HashSet::new();
     let mut context_shown_files = HashSet::new();
     for mut result in results {
+        let mut smart_truncated = false;
         paginate(&mut result, limit, offset);
         let mut out = format::search_header(
             &result.query,
@@ -156,14 +157,20 @@ pub fn search_multi_symbol_expanded(
             &mut budget,
             &mut expanded_files,
             &mut context_shown_files,
+            &mut smart_truncated,
             &mut out,
         );
         if result.total_found > result.matches.len() {
             let omitted = result.total_found - result.matches.len();
+            let next_offset = result.offset + result.matches.len();
+            let page_size = result.matches.len().max(1);
             let _ = write!(
                 out,
-                "\n\n... and {omitted} more matches. Narrow with scope."
+                "\n\n> Tip: {omitted} more matches available. Continue with --offset {next_offset} --limit {page_size}."
             );
+        }
+        if smart_truncated {
+            out.push_str("\n\n> Tip: expanded source was smart-truncated. Use the shown file line range with --section <start-end> --full for the full body.");
         }
         append_did_you_mean(&mut out, &result, scope, glob);
         sections.push(out);
@@ -281,6 +288,7 @@ fn format_matches(
     expand_remaining: &mut usize,
     expanded_files: &mut HashSet<PathBuf>,
     context_shown_files: &mut HashSet<PathBuf>,
+    smart_truncated: &mut bool,
     out: &mut String,
 ) {
     // Multi-file: one expand per unique file. Single-file: sequential per-match.
@@ -303,6 +311,7 @@ fn format_matches(
                     expand_remaining,
                     expanded_files,
                     context_shown_files,
+                    smart_truncated,
                     multi_file,
                     out,
                 );
@@ -428,6 +437,7 @@ fn format_single_match(
     expand_remaining: &mut usize,
     expanded_files: &mut HashSet<PathBuf>,
     context_shown_files: &mut HashSet<PathBuf>,
+    smart_truncated: &mut bool,
     multi_file: bool,
     out: &mut String,
 ) {
@@ -516,6 +526,7 @@ fn format_single_match(
                             if let Some(keep) =
                                 truncate::select_diverse_lines(&content, def_start, def_end, lang)
                             {
+                                *smart_truncated = true;
                                 let keep_set: HashSet<u32> = keep.into_iter().collect();
                                 for ln in def_start..=def_end {
                                     if !keep_set.contains(&ln) {
@@ -806,6 +817,7 @@ fn format_search_result(
     let mut expand_remaining = expand;
     let mut expanded_files = HashSet::new();
     let mut context_shown_files = HashSet::new();
+    let mut smart_truncated = false;
 
     // File-level retrieval: when a file basename matches the query exactly,
     // prepend a compact outline so the agent gets file-level context first.
@@ -831,6 +843,7 @@ fn format_search_result(
                 &mut expand_remaining,
                 &mut expanded_files,
                 &mut context_shown_files,
+                &mut smart_truncated,
                 &mut out,
             );
         }
@@ -850,6 +863,7 @@ fn format_search_result(
                 &mut expand_remaining,
                 &mut expanded_files,
                 &mut context_shown_files,
+                &mut smart_truncated,
                 &mut out,
             );
         }
@@ -883,6 +897,7 @@ fn format_search_result(
                 &mut expand_remaining,
                 &mut expanded_files,
                 &mut context_shown_files,
+                &mut smart_truncated,
                 &mut out,
             );
         }
@@ -902,6 +917,7 @@ fn format_search_result(
                 &mut expand_remaining,
                 &mut expanded_files,
                 &mut context_shown_files,
+                &mut smart_truncated,
                 &mut out,
             );
         }
@@ -930,25 +946,35 @@ fn format_search_result(
             &mut expand_remaining,
             &mut expanded_files,
             &mut context_shown_files,
+            &mut smart_truncated,
             &mut out,
         );
     }
 
+    let mut footer = String::new();
     if result.has_more {
         let omitted = result.total_found - result.matches.len() - result.offset;
         let next_offset = result.offset + result.matches.len();
+        let page_size = result.matches.len().max(1);
         let _ = write!(
-            out,
-            "\n\n... and {omitted} more matches. Next page: offset={next_offset}. Use --files for full file list."
+            footer,
+            "> Tip: {omitted} more matches available. Continue with --offset {next_offset} --limit {page_size}."
         );
     } else if result.offset > 0 {
-        let _ = write!(out, "\n\n(end of results, offset={})", result.offset);
+        let _ = write!(footer, "> Tip: end of results at offset {}.", result.offset);
     } else if result.total_found > result.matches.len() {
         let omitted = result.total_found - result.matches.len();
         let _ = write!(
-            out,
-            "\n\n... and {omitted} more matches. Narrow with scope."
+            footer,
+            "> Tip: {omitted} more matches hidden by display limits. Narrow with --scope <dir> or --glob <pattern>."
         );
+    }
+
+    if smart_truncated {
+        if !footer.is_empty() {
+            footer.push('\n');
+        }
+        footer.push_str("> Tip: expanded source was smart-truncated. Use the shown file line range with --section <start-end> --full for the full body.");
     }
 
     let tokens = estimate_tokens(out.len() as u64);
@@ -958,6 +984,9 @@ fn format_search_result(
         format!("~{tokens}")
     };
     let _ = write!(out, "\n\n({token_str} tokens)");
+    if !footer.is_empty() {
+        let _ = write!(out, "\n\n{footer}");
+    }
 
     Ok(out)
 }
@@ -1189,11 +1218,11 @@ fn format_glob_result(result: &glob::GlobResult, scope: &Path) -> Result<String,
         let omitted = result.total_found - shown_end;
         let _ = write!(
             out,
-            "\n\n... and {omitted} more files. Next page: --offset {shown_end} --limit {limit}.",
+            "\n\n> Tip: {omitted} more files available. Continue with --offset {shown_end} --limit {limit}.",
             limit = result.limit,
         );
     } else if result.offset > 0 {
-        let _ = write!(out, "\n(end of results)");
+        let _ = write!(out, "\n> Tip: end of results.");
     }
 
     if result.files.is_empty() && !result.available_extensions.is_empty() {

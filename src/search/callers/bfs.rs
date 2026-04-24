@@ -471,7 +471,8 @@ fn format_bfs(
             target
         ));
     }
-    if !notes.is_empty() {
+    let has_budget_notes = !notes.is_empty();
+    if has_budget_notes {
         let _ = writeln!(out, "\n── budget ──");
         for n in notes {
             let _ = writeln!(out, "  • {n}");
@@ -482,6 +483,12 @@ fn format_bfs(
         "\nStatic by-name call graph only. May miss indirect dispatch, reflection, macros, \
          and calls from files > 500KB or from languages without a tree-sitter call query."
     );
+    if has_budget_notes {
+        let _ = writeln!(
+            out,
+            "\n> Tip: graph was capped. Retry with --max-edges <N> --max-frontier <N>, narrow with --scope <dir>, or use --skip-hubs \"\" to include hubs."
+        );
+    }
 
     let tokens = crate::types::estimate_tokens(out.len() as u64);
     let token_str = if tokens >= 1000 {

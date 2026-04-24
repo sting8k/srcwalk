@@ -816,15 +816,20 @@ pub fn search_callers_expanded(
         }
     }
 
+    let mut footer = String::new();
     if total > effective_offset + shown {
         let omitted = total - effective_offset - shown;
         let next_offset = effective_offset + shown;
+        let page_size = shown.max(1);
         let _ = write!(
-            output,
-            "\n... and {omitted} more call sites. Next page: --offset {next_offset}."
+            footer,
+            "> Tip: {omitted} more call sites available. Continue with --offset {next_offset} --limit {page_size}."
         );
     } else if effective_offset > 0 {
-        let _ = write!(output, "\n(end of results, offset={effective_offset})");
+        let _ = write!(
+            footer,
+            "> Tip: end of results at offset {effective_offset}."
+        );
     }
 
     // ── Adaptive 2nd-hop impact analysis ──
@@ -884,6 +889,12 @@ pub fn search_callers_expanded(
                         "  ... and {} more",
                         unique_total - IMPACT_MAX_RESULTS
                     );
+                    if !footer.is_empty() {
+                        footer.push('\n');
+                    }
+                    footer.push_str(
+                        "> Tip: impact list was capped. Use --callers --depth 2 for the full 2-hop graph.",
+                    );
                 }
 
                 let _ = writeln!(
@@ -902,6 +913,9 @@ pub fn search_callers_expanded(
         format!("~{tokens}")
     };
     let _ = write!(output, "\n\n({token_str} tokens)");
+    if !footer.is_empty() {
+        let _ = write!(output, "\n\n{footer}");
+    }
     Ok(output)
 }
 

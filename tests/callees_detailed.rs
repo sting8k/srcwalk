@@ -87,7 +87,7 @@ fn callees_budget_truncation_keeps_hint() {
 }
 
 #[test]
-fn callees_detailed_no_hint() {
+fn callees_detailed_has_own_budget_tip() {
     setup_fixtures();
     let out = srcwalk()
         .args(["--callees", "process", "--scope"])
@@ -97,8 +97,9 @@ fn callees_detailed_no_hint() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.contains("Tip: use --detailed"),
-        "--detailed output should NOT contain hint, got:\n{stdout}"
+        stdout.contains("Tip: detailed call sites can be long")
+            && !stdout.contains("Tip: use --detailed"),
+        "--detailed output should contain its own hint, got:\n{stdout}"
     );
 }
 

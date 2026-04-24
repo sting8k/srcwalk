@@ -145,9 +145,8 @@ pub fn read_file(
         let next_start = shown + 1;
         return Ok(format!(
             "{header}\n\n> **full=true capped**: file is {file_mb:.1}MB (cap: {cap_mb:.1}MB). \
-             Showing first {shown} of {line_count} lines. \
-             Continue with `section=\"{next_start}-<end>\"` or set SRCWALK_FULL_SIZE_CAP={byte_len} to override.\n\n\
-             {numbered_head}\n\n## Outline\n\n{outline}"
+             Showing first {shown} of {line_count} lines.\n\n\
+             {numbered_head}\n\n## Outline\n\n{outline}\n\n> Tip: full output was capped. Continue with --section {next_start}-<end>, or set SRCWALK_FULL_SIZE_CAP={byte_len} to override."
         ));
     }
 

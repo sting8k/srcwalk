@@ -275,7 +275,7 @@ pub fn run_callees(
                 }
             }
         }
-        // Collect unresolved (names not matching any site — skip for detailed, all are sites)
+        out.push_str("\n\n> Tip: detailed call sites can be long. Retry with --budget <N>, or omit --detailed for resolved callee summaries.");
         let output = match budget_tokens {
             Some(b) => budget::apply_preserving_footer(&out, b),
             None => out,

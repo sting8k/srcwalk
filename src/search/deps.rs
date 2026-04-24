@@ -301,6 +301,7 @@ pub fn format_deps(result: &DepsResult, scope: &Path, budget: Option<usize>) -> 
     let full = parts.join("\n\n");
     let full_tokens = crate::types::estimate_tokens(full.len() as u64) as usize;
 
+    let degraded_for_budget = budget.is_some_and(|b| full_tokens > b);
     let output = match budget {
         None => full,
         Some(b) if full_tokens <= b => full,
@@ -320,7 +321,14 @@ pub fn format_deps(result: &DepsResult, scope: &Path, budget: Option<usize>) -> 
     };
 
     let token_est = crate::types::estimate_tokens(output.len() as u64);
-    format!("{output}\n\n[~{token_est} tokens]")
+    let mut rendered = format!("{output}\n\n[~{token_est} tokens]");
+    if truncated > 0 {
+        rendered.push_str("\n\n> Tip: dependent list was capped. Narrow with --scope <dir>, or inspect a symbol with: srcwalk <exported_symbol> --callers --scope <dir> --limit <N>.");
+    }
+    if degraded_for_budget {
+        rendered.push_str("\n\n> Tip: deps output was compacted for budget. Retry with --budget <N>, narrow --scope, or inspect specific files with srcwalk <path>.");
+    }
+    rendered
 }
 
 // ---------------------------------------------------------------------------

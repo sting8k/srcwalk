@@ -1190,6 +1190,13 @@ fn format_search_result(
         );
     }
 
+    if result.total_found > 0 {
+        if !footer.is_empty() {
+            footer.push('\n');
+        }
+        footer.push_str("> Tip: drill into any hit with `srcwalk <path>:<line>`.");
+    }
+
     if smart_truncated {
         if !footer.is_empty() {
             footer.push('\n');

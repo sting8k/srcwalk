@@ -16,7 +16,14 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         }
     }
 
-    // 1. Glob — check first because globs can contain path separators.
+    // 1. Path with line suffix — e.g. src/lib.rs:123.
+    // Parse from the last colon so POSIX filenames containing ':' still work when the
+    // prefix resolves to a file. Only activate when the suffix is a positive integer.
+    if let Some((path, line)) = parse_path_line(query, scope) {
+        return QueryType::FilePathLine(path, line);
+    }
+
+    // 2. Glob — check first because globs can contain path separators.
     //    But only if no spaces: real globs don't have spaces, content like "import { X }" does.
     if !query.contains(' ')
         && query
@@ -26,7 +33,7 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         return QueryType::Glob(query.into());
     }
 
-    // 2. File path — contains separator or starts with ./ ../
+    // 3. File path — contains separator or starts with ./ ../
     //    But only if no spaces around the separator ("TODO: fix this/that" is content, not a path)
     if (query.starts_with("./") || query.starts_with("../"))
         || (query.contains('/') && !query.contains(' '))
@@ -38,7 +45,7 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         };
     }
 
-    // 3. Starts with . — could be dotfile (.gitignore) or relative path
+    // 4. Starts with . — could be dotfile (.gitignore) or relative path
     if query.starts_with('.') {
         let resolved = scope.join(query);
         if resolved.try_exists().unwrap_or(false) {
@@ -46,12 +53,12 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         }
     }
 
-    // 4. Pure numeric — fall through cascade (try symbol, then content as fallback)
+    // 5. Pure numeric — fall through cascade (try symbol, then content as fallback)
     if query.bytes().all(|b| b.is_ascii_digit()) {
         return QueryType::Fallthrough(query.into());
     }
 
-    // 5. Bare filename — only check filesystem for queries that look like filenames
+    // 6. Bare filename — only check filesystem for queries that look like filenames
     //    (have an extension or match known extensionless names like README, Makefile, etc.)
     if looks_like_filename(query) {
         let resolved = scope.join(query);
@@ -65,7 +72,7 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         }
     }
 
-    // 6. Identifier — no whitespace, starts with letter/underscore/$/@
+    // 7. Identifier — no whitespace, starts with letter/underscore/$/@
     if is_identifier(query) {
         // Sub-classify: exact symbol vs concept
         if looks_like_exact_symbol(query) {
@@ -74,7 +81,7 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         return QueryType::Concept(query.into());
     }
 
-    // 7. OR-pattern — "Foo|Bar|Baz" with no spaces, all parts valid identifiers.
+    // 8. OR-pattern — "Foo|Bar|Baz" with no spaces, all parts valid identifiers.
     //    Common developer intent: multi-symbol grep (rg "A|B|C" equivalent).
     //    Wrap in word boundaries so "Foo|Bar" doesn't match "Foobar"/"Barbarian".
     if !query.contains(' ') && query.contains('|') {
@@ -84,7 +91,7 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         }
     }
 
-    // 8. Multi-word — could be concept phrase ("cli mode", "search flow")
+    // 9. Multi-word — could be concept phrase ("cli mode", "search flow")
     if query.contains(' ') && query.split_whitespace().count() <= 4 {
         let words: Vec<&str> = query.split_whitespace().collect();
         let all_simple = words.iter().all(|w| {
@@ -97,7 +104,7 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         }
     }
 
-    // 9. Everything else — fall through to symbol→content cascade.
+    // 10. Everything else — fall through to symbol→content cascade.
     //    For raw plain-text/punctuation-heavy queries, prefer `rg` directly.
     QueryType::Fallthrough(query.into())
 }
@@ -149,6 +156,35 @@ fn looks_like_exact_symbol(query: &str) -> bool {
     // Short all-lowercase without any symbol markers → concept, not symbol
     // e.g. "thinking", "alias", "cli", "mode", "config"
     false
+}
+
+fn parse_path_line(query: &str, scope: &Path) -> Option<(std::path::PathBuf, usize)> {
+    if query.contains(' ') {
+        return None;
+    }
+
+    let (path_part, line_part) = query.rsplit_once(':')?;
+    if path_part.is_empty() || line_part.is_empty() {
+        return None;
+    }
+
+    let line: usize = line_part.parse().ok()?;
+    if line == 0 {
+        return None;
+    }
+
+    let path = Path::new(path_part);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        scope.join(path)
+    };
+
+    if resolved.try_exists().unwrap_or(false) {
+        Some((resolved, line))
+    } else {
+        None
+    }
 }
 
 /// Does this query look path-like enough that fallback search should be called out.

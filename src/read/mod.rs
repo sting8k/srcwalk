@@ -1,6 +1,7 @@
 pub mod imports;
 pub mod outline;
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -457,7 +458,8 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
     })?;
     let buf = &mmap[..];
 
-    // Resolve section address: line range, heading, or symbol name
+    // Resolve section address: line range, focused line, heading, or symbol name
+    let mut focus_line = None;
     let (start, end) = if range.starts_with('#') {
         // Markdown heading
         resolve_heading(buf, range).ok_or_else(|| {
@@ -475,9 +477,10 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
                 reason,
             }
         })?
-    } else if let Some(r) = parse_range(range) {
-        // Line range like "45-89"
-        r
+    } else if let Some((start, end, focus)) = parse_range(range) {
+        // Line range like "45-89" or focused line like "45"
+        focus_line = focus;
+        (start, end)
     } else if let Some(r) = resolve_symbol(buf, path, range) {
         // Symbol name like "isCustomization" or "handleRequest"
         r
@@ -488,7 +491,7 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
         }
         let suggestions = suggest_symbols(buf, path, range, 3);
         let reason = if suggestions.is_empty() {
-            "not a valid line range (e.g. \"45-89\"), heading (e.g. \"## Foo\"), or symbol name in this file"
+            "not a valid line number (e.g. \"45\"), line range (e.g. \"45-89\"), heading (e.g. \"## Foo\"), or symbol name in this file"
                 .to_string()
         } else {
             format!("symbol not found. Closest:\n  {}", suggestions.join("\n  "))
@@ -560,8 +563,25 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
     }
 
     let header = format::file_header(path, byte_len, line_count, ViewMode::Section);
-    let formatted = format::number_lines(&selected, start as u32);
+    let formatted = if let Some(focus) = focus_line {
+        format_focused_lines(&selected, start as u32, focus)
+    } else {
+        format::number_lines(&selected, start as u32)
+    };
     Ok(format!("{header}\n\n{formatted}"))
+}
+
+fn format_focused_lines(content: &str, start: u32, focus_line: usize) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let last = (start as usize + lines.len()).max(1);
+    let width = (last.ilog10() + 1).max(4) as usize;
+    let mut out = String::with_capacity(content.len() + lines.len() * (width + 5));
+    for (i, line) in lines.iter().enumerate() {
+        let num = start as usize + i;
+        let prefix = if num == focus_line { "► " } else { "  " };
+        let _ = writeln!(out, "{prefix}{num:>width$} │ {line}");
+    }
+    out
 }
 
 /// Resolve multiple comma-separated symbol names and return their bodies concatenated.
@@ -717,15 +737,23 @@ fn format_section_outline(entries: &[&OutlineEntry]) -> String {
     lines.join("\n")
 }
 
-/// Parse "45-89" into (45, 89). 1-indexed.
-fn parse_range(s: &str) -> Option<(usize, usize)> {
+/// Parse "45-89" or focused line "45". 1-indexed.
+fn parse_range(s: &str) -> Option<(usize, usize, Option<usize>)> {
+    if !s.contains('-') {
+        let line: usize = s.trim().parse().ok()?;
+        if line == 0 {
+            return None;
+        }
+        return Some((line.saturating_sub(2).max(1), line + 2, Some(line)));
+    }
+
     let (a, b) = s.split_once('-')?;
     let start: usize = a.trim().parse().ok()?;
     let end: usize = b.trim().parse().ok()?;
     if start == 0 || end < start {
         return None;
     }
-    Some((start, end))
+    Some((start, end, None))
 }
 
 /// Resolve a symbol name to its line range using AST outline.

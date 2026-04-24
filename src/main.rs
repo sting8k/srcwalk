@@ -18,14 +18,14 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// File path, symbol name, glob pattern, or text to search.
+    /// File path, path:line, symbol name, glob pattern, or text to search.
     query: Option<String>,
 
     /// Directory to search within or resolve relative paths against.
     #[arg(long, default_value = ".")]
     scope: PathBuf,
 
-    /// Line range or markdown heading (e.g. "45-89" or "## Architecture"). Bypasses smart view.
+    /// Focus line, line range, markdown heading, or symbol (e.g. "45", "45-89", "## Architecture").
     #[arg(long)]
     section: Option<String>,
 

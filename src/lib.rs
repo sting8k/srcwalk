@@ -594,7 +594,10 @@ fn run_inner(
 
     if resolution_note.is_none()
         && classify::looks_like_path_query(query)
-        && !matches!(query_type, QueryType::FilePath(_))
+        && !matches!(
+            query_type,
+            QueryType::FilePath(_) | QueryType::FilePathLine(_, _)
+        )
     {
         let mode = if matches!(query_type, QueryType::Glob(_)) {
             "glob"
@@ -607,8 +610,11 @@ fn run_inner(
         ));
     }
 
-    let use_expanded =
-        expand > 0 && !matches!(query_type, QueryType::FilePath(_) | QueryType::Glob(_));
+    let use_expanded = expand > 0
+        && !matches!(
+            query_type,
+            QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_)
+        );
 
     // Multi-symbol: comma-separated identifiers, 2..=5 items
     // Check before main dispatch. Only activate when all parts look like identifiers
@@ -616,7 +622,10 @@ fn run_inner(
     if query.contains(',')
         && !matches!(
             query_type,
-            QueryType::Regex(_) | QueryType::Glob(_) | QueryType::FilePath(_)
+            QueryType::Regex(_)
+                | QueryType::Glob(_)
+                | QueryType::FilePath(_)
+                | QueryType::FilePathLine(_, _)
         )
     {
         let parts: Vec<&str> = query
@@ -665,6 +674,11 @@ fn run_inner(
                 out.push_str("\n> Tip: use --deps to see imports and dependents (blast radius)");
             }
             Ok(out)
+        }
+        QueryType::FilePathLine(path, line) => {
+            let line_section = line.to_string();
+            let effective_section = section.unwrap_or(&line_section);
+            read::read_file_with_budget(&path, Some(effective_section), full, budget_tokens, cache)
         }
         QueryType::Glob(pattern) => search::search_glob(&pattern, scope, cache, limit, offset),
         _ if use_expanded => {
@@ -763,7 +777,7 @@ fn run_query_expanded(
             glob,
         ),
         // FilePath/Glob never reach here (gated by use_expanded)
-        QueryType::FilePath(_) | QueryType::Glob(_) => {
+        QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_) => {
             unreachable!("non-search query type in expanded path")
         }
     }
@@ -793,7 +807,7 @@ fn run_query_basic(
         QueryType::Fallthrough(text) => {
             single_query_search(text, scope, cache, false, limit, offset, glob)
         }
-        QueryType::FilePath(_) | QueryType::Glob(_) => {
+        QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_) => {
             unreachable!("non-search query type in basic path")
         }
     }

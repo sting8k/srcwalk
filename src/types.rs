@@ -5,6 +5,7 @@ use std::time::SystemTime;
 #[derive(Debug)]
 pub enum QueryType {
     FilePath(PathBuf),
+    FilePathLine(PathBuf, usize),
     Glob(String),
     Symbol(String),
     /// Broad concept query — single lowercase word or multi-word phrase

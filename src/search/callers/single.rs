@@ -823,6 +823,10 @@ pub fn search_callers_expanded(
             "> Tip: end of results at offset {effective_offset}."
         );
     }
+    if !footer.is_empty() {
+        footer.push('\n');
+    }
+    footer.push_str("> Tip: drill into any call site with `srcwalk <path>:<line>`.");
 
     // ── Adaptive 2nd-hop impact analysis ──
     // Use all_caller_names (pre-truncation) for the fan-out threshold check,

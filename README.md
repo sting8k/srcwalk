@@ -69,7 +69,9 @@ Full skill at [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md).
 ```sh
 # Read a file (outline if large, full if small)
 srcwalk src/auth.ts
+srcwalk src/auth.ts:72                       # drill into exact hit line
 srcwalk src/auth.ts --section handleAuth     # drill into symbol
+srcwalk src/auth.ts --section 72             # focused line context
 srcwalk src/auth.ts --section 44-89          # line range
 
 # Symbol search

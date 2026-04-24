@@ -155,10 +155,9 @@ What does this function call? Default output groups resolved callees (file, line
 ## Codebase map
 
 ```bash
-srcwalk --map --scope <dir>
+srcwalk --map --scope <dir>            # compact tree, no symbols
+srcwalk --map --scope <dir> --symbols  # include symbol names
 ```
-
-Structural skeleton. **Every directory is annotated with cumulative tokens of its descendants** (`src/ (~14.9k tokens)`, `.pi-lens/ (~175.9k tokens)`). See scale before choosing what to read. Auto k/M formatting.
 
 `--map` respects `.gitignore`, `.ignore`, and git excludes — token totals
 reflect what you would actually have to read, not the unfiltered tree on

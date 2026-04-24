@@ -59,10 +59,15 @@ fn format_walk_note(cfg: &WalkConfig) -> String {
 }
 
 /// Generate a structural codebase map.
-/// Code files show symbol names from outline cache.
-/// Non-code files show name + token estimate.
+/// By default files show compact token estimates; symbol names are opt-in.
 #[must_use]
-pub fn generate(scope: &Path, depth: usize, budget: Option<u64>, cache: &OutlineCache) -> String {
+pub fn generate(
+    scope: &Path,
+    depth: usize,
+    budget: Option<u64>,
+    cache: &OutlineCache,
+    include_symbols: bool,
+) -> String {
     let mut tree: BTreeMap<PathBuf, Vec<FileEntry>> = BTreeMap::new();
 
     let cfg = WalkConfig {
@@ -118,22 +123,26 @@ pub fn generate(scope: &Path, depth: usize, budget: Option<u64>, cache: &Outline
         let byte_len = meta.as_ref().map_or(0, std::fs::Metadata::len);
         let tokens = estimate_tokens(byte_len);
 
-        let file_type = detect_file_type(path);
-        let symbols = match file_type {
-            FileType::Code(_) => {
-                let mtime = meta
-                    .and_then(|m| m.modified().ok())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let symbols = if include_symbols {
+            let file_type = detect_file_type(path);
+            match file_type {
+                FileType::Code(_) => {
+                    let mtime = meta
+                        .and_then(|m| m.modified().ok())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-                let outline_str = cache.get_or_compute(path, mtime, || {
-                    let content = std::fs::read_to_string(path).unwrap_or_default();
-                    let buf = content.as_bytes();
-                    outline::generate(path, file_type, &content, buf, true)
-                });
+                    let outline_str = cache.get_or_compute(path, mtime, || {
+                        let content = std::fs::read_to_string(path).unwrap_or_default();
+                        let buf = content.as_bytes();
+                        outline::generate(path, file_type, &content, buf, true)
+                    });
 
-                Some(extract_symbol_names(&outline_str))
+                    Some(extract_symbol_names(&outline_str))
+                }
+                _ => None,
             }
-            _ => None,
+        } else {
+            None
         };
 
         tree.entry(parent.clone()).or_default().push(FileEntry {
@@ -153,15 +162,25 @@ pub fn generate(scope: &Path, depth: usize, budget: Option<u64>, cache: &Outline
         }
     }
 
-    let mut out = format!("# Map: {} (depth {})\n", scope.display(), depth);
+    let mut out = format!(
+        "# Map: {} (depth {}, sizes ~= tokens)\n",
+        scope.display(),
+        depth
+    );
     out.push_str(&format_walk_note(&cfg));
     let totals = compute_dir_totals(&tree);
     format_tree(&tree, &totals, Path::new(""), 0, &mut out);
 
-    match budget {
+    let mut out = match budget {
         Some(b) => crate::budget::apply(&out, b),
         None => out,
+    };
+    if include_symbols {
+        out.push_str("\n\n> Tip: narrow with --scope <dir>.\n");
+    } else {
+        out.push_str("\n\n> Tip: add --symbols, or narrow with --scope <dir>.\n");
     }
+    out
 }
 
 /// Compute total tokens for each directory (sum of all descendant files).
@@ -264,7 +283,7 @@ fn format_tree(
         for f in files {
             if let Some(ref symbols) = f.symbols {
                 if symbols.is_empty() {
-                    let _ = writeln!(out, "{prefix}{} (~{} tokens)", f.name, f.tokens);
+                    let _ = writeln!(out, "{prefix}{}  ~{}", f.name, fmt_tokens(f.tokens));
                 } else {
                     let syms = symbols.join(", ");
                     let truncated = if syms.len() > 80 {
@@ -275,7 +294,7 @@ fn format_tree(
                     let _ = writeln!(out, "{prefix}{}: {truncated}", f.name);
                 }
             } else {
-                let _ = writeln!(out, "{prefix}{} (~{} tokens)", f.name, f.tokens);
+                let _ = writeln!(out, "{prefix}{}  ~{}", f.name, fmt_tokens(f.tokens));
             }
         }
     }
@@ -284,7 +303,7 @@ fn format_tree(
     for subdir in subdirs {
         let dir_name = subdir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         let total = totals.get(subdir).copied().unwrap_or(0);
-        let _ = writeln!(out, "{prefix}{dir_name}/  (~{} tokens)", fmt_tokens(total));
+        let _ = writeln!(out, "{prefix}{dir_name}/  ~{}", fmt_tokens(total));
         format_tree(tree, totals, subdir, indent + 1, out);
     }
 }

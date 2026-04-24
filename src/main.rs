@@ -96,6 +96,10 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "expand", "section", "full"])]
     map: bool,
 
+    /// Include symbol names in --map output.
+    #[arg(long, requires = "map")]
+    symbols: bool,
+
     /// Max results. Default: unlimited (or 50 for interactive TTY).
     /// Applies to: symbol/content/regex/callers search.
     /// NOTE: multi-symbol ("A,B,C") applies the limit per-query, not total.
@@ -180,7 +184,7 @@ fn main() {
     if cli.map {
         let cache = srcwalk::cache::OutlineCache::new();
         let scope = cli.scope.canonicalize().unwrap_or(cli.scope);
-        let output = srcwalk::map::generate(&scope, 3, effective_budget, &cache);
+        let output = srcwalk::map::generate(&scope, 3, effective_budget, &cache, cli.symbols);
         emit_output(&output, is_tty);
         return;
     }

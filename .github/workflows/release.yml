@@ -63,9 +63,6 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            cross: false
 
     runs-on: ${{ matrix.os }}
 
@@ -97,8 +94,7 @@ jobs:
             cargo build --release --locked --target ${{ matrix.target }} --bin srcwalk
           fi
 
-      - name: Package (unix)
-        if: matrix.os != 'windows-latest'
+      - name: Package
         shell: bash
         run: |
           set -euo pipefail
@@ -107,16 +103,6 @@ jobs:
           cd ../../..
           shasum -a 256 srcwalk-${{ matrix.target }}.tar.gz > srcwalk-${{ matrix.target }}.tar.gz.sha256
 
-      - name: Package (windows)
-        if: matrix.os == 'windows-latest'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd target/${{ matrix.target }}/release
-          7z a ../../../srcwalk-${{ matrix.target }}.zip srcwalk.exe
-          cd ../../..
-          sha256sum srcwalk-${{ matrix.target }}.zip > srcwalk-${{ matrix.target }}.zip.sha256
-
       - name: Upload artifacts
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
@@ -124,8 +110,6 @@ jobs:
           path: |
             srcwalk-${{ matrix.target }}.tar.gz
             srcwalk-${{ matrix.target }}.tar.gz.sha256
-            srcwalk-${{ matrix.target }}.zip
-            srcwalk-${{ matrix.target }}.zip.sha256
           if-no-files-found: ignore
           retention-days: 7
 
@@ -156,7 +140,6 @@ jobs:
         with:
           subject-path: |
             dist/srcwalk-*.tar.gz
-            dist/srcwalk-*.zip
 
       - name: Create release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
@@ -164,8 +147,6 @@ jobs:
           files: |
             dist/srcwalk-*.tar.gz
             dist/srcwalk-*.tar.gz.sha256
-            dist/srcwalk-*.zip
-            dist/srcwalk-*.zip.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
 

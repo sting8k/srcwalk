@@ -54,8 +54,6 @@ curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-x86_
 curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarch64-unknown-linux-musl.tar.gz | tar xz -C ~/.local/bin
 ```
 
-Windows: download `srcwalk-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/sting8k/srcwalk/releases/latest).
-
 </details>
 
 **Agent skill** — teaches your coding agent the command vocabulary:

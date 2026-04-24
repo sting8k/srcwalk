@@ -5,9 +5,7 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 
-const isWindows = process.platform === "win32";
-const binName = isWindows ? "srcwalk.exe" : "srcwalk";
-const bin = path.join(__dirname, "bin", binName);
+const bin = path.join(__dirname, "bin", "srcwalk");
 
 try {
   execFileSync(bin, process.argv.slice(2), { stdio: "inherit" });

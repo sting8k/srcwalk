@@ -6,7 +6,6 @@ const https = require("https");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
 const zlib = require("zlib");
 
 const PLATFORM_MAP = {
@@ -14,7 +13,6 @@ const PLATFORM_MAP = {
   "linux-arm64": "aarch64-unknown-linux-musl",
   "darwin-x64": "x86_64-apple-darwin",
   "darwin-arm64": "aarch64-apple-darwin",
-  "win32-x64": "x86_64-pc-windows-msvc",
 };
 
 const key = `${process.platform}-${process.arch}`;
@@ -27,10 +25,8 @@ if (!target) {
 }
 
 const version = require("./package.json").version;
-const isWindows = process.platform === "win32";
-const ext = isWindows ? "zip" : "tar.gz";
-const binName = isWindows ? "srcwalk.exe" : "srcwalk";
-const url = `https://github.com/sting8k/srcwalk/releases/download/v${version}/srcwalk-${target}.${ext}`;
+const url = `https://github.com/sting8k/srcwalk/releases/download/v${version}/srcwalk-${target}.tar.gz`;
+const binName = "srcwalk";
 
 const binDir = path.join(__dirname, "bin");
 const binPath = path.join(binDir, binName);
@@ -65,34 +61,16 @@ function follow(url, callback) {
 }
 
 follow(url, (res) => {
-  if (isWindows) {
-    // For Windows, save zip and extract with tar (available on modern Windows)
-    const tmpZip = path.join(binDir, "srcwalk.zip");
-    const out = fs.createWriteStream(tmpZip);
-    res.pipe(out);
-    out.on("finish", () => {
-      out.close();
-      try {
-        execSync(`tar -xf "${tmpZip}" -C "${binDir}"`, { stdio: "ignore" });
-        fs.unlinkSync(tmpZip);
-      } catch {
-        console.error("srcwalk: failed to extract. Install manually: cargo install srcwalk");
-        process.exit(1);
-      }
-    });
-  } else {
-    // Unix: pipe through gunzip and tar
-    const tar = require("child_process").spawn("tar", ["xz", "-C", binDir], {
-      stdio: ["pipe", "inherit", "inherit"],
-    });
-    res.pipe(tar.stdin);
-    tar.on("close", (code) => {
-      if (code !== 0) {
-        console.error("srcwalk: failed to extract. Install manually: cargo install srcwalk");
-        process.exit(1);
-      }
-      fs.chmodSync(binPath, 0o755);
-      console.log("srcwalk: installed successfully");
-    });
-  }
+  const tar = require("child_process").spawn("tar", ["xz", "-C", binDir], {
+    stdio: ["pipe", "inherit", "inherit"],
+  });
+  res.pipe(tar.stdin);
+  tar.on("close", (code) => {
+    if (code !== 0) {
+      console.error("srcwalk: failed to extract. Install manually: cargo install srcwalk");
+      process.exit(1);
+    }
+    fs.chmodSync(binPath, 0o755);
+    console.log("srcwalk: installed successfully");
+  });
 });

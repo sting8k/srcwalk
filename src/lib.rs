@@ -205,7 +205,7 @@ pub fn run_callers(
             let mut callers_out = search::callers::search_callers_expanded(
                 target, scope, cache, &session, &bloom, expand, None, limit, offset, glob,
             )?;
-            callers_out.push_str("\n\n> Tip: use --depth N for transitive callers (max 5)");
+            callers_out.push_str("\n\n> Tip: use --expand[=N] to show source context; use --depth N for transitive callers (max 5)");
             callers_out
         }
     };

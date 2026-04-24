@@ -289,7 +289,7 @@ func caller() {
 }
 
 #[test]
-fn callers_output_preserves_scope_receiver_args_and_call_text() {
+fn callers_output_preserves_scope_receiver_args_and_omits_call_text_by_default() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("caller.go"),
@@ -331,8 +331,12 @@ func other() {
         "expected argument count metadata, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("sdktranslator.TranslateRequest(from, to, model, rawJSON, stream)"),
-        "expected call text, got:\n{stdout}"
+        !stdout.contains("sdktranslator.TranslateRequest(from, to, model, rawJSON, stream)"),
+        "default caller output should omit call text; use --expand for source context, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--expand[=N]"),
+        "expected footer tip to mention --expand, got:\n{stdout}"
     );
     assert!(
         stdout.contains("--offset 1 --limit 1"),
@@ -366,6 +370,11 @@ func caller() {
         "expected semantic compact caller row, got:\n{compact_stdout}"
     );
     assert!(
+        !compact_stdout
+            .contains("sdktranslator.TranslateRequest(from, to, model, rawJSON, stream)"),
+        "default caller output should not include call source, got:\n{compact_stdout}"
+    );
+    assert!(
         !compact_stdout.contains("```"),
         "default caller output should not include source fence, got:\n{compact_stdout}"
     );
@@ -377,7 +386,10 @@ func caller() {
         .unwrap();
     let expanded_stdout = String::from_utf8_lossy(&expanded.stdout);
     assert!(
-        expanded_stdout.contains("```") && expanded_stdout.contains("►"),
-        "explicit --expand should keep source window, got:\n{expanded_stdout}"
+        expanded_stdout.contains("```")
+            && expanded_stdout.contains("►")
+            && expanded_stdout
+                .contains("sdktranslator.TranslateRequest(from, to, model, rawJSON, stream)"),
+        "explicit --expand should keep source window with call source, got:\n{expanded_stdout}"
     );
 }

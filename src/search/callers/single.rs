@@ -777,7 +777,7 @@ pub fn search_callers_expanded(
         if let Some(argc) = caller.arg_count {
             let _ = write!(output, " args={argc}");
         }
-        let _ = writeln!(output, "\n    {}", caller.call_text);
+        let _ = writeln!(output);
 
         // Expand only when explicitly requested and we have the range.
         if i < expand {

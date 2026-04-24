@@ -757,36 +757,29 @@ pub fn search_callers_expanded(
     sorted_callers.truncate(max_matches);
     let shown = sorted_callers.len();
 
-    // Format the output
+    // Format the output as semantic-compact call edges.
     let mut output = format!(
-        "# Callers of \"{}\" in {} — {} call site{}\n",
-        target,
-        scope.display(),
-        total,
+        "# Slice: {target} — {total} call site{}\n\n[symbol] {target}\n<- calls\n",
         if total == 1 { "" } else { "s" }
     );
 
     for (i, caller) in sorted_callers.iter().enumerate() {
-        // Header: file:line [caller: fn] [receiver: obj] [args: N]
         let _ = write!(
             output,
-            "\n## {}:{} [caller: {}]",
+            "  [fn] {} {}:{}",
+            caller.calling_function,
             rel_nonempty(&caller.path, scope),
             caller.line,
-            caller.calling_function
         );
         if let Some(ref recv) = caller.receiver {
-            let _ = write!(output, " [receiver: {recv}]");
+            let _ = write!(output, " recv={recv}");
         }
         if let Some(argc) = caller.arg_count {
-            let _ = write!(output, " [args: {argc}]");
+            let _ = write!(output, " args={argc}");
         }
-        let _ = writeln!(output);
+        let _ = writeln!(output, "\n    {}", caller.call_text);
 
-        // Show the call text
-        let _ = writeln!(output, "→ {}", caller.call_text);
-
-        // Expand if requested and we have the range
+        // Expand only when explicitly requested and we have the range.
         if i < expand {
             if let Some((start, end)) = caller.caller_range {
                 // Use cached content — no re-read needed.
@@ -798,8 +791,7 @@ pub fn search_callers_expanded(
                 let start_idx = (window_start as usize).saturating_sub(1);
                 let end_idx = (window_end as usize).min(lines.len());
 
-                output.push('\n');
-                output.push_str("```\n");
+                output.push_str("\n```\n");
 
                 for (idx, line) in lines[start_idx..end_idx].iter().enumerate() {
                     let line_num = start_idx + idx + 1;

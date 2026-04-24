@@ -25,7 +25,7 @@ use crate::format;
 use crate::format::{rel, rel_nonempty};
 use crate::read;
 use crate::session::Session;
-use crate::types::{estimate_tokens, FileType, Match, SearchResult};
+use crate::types::{estimate_tokens, FileType, Match, OutlineEntry, OutlineKind, SearchResult};
 
 use self::io::{file_metadata, parse_pattern, read_file_bytes, walker};
 use self::pagination::paginate;
@@ -277,6 +277,28 @@ pub fn search_glob(
 }
 
 /// Format match entries with optional expansion.
+fn format_compact_facet_matches(
+    matches: &[Match],
+    scope: &Path,
+    cache: &OutlineCache,
+    out: &mut String,
+) {
+    for m in matches {
+        if m.is_definition {
+            format_definition_semantic_match(m, scope, cache, out);
+        } else {
+            let kind = if m.in_comment { "comment" } else { "usage" };
+            let _ = write!(
+                out,
+                "\n  [{kind}] {}:{} | {}",
+                rel_nonempty(&m.path, scope),
+                m.line,
+                m.text.trim()
+            );
+        }
+    }
+}
+
 /// Groups consecutive usage matches in the same enclosing function to reduce token noise.
 /// Shared expand state enables cross-query dedup in multi-symbol search.
 fn format_matches(
@@ -427,7 +449,197 @@ fn enclosing_fn_name(path: &Path, line: u32, cache: &OutlineCache) -> Option<Str
     entry.split_whitespace().last().map(String::from)
 }
 
-/// Format a single match entry (unchanged from original behavior).
+#[derive(Debug, Clone)]
+struct SemanticCandidate {
+    kind: OutlineKind,
+    name: String,
+    start_line: u32,
+    end_line: u32,
+    parents: Vec<String>,
+    children: Vec<SemanticChild>,
+}
+
+#[derive(Debug, Clone)]
+struct SemanticChild {
+    kind: OutlineKind,
+    name: String,
+    start_line: u32,
+    end_line: u32,
+}
+
+fn format_definition_semantic_match(
+    m: &Match,
+    scope: &Path,
+    cache: &OutlineCache,
+    out: &mut String,
+) {
+    let path = rel_nonempty(&m.path, scope);
+    if let Some(candidate) = semantic_candidate_for_match(m, cache) {
+        let qualified_name = if candidate.parents.is_empty() {
+            candidate.name.clone()
+        } else {
+            format!("{}.{}", candidate.parents.join("."), candidate.name)
+        };
+        let _ = write!(
+            out,
+            "\n  [{}] {} {}:{}-{}",
+            outline_kind_label(candidate.kind),
+            qualified_name,
+            path,
+            candidate.start_line,
+            candidate.end_line
+        );
+        for child in candidate.children.iter().take(2) {
+            let _ = write!(
+                out,
+                "\n    +[{}] {} {}-{}",
+                outline_kind_label(child.kind),
+                child.name,
+                child.start_line,
+                child.end_line
+            );
+        }
+        if candidate.children.len() > 2 {
+            let _ = write!(out, "\n    +{} more members", candidate.children.len() - 2);
+        }
+    } else if let Some((start, end)) = m.def_range {
+        let kind = if m.impl_target.is_some() {
+            "impl"
+        } else {
+            "definition"
+        };
+        let _ = write!(out, "\n  [{kind}] {path}:{start}-{end}");
+    } else {
+        let kind = if m.impl_target.is_some() {
+            "impl"
+        } else {
+            "definition"
+        };
+        let _ = write!(out, "\n  [{kind}] {path}:{}", m.line);
+    }
+}
+
+fn semantic_candidate_for_match(m: &Match, cache: &OutlineCache) -> Option<SemanticCandidate> {
+    let entries = structured_outline_entries(&m.path, cache)?;
+    best_semantic_candidate(&entries, m)
+}
+
+fn structured_outline_entries(path: &Path, cache: &OutlineCache) -> Option<Vec<OutlineEntry>> {
+    let file_type = crate::lang::detect_file_type(path);
+    let FileType::Code(lang) = file_type else {
+        return None;
+    };
+    let meta = fs::metadata(path).ok()?;
+    if meta.len() > 500_000 {
+        return None;
+    }
+    let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let content = fs::read_to_string(path).ok()?;
+    let ts_lang = crate::lang::outline::outline_language(lang)?;
+    let tree = cache.get_or_parse(path, mtime, &content, &ts_lang)?;
+    let lines: Vec<&str> = content.lines().collect();
+    Some(crate::lang::outline::walk_top_level(
+        tree.root_node(),
+        &lines,
+        lang,
+    ))
+}
+
+fn best_semantic_candidate(entries: &[OutlineEntry], m: &Match) -> Option<SemanticCandidate> {
+    let wanted = m.def_name.as_deref();
+    let range = m.def_range.unwrap_or((m.line, m.line));
+    let mut candidates = Vec::new();
+    collect_semantic_candidates(entries, &mut Vec::new(), range, wanted, &mut candidates);
+    candidates
+        .into_iter()
+        .min_by_key(|(_, score, size)| (*score, *size))
+        .map(|(candidate, _, _)| candidate)
+}
+
+fn collect_semantic_candidates(
+    entries: &[OutlineEntry],
+    parents: &mut Vec<String>,
+    match_range: (u32, u32),
+    wanted: Option<&str>,
+    out: &mut Vec<(SemanticCandidate, u32, u32)>,
+) {
+    for entry in entries {
+        let overlaps = ranges_overlap((entry.start_line, entry.end_line), match_range);
+        let contains_line = match_range.0 >= entry.start_line && match_range.0 <= entry.end_line;
+        if overlaps || contains_line {
+            let name_match = wanted.is_some_and(|name| entry.name == name);
+            let is_module = entry.kind == OutlineKind::Module;
+            let kind_penalty = if is_module && !name_match { 25 } else { 0 };
+            let name_penalty = if name_match { 0 } else { 100 };
+            let exact_penalty = if (entry.start_line, entry.end_line) == match_range {
+                0
+            } else if entry.start_line <= match_range.0 && entry.end_line >= match_range.1 {
+                10
+            } else {
+                20
+            };
+            let size = entry.end_line.saturating_sub(entry.start_line);
+            out.push((
+                SemanticCandidate {
+                    kind: entry.kind,
+                    name: entry.name.clone(),
+                    start_line: entry.start_line,
+                    end_line: entry.end_line,
+                    parents: parents.clone(),
+                    children: entry
+                        .children
+                        .iter()
+                        .filter(|child| child.kind != OutlineKind::Import)
+                        .map(|child| SemanticChild {
+                            kind: child.kind,
+                            name: child.name.clone(),
+                            start_line: child.start_line,
+                            end_line: child.end_line,
+                        })
+                        .collect(),
+                },
+                name_penalty + exact_penalty + kind_penalty,
+                size,
+            ));
+        }
+
+        let pushed_parent = if entry.kind == OutlineKind::Module {
+            parents.push(entry.name.clone());
+            true
+        } else {
+            false
+        };
+        collect_semantic_candidates(&entry.children, parents, match_range, wanted, out);
+        if pushed_parent {
+            parents.pop();
+        }
+    }
+}
+
+fn ranges_overlap(a: (u32, u32), b: (u32, u32)) -> bool {
+    a.0 <= b.1 && b.0 <= a.1
+}
+
+fn outline_kind_label(kind: OutlineKind) -> &'static str {
+    match kind {
+        OutlineKind::Import => "import",
+        OutlineKind::Function => "fn",
+        OutlineKind::Class => "class",
+        OutlineKind::Struct => "struct",
+        OutlineKind::Interface => "interface",
+        OutlineKind::TypeAlias => "type",
+        OutlineKind::Enum => "enum",
+        OutlineKind::Constant => "const",
+        OutlineKind::Variable | OutlineKind::ImmutableVariable => "var",
+        OutlineKind::Export => "export",
+        OutlineKind::Property => "property",
+        OutlineKind::Module => "mod",
+        OutlineKind::TestSuite => "test_suite",
+        OutlineKind::TestCase => "test_case",
+    }
+}
+
+/// Format a single match entry.
 fn format_single_match(
     m: &Match,
     scope: &Path,
@@ -441,54 +653,35 @@ fn format_single_match(
     multi_file: bool,
     out: &mut String,
 ) {
-    let kind = if m.impl_target.is_some() {
-        "impl"
-    } else if m.is_definition {
-        "definition"
-    } else {
-        "usage"
-    };
-
-    // Show line range for definitions with def_range, otherwise just the line
     if m.is_definition {
-        if let Some((start, end)) = m.def_range {
-            let _ = write!(
-                out,
-                "\n\n## {}:{}-{} [{kind}]",
-                rel_nonempty(&m.path, scope),
-                start,
-                end
-            );
-        } else {
-            let _ = write!(
-                out,
-                "\n\n## {}:{} [{kind}]",
-                rel_nonempty(&m.path, scope),
-                m.line
-            );
-        }
+        format_definition_semantic_match(m, scope, cache, out);
     } else {
+        let kind = if m.impl_target.is_some() {
+            "impl"
+        } else {
+            "usage"
+        };
         let _ = write!(
             out,
             "\n\n## {}:{} [{kind}]",
             rel_nonempty(&m.path, scope),
             m.line
         );
-    }
 
-    // Skip outline for small files — the expanded code speaks for itself.
-    // For larger files, show outline context only once per file to avoid
-    // repeated imports/module headers across consecutive matches.
-    if m.file_lines < 50 {
-        let _ = write!(out, "\n→ [{}]   {}", m.line, m.text);
-    } else if context_shown_files.insert(m.path.clone()) {
-        if let Some(context) = outline_context_for_match(&m.path, m.line, cache) {
-            out.push_str(&context);
-        } else {
+        // Skip outline for small files — the expanded code speaks for itself.
+        // For larger files, show outline context only once per file to avoid
+        // repeated imports/module headers across consecutive matches.
+        if m.file_lines < 50 {
             let _ = write!(out, "\n→ [{}]   {}", m.line, m.text);
+        } else if context_shown_files.insert(m.path.clone()) {
+            if let Some(context) = outline_context_for_match(&m.path, m.line, cache) {
+                out.push_str(&context);
+            } else {
+                let _ = write!(out, "\n→ [{}]   {}", m.line, m.text);
+            }
+        } else {
+            let _ = write!(out, "\n→ [{}]   {} [context shown earlier]", m.line, m.text);
         }
-    } else {
-        let _ = write!(out, "\n→ [{}]   {} [context shown earlier]", m.line, m.text);
     }
 
     if *expand_remaining > 0 {
@@ -819,12 +1012,18 @@ fn format_search_result(
     let mut context_shown_files = HashSet::new();
     let mut smart_truncated = false;
 
+    let compact_facets = result.matches.len() > 5 && expand == 0;
+
     // File-level retrieval: when a file basename matches the query exactly,
     // prepend a compact outline so the agent gets file-level context first.
-    if let Some(file_outline) =
-        basename_file_outline(&result.query, &result.matches, &result.scope, cache)
-    {
-        let _ = write!(out, "\n\n{file_outline}");
+    // Semantic-compact facets render kind/parent/children inline, so the
+    // basename outline would duplicate the same facts and cost tokens.
+    if !compact_facets {
+        if let Some(file_outline) =
+            basename_file_outline(&result.query, &result.matches, &result.scope, cache)
+        {
+            let _ = write!(out, "\n\n{file_outline}");
+        }
     }
 
     // Apply faceting when there are many matches (>5)
@@ -834,18 +1033,22 @@ fn format_search_result(
         // Format each non-empty facet with section headers
         if !faceted.definitions.is_empty() {
             let _ = write!(out, "\n\n### Definitions ({})", faceted.definitions.len());
-            format_matches(
-                &faceted.definitions,
-                &result.scope,
-                cache,
-                session,
-                bloom,
-                &mut expand_remaining,
-                &mut expanded_files,
-                &mut context_shown_files,
-                &mut smart_truncated,
-                &mut out,
-            );
+            if compact_facets {
+                format_compact_facet_matches(&faceted.definitions, &result.scope, cache, &mut out);
+            } else {
+                format_matches(
+                    &faceted.definitions,
+                    &result.scope,
+                    cache,
+                    session,
+                    bloom,
+                    &mut expand_remaining,
+                    &mut expanded_files,
+                    &mut context_shown_files,
+                    &mut smart_truncated,
+                    &mut out,
+                );
+            }
         }
 
         if !faceted.implementations.is_empty() {
@@ -854,18 +1057,27 @@ fn format_search_result(
                 "\n\n### Implementations ({})",
                 faceted.implementations.len()
             );
-            format_matches(
-                &faceted.implementations,
-                &result.scope,
-                cache,
-                session,
-                bloom,
-                &mut expand_remaining,
-                &mut expanded_files,
-                &mut context_shown_files,
-                &mut smart_truncated,
-                &mut out,
-            );
+            if compact_facets {
+                format_compact_facet_matches(
+                    &faceted.implementations,
+                    &result.scope,
+                    cache,
+                    &mut out,
+                );
+            } else {
+                format_matches(
+                    &faceted.implementations,
+                    &result.scope,
+                    cache,
+                    session,
+                    bloom,
+                    &mut expand_remaining,
+                    &mut expanded_files,
+                    &mut context_shown_files,
+                    &mut smart_truncated,
+                    &mut out,
+                );
+            }
         }
 
         if !faceted.tests.is_empty() {
@@ -888,18 +1100,22 @@ fn format_search_result(
                 "\n\n### Usages — same package ({})",
                 faceted.usages_local.len()
             );
-            format_matches(
-                &faceted.usages_local,
-                &result.scope,
-                cache,
-                session,
-                bloom,
-                &mut expand_remaining,
-                &mut expanded_files,
-                &mut context_shown_files,
-                &mut smart_truncated,
-                &mut out,
-            );
+            if compact_facets {
+                format_compact_facet_matches(&faceted.usages_local, &result.scope, cache, &mut out);
+            } else {
+                format_matches(
+                    &faceted.usages_local,
+                    &result.scope,
+                    cache,
+                    session,
+                    bloom,
+                    &mut expand_remaining,
+                    &mut expanded_files,
+                    &mut context_shown_files,
+                    &mut smart_truncated,
+                    &mut out,
+                );
+            }
         }
 
         if !faceted.usages_cross.is_empty() {
@@ -908,18 +1124,22 @@ fn format_search_result(
                 "\n\n### Usages — other ({})",
                 faceted.usages_cross.len()
             );
-            format_matches(
-                &faceted.usages_cross,
-                &result.scope,
-                cache,
-                session,
-                bloom,
-                &mut expand_remaining,
-                &mut expanded_files,
-                &mut context_shown_files,
-                &mut smart_truncated,
-                &mut out,
-            );
+            if compact_facets {
+                format_compact_facet_matches(&faceted.usages_cross, &result.scope, cache, &mut out);
+            } else {
+                format_matches(
+                    &faceted.usages_cross,
+                    &result.scope,
+                    cache,
+                    session,
+                    bloom,
+                    &mut expand_remaining,
+                    &mut expanded_files,
+                    &mut context_shown_files,
+                    &mut smart_truncated,
+                    &mut out,
+                );
+            }
         }
 
         if !faceted.comments.is_empty() {
@@ -1537,6 +1757,57 @@ mod tests {
             names.contains(&"real.rs"),
             "should find real.rs despite cycle: {names:?}"
         );
+    }
+
+    #[test]
+    fn semantic_candidate_prefers_class_entry_for_generated_stub_range() {
+        let entries = vec![OutlineEntry {
+            kind: OutlineKind::Module,
+            name: "Microsoft.UI.Xaml".to_string(),
+            start_line: 4,
+            end_line: 17,
+            signature: None,
+            children: vec![OutlineEntry {
+                kind: OutlineKind::Class,
+                name: "DependencyProperty".to_string(),
+                start_line: 6,
+                end_line: 16,
+                signature: None,
+                children: vec![OutlineEntry {
+                    kind: OutlineKind::Function,
+                    name: "DependencyProperty".to_string(),
+                    start_line: 9,
+                    end_line: 12,
+                    signature: Some("public DependencyProperty()".to_string()),
+                    children: Vec::new(),
+                    doc: None,
+                }],
+                doc: None,
+            }],
+            doc: None,
+        }];
+        let m = Match {
+            path: std::path::PathBuf::from("DependencyProperty.cs"),
+            line: 6,
+            text: "#if false".to_string(),
+            is_definition: true,
+            exact: true,
+            file_lines: 17,
+            mtime: std::time::SystemTime::UNIX_EPOCH,
+            def_range: Some((6, 16)),
+            def_name: Some("DependencyProperty".to_string()),
+            def_weight: 100,
+            impl_target: None,
+            in_comment: false,
+        };
+
+        let candidate = best_semantic_candidate(&entries, &m).expect("semantic candidate");
+        assert_eq!(candidate.kind, OutlineKind::Class);
+        assert_eq!(candidate.name, "DependencyProperty");
+        assert_eq!(candidate.parents, vec!["Microsoft.UI.Xaml"]);
+        assert_eq!((candidate.start_line, candidate.end_line), (6, 16));
+        assert_eq!(candidate.children.len(), 1);
+        assert_eq!(candidate.children[0].kind, OutlineKind::Function);
     }
 
     #[test]

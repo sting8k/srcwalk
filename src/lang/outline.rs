@@ -56,6 +56,17 @@ fn node_to_entry(
     let start_line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
 
+    if kind_str == "export_statement" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(mut entry) = node_to_entry(child, lines, lang, depth) {
+                entry.start_line = start_line;
+                entry.end_line = end_line;
+                return Some(entry);
+            }
+        }
+    }
+
     let (kind, name, signature) = match kind_str {
         // Functions
         "function_declaration"

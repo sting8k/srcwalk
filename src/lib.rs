@@ -185,9 +185,8 @@ pub fn run_callers(
 ) -> Result<String, SrcwalkError> {
     let session = session::Session::new();
     let bloom = index::bloom::BloomFilterCache::new();
-    let expand = if expand > 0 { expand } else { 1 };
 
-    // BFS path when --depth N (N >= 2). Otherwise preserve legacy behavior byte-exact.
+    // BFS path when --depth N (N >= 2). Otherwise use compact direct-call rows by default.
     let output = match depth {
         Some(d) if d >= 2 => search::callers::search_callers_bfs(
             target,

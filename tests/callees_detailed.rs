@@ -2,8 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 fn srcwalk() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_srcwalk"));
-    cmd
+    Command::new(env!("CARGO_BIN_EXE_srcwalk"))
 }
 
 fn fixture_dir() -> &'static Path {
@@ -68,6 +67,22 @@ fn callees_default_shows_hint() {
     assert!(
         stdout.contains("Tip: use --detailed"),
         "default output should contain hint, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn callees_budget_truncation_keeps_hint() {
+    setup_fixtures();
+    let out = srcwalk()
+        .args(["--callees", "process", "--scope"])
+        .arg(fixture_dir())
+        .args(["--budget", "30"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("truncated") && stdout.contains("Tip: use --detailed"),
+        "budgeted output should keep hint after truncation, got:\n{stdout}"
     );
 }
 

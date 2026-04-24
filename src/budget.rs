@@ -91,3 +91,92 @@ pub fn apply(output: &str, budget: u64) -> String {
         "{header}{clean_body}\n\n... truncated ({remaining_tokens} tokens omitted, budget: {budget})"
     )
 }
+
+/// Apply token budget to generated content while keeping trailing footer hints visible.
+///
+/// Footer lines (`> Tip:`, `> Related:`, etc.) are guidance/metadata rather than
+/// primary content, so they are split off before truncating and appended after the
+/// budgeted body. This intentionally allows the final rendered output to exceed the
+/// body budget by the small footer size.
+pub fn apply_preserving_footer(output: &str, budget: u64) -> String {
+    if estimate_tokens(output.len() as u64) <= budget {
+        return output.to_string();
+    }
+
+    let Some((body, footer)) = split_trailing_footer(output) else {
+        return apply(output, budget);
+    };
+
+    let body = body.trim_end();
+    let footer = footer.trim();
+    if body.is_empty() || footer.is_empty() {
+        return apply(output, budget);
+    }
+
+    let budgeted_body = apply(body, budget);
+    format!("{}\n\n{}", budgeted_body.trim_end(), footer)
+}
+
+fn split_trailing_footer(output: &str) -> Option<(&str, &str)> {
+    let mut footer_start = output.len();
+    let mut saw_footer = false;
+
+    for line in output.lines().rev() {
+        let line_start = footer_start.saturating_sub(line.len());
+        if line.starts_with("> ") {
+            saw_footer = true;
+            footer_start = line_start;
+            if footer_start > 0 && output.as_bytes()[footer_start - 1] == b'\n' {
+                footer_start -= 1;
+            }
+            continue;
+        }
+        if saw_footer && line.trim().is_empty() {
+            footer_start = line_start;
+            if footer_start > 0 && output.as_bytes()[footer_start - 1] == b'\n' {
+                footer_start -= 1;
+            }
+            continue;
+        }
+        break;
+    }
+
+    saw_footer.then(|| output.split_at(footer_start))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_preserving_footer;
+
+    #[test]
+    fn preserving_footer_keeps_tip_after_truncation() {
+        let body = (0..200)
+            .map(|i| format!("line {i}: lots of generated content"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = format!("# Header\n{body}\n\n> Tip: use --expand next");
+
+        let rendered = apply_preserving_footer(&output, 80);
+
+        assert!(rendered.contains("... truncated"), "{rendered}");
+        assert!(rendered.ends_with("> Tip: use --expand next"), "{rendered}");
+    }
+
+    #[test]
+    fn preserving_footer_keeps_multiple_footer_lines() {
+        let body = (0..200)
+            .map(|i| format!("line {i}: lots of generated content"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output =
+            format!("# Header\n{body}\n\n> Related: src/a.rs, src/b.rs\n> Tip: use --deps");
+
+        let rendered = apply_preserving_footer(&output, 80);
+
+        assert!(rendered.contains("... truncated"), "{rendered}");
+        assert!(
+            rendered.ends_with("> Related: src/a.rs, src/b.rs\n> Tip: use --deps"),
+            "{rendered}"
+        );
+    }
+}

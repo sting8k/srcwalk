@@ -159,7 +159,11 @@ pub fn run_path_exact(
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
     let path = resolve_exact_path(query, scope)?;
-    read::read_file_with_budget(&path, section, full, budget_tokens, cache)
+    let output = read::read_file_with_budget(&path, section, full, budget_tokens, cache)?;
+    Ok(match budget_tokens {
+        Some(b) => budget::apply_preserving_footer(&output, b),
+        None => output,
+    })
 }
 
 /// Find all callers of a symbol.
@@ -208,11 +212,11 @@ pub fn run_callers(
     };
     if json {
         // BFS JSON handles its own budget internally (edges array cap).
-        // Legacy callers JSON uses the generic budget::apply below.
+        // Legacy callers JSON returns unmodified for machine-readable output.
         return Ok(output);
     }
     match budget_tokens {
-        Some(b) => Ok(budget::apply(&output, b)),
+        Some(b) => Ok(budget::apply_preserving_footer(&output, b)),
         None => Ok(output),
     }
 }
@@ -273,7 +277,7 @@ pub fn run_callees(
         }
         // Collect unresolved (names not matching any site — skip for detailed, all are sites)
         let output = match budget_tokens {
-            Some(b) => budget::apply(&out, b),
+            Some(b) => budget::apply_preserving_footer(&out, b),
             None => out,
         };
         return Ok(output);
@@ -347,7 +351,7 @@ pub fn run_callees(
     out.push_str("\n\n> Tip: use --detailed for ordered call sites with args and assignments");
 
     let output = match budget_tokens {
-        Some(b) => budget::apply(&out, b),
+        Some(b) => budget::apply_preserving_footer(&out, b),
         None => out,
     };
     Ok(output)
@@ -630,7 +634,7 @@ fn run_inner(
                 glob,
             )?;
             return match budget_tokens {
-                Some(b) => Ok(budget::apply(&output, b)),
+                Some(b) => Ok(budget::apply_preserving_footer(&output, b)),
                 None => Ok(output),
             };
         }
@@ -682,7 +686,7 @@ fn run_inner(
     };
 
     let final_out = match budget_tokens {
-        Some(b) => budget::apply(&output, b),
+        Some(b) => budget::apply_preserving_footer(&output, b),
         None => output,
     };
     Ok(match resolution_note {

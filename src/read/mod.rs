@@ -195,7 +195,7 @@ pub fn would_outline(path: &Path) -> bool {
 ///   4. header + advice   → file too large at any granularity for this budget.
 ///
 /// For `section`, non-`full`, or no-budget paths, behaves identically to `read_file`
-/// (caller still applies `budget::apply` for byte-level cap if needed).
+/// (caller still applies the top-level budget cap if needed).
 pub fn read_file_with_budget(
     path: &Path,
     section: Option<&str>,

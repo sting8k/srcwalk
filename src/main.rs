@@ -50,7 +50,7 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
-    /// Expand top N search matches with inline source (default: 2 when flag present).
+    /// Show source context for top N matches/callers (default: 2 when flag present).
     #[arg(long, num_args = 0..=1, default_missing_value = "2", require_equals = true)]
     expand: Option<usize>,
 
@@ -58,7 +58,7 @@ struct Cli {
     #[arg(long)]
     glob: Option<String>,
 
-    /// Find all callers of a symbol.
+    /// Find direct callers as compact facts; use --expand[=N] for source context.
     #[arg(long, conflicts_with_all = ["callees", "deps", "map"])]
     callers: bool,
 

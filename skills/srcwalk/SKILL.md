@@ -34,19 +34,7 @@ srcwalk <path> --path-exact --full      # exact file only; fail instead of searc
 srcwalk <path> --budget 2000            # cap response to ~N tokens
 ```
 
-**Behaviour table:**
-
-| Input | Output |
-|---|---|
-| 0 bytes | `[empty]` |
-| Binary | `[skipped]` with mime type |
-| Generated (lockfiles, `.min.js`) | `[generated]` |
-| < ~6000 tokens | Full content, line-numbered |
-| > ~6000 tokens | Structural outline with line ranges |
-| `--full` over `--budget` | Cascades: outline first (label `outline (full requested, over budget)`), then signatures (`signatures (full requested, over budget)`) if outline still over. Not a bug — srcwalk degraded gracefully because the budget was tight. |
-| Pipe mode | Same smart view as TTY (use `--full` for raw bytes) |
-
-On large files, outlines are capped at a safe line count — follow the footer hint to drill in with `--section <symbol>` or a line range.
+**Smart view:** small text files print full line-numbered content; large files print structural outlines with line ranges. Binary/generated files are skipped or labeled. If `--full` exceeds `--budget`, srcwalk degrades to outline/signatures instead of dumping over-budget content.
 
 ---
 
@@ -55,8 +43,8 @@ On large files, outlines are capped at a safe line count — follow the footer h
 ```bash
 srcwalk <symbol> --scope <dir>                    # definitions first, then usages
 srcwalk "foo, bar, baz" --scope <dir>             # multi-symbol, one pass
-srcwalk <symbol> --scope <dir> --expand           # inline source for top 2
-srcwalk <symbol> --scope <dir> --expand=5         # inline source for top 5
+srcwalk <symbol> --scope <dir> --expand           # source context for top 2 matches
+srcwalk <symbol> --scope <dir> --expand=5         # source context for top 5 matches
 ```
 
 Tree-sitter finds where symbols are **defined**, not just where strings appear. Each match shows the surrounding file structure so you know context without a second read.
@@ -77,33 +65,27 @@ Every definition hit reports its **line range** (e.g. `[38-690]` vs `[9-16]`). U
 | Who calls X? | `srcwalk X --callers --scope .` | AST-based — only real call sites |
 | All mentions of X | `srcwalk X --scope .` | Text-based — includes comments/docs |
 
-Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but include comment/doc mentions. The output separates code usages from comment mentions in faceted sections and prints a `--callers` tip when relevant.
+Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but include comment/doc mentions. The output separates code usages from comment mentions in faceted sections.
 
 ---
 
 ## Bare filename + `--section` auto-pick
 
-`srcwalk config.go --section parseConfig` works even if many `config.go`
-files exist in scope. srcwalk picks the **primary** copy automatically:
-
-- Files matched by `.gitignore` / `.ignore` / git excludes (test fixtures,
-  vendor copies, generated mirrors) are dropped first.
-- Among the rest, the file with the shallowest directory depth wins.
-- The output sidebar lists what was skipped — usually safe to ignore, but
-  scan it once if you suspect you wanted a vendored copy.
-
-If the result still looks wrong (e.g. monorepo with multiple legitimate
-`config.go`), pass an unambiguous path: `srcwalk pkg/foo/config.go --section ...`.
+`srcwalk config.go --section parseConfig` auto-picks the primary non-ignored, shallowest `config.go` when duplicates exist. If a monorepo has multiple legitimate matches or you need a vendored/generated copy, pass an explicit path: `srcwalk pkg/foo/config.go --section ...`.
 
 ---
 
 ## Callers — who calls this symbol
 
 ```bash
-srcwalk <symbol> --callers --scope <dir>
+srcwalk <symbol> --callers --scope <dir>             # compact facts only
+srcwalk <symbol> --callers --scope <dir> --expand    # source context for top 2 callers
+srcwalk <symbol> --callers --scope <dir> --expand=5  # source context for top 5 callers
 ```
 
-Structural (tree-sitter), not text-based. Includes type/constructor references (`new Foo()`, `Foo {}`), not just function calls.
+Structural (tree-sitter), not text-based. Default output is token-light: caller function, file:line, receiver, and argument count when available. Use `--expand[=N]` only when you need source context around the call site.
+
+Includes type/constructor references (`new Foo()`, `Foo {}`), not just function calls.
 
 ### Multi-hop callers (BFS)
 
@@ -120,11 +102,7 @@ Trace callers transitively up to `N` hops (max 5). Use this instead of looping `
 - `--skip-hubs CSV` — explicit hub-skip list. Default is language-agnostic (`new,clone,from,into,to_string,drop,fmt,default`). `--skip-hubs ""` to disable.
 - `--json` — machine-readable edge list.
 
-**For agents reading `--json`:**
-
-- Each `edges[]` entry has `hop, from, from_file, from_line, to, call_text`. Use `call_text` (the raw call-site line) to disambiguate overloaded callee names — you see `errors.New("timeout")` vs `pool.New(cfg)` directly, no extra lookup.
-- Check `stats.suspicious_hops[]` before trusting deep hops. Entries there flag cross-package name collisions (e.g. `→ New` matching hundreds of unrelated `New` definitions). When flagged, qualify the target, drop that hop, or filter edges client-side using `call_text`.
-- Check `elided` for truncation signals: `edges_cut_at_hop`, `frontier_cuts`, `auto_hubs_promoted`.
+For `--json`, inspect `edges[]`, `stats.suspicious_hops[]`, and `elided` before trusting deep hops. Use `call_text` to disambiguate overloaded/common names when needed.
 
 ---
 
@@ -182,17 +160,20 @@ Paginated outputs end with `> Tip:` footer guidance, e.g. `Continue with --offse
 
 ---
 
-## Workflow: understanding a new codebase
+## Pick the command by question
 
-A common pattern that compounds these features:
+Start narrow. Run the smallest command that can answer the question, then use `--expand[=N]` or footer tips only if compact output lacks needed context.
 
-1. `srcwalk --map --scope .` — skeleton + directory token scale; skip huge subtrees that the gitignore-aware totals confirm are noise (build outputs, vendored deps).
-2. `srcwalk <key-file>` — outline the interesting files.
-3. `srcwalk <symbol> --scope .` — find definitions; follow the `── calls ──` footer instead of re-searching.
-4. `srcwalk <file> --section <range-or-symbol>` — drill into specific parts.
-5. `srcwalk <symbol> --callers --depth 2 --json` when you need transitive call sites.
-
-Other tasks (impact analysis, dead-code check, etc.) compose the same primitives.
+| Question | Example |
+|---|---|
+| What is this repo shaped like? | `srcwalk --map --scope .` |
+| What is in this large file? | `srcwalk <file>` |
+| Where is this symbol defined? | `srcwalk <symbol> --scope .` |
+| Who directly calls this? | `srcwalk <symbol> --callers --scope .` |
+| Need source around a hit? | add `--expand` or `--expand=N` |
+| What depends on this file? | `srcwalk <file> --deps` |
+| Need transitive callers? | `srcwalk <symbol> --callers --depth 2 --scope .` |
+| Need exact body/range? | `srcwalk <file> --section <range-or-symbol>` |
 
 ---
 

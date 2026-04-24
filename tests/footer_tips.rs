@@ -33,7 +33,7 @@ fn caller_c() { needle(); }
 fn search_pagination_tip_is_footer_and_survives_budget() {
     let dir = fixture_dir("many_matches");
     let out = srcwalk()
-        .args(["needle", "--limit", "1", "--budget", "30", "--scope"])
+        .args(["needle", "--limit", "1", "--budget", "10", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();

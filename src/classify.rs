@@ -151,6 +151,26 @@ fn looks_like_exact_symbol(query: &str) -> bool {
     false
 }
 
+/// Does this query look path-like enough that fallback search should be called out.
+pub fn looks_like_path_query(query: &str) -> bool {
+    if query.contains(' ') || query.is_empty() {
+        return false;
+    }
+    if query
+        .bytes()
+        .any(|b| matches!(b, b'*' | b'?' | b'{' | b'['))
+    {
+        return false;
+    }
+    query.starts_with('/')
+        || query.starts_with("~/")
+        || query.starts_with("./")
+        || query.starts_with("../")
+        || query.contains('/')
+        || query.contains('\\')
+        || looks_like_filename(query)
+}
+
 /// Does this query look like a filename? Has an extension, or matches known extensionless names.
 fn looks_like_filename(query: &str) -> bool {
     if query.contains(' ') || query.contains('/') {

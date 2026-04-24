@@ -30,6 +30,7 @@ srcwalk <path> --section "## Foo"       # markdown heading
 srcwalk <path> --section validateToken  # jump to a symbol's body by name
 srcwalk <path> --section "fn_a,fn_b"   # multiple symbols in one call
 srcwalk <path> --full                   # force full output with line numbers
+srcwalk <path> --path-exact --full      # exact file only; fail instead of search fallback
 srcwalk <path> --budget 2000            # cap response to ~N tokens
 ```
 

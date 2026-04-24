@@ -43,6 +43,35 @@ struct ExpandedCtx {
     expand: usize,
 }
 
+fn resolve_exact_path(query: &str, scope: &Path) -> Result<std::path::PathBuf, SrcwalkError> {
+    let candidates = if Path::new(query).is_absolute() {
+        vec![std::path::PathBuf::from(query)]
+    } else {
+        let mut paths = vec![scope.join(query)];
+        if let Ok(cwd) = std::env::current_dir() {
+            let cwd_path = cwd.join(query);
+            if paths.first() != Some(&cwd_path) {
+                paths.push(cwd_path);
+            }
+        }
+        paths
+    };
+
+    for path in &candidates {
+        if path.try_exists().unwrap_or(false) {
+            return Ok(path.clone());
+        }
+    }
+
+    Err(SrcwalkError::NotFound {
+        path: candidates
+            .first()
+            .cloned()
+            .unwrap_or_else(|| scope.join(query)),
+        suggestion: None,
+    })
+}
+
 /// The single public API. Everything flows through here:
 /// classify → match on query type → return formatted string.
 pub fn run(
@@ -119,6 +148,18 @@ pub fn run_expanded(
         glob,
         cache,
     )
+}
+
+pub fn run_path_exact(
+    query: &str,
+    scope: &Path,
+    section: Option<&str>,
+    budget_tokens: Option<u64>,
+    full: bool,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    let path = resolve_exact_path(query, scope)?;
+    read::read_file_with_budget(&path, section, full, budget_tokens, cache)
 }
 
 /// Find all callers of a symbol.
@@ -540,6 +581,21 @@ fn run_inner(
         query_type
     };
 
+    if resolution_note.is_none()
+        && classify::looks_like_path_query(query)
+        && !matches!(query_type, QueryType::FilePath(_))
+    {
+        let mode = if matches!(query_type, QueryType::Glob(_)) {
+            "glob"
+        } else {
+            "search"
+        };
+        resolution_note = Some(format!(
+            "> Note: query looks like a path but was not found under {}; interpreting as {mode}.\n> Tip: pass --scope <repo>, use an absolute path, or use --path-exact to fail fast.",
+            scope.display()
+        ));
+    }
+
     let use_expanded =
         expand > 0 && !matches!(query_type, QueryType::FilePath(_) | QueryType::Glob(_));
 
@@ -581,7 +637,7 @@ fn run_inner(
     }
 
     // FilePath and Glob are read operations, not search — handle before expanded dispatch
-    let output = match query_type {
+    let output_result = match query_type {
         QueryType::FilePath(path) => {
             let mut out = read::read_file_with_budget(&path, section, full, budget_tokens, cache)?;
             if section.is_none() && !full && read::would_outline(&path) {
@@ -597,9 +653,9 @@ fn run_inner(
                 }
                 out.push_str("\n> Tip: use --deps to see imports and dependents (blast radius)");
             }
-            out
+            Ok(out)
         }
-        QueryType::Glob(pattern) => search::search_glob(&pattern, scope, cache, limit, offset)?,
+        QueryType::Glob(pattern) => search::search_glob(&pattern, scope, cache, limit, offset),
         _ if use_expanded => {
             let ctx = ExpandedCtx {
                 session: session::Session::new(),
@@ -607,9 +663,22 @@ fn run_inner(
                 bloom: index::bloom::BloomFilterCache::new(),
                 expand,
             };
-            run_query_expanded(&query_type, scope, cache, &ctx, limit, offset, glob)?
+            run_query_expanded(&query_type, scope, cache, &ctx, limit, offset, glob)
         }
-        _ => run_query_basic(&query_type, scope, cache, limit, offset, glob)?,
+        _ => run_query_basic(&query_type, scope, cache, limit, offset, glob),
+    };
+
+    let output = match output_result {
+        Ok(output) => output,
+        Err(err) => {
+            return Err(match resolution_note {
+                Some(note) => SrcwalkError::WithNote {
+                    note,
+                    source: Box::new(err),
+                },
+                None => err,
+            });
+        }
     };
 
     let final_out = match budget_tokens {

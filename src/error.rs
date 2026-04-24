@@ -27,6 +27,10 @@ pub enum SrcwalkError {
         path: PathBuf,
         reason: String,
     },
+    WithNote {
+        note: String,
+        source: Box<SrcwalkError>,
+    },
 }
 
 impl std::fmt::Display for SrcwalkError {
@@ -62,6 +66,7 @@ impl std::fmt::Display for SrcwalkError {
             Self::ParseError { path, reason } => {
                 write!(f, "parse error in {}: {reason}", path.display())
             }
+            Self::WithNote { note, source } => write!(f, "{note}\n\n{source}"),
         }
     }
 }
@@ -76,6 +81,7 @@ impl SrcwalkError {
             Self::NotFound { .. } | Self::NoMatches { .. } | Self::IoError { .. } => 2,
             Self::InvalidQuery { .. } | Self::ParseError { .. } => 3,
             Self::PermissionDenied { .. } => 4,
+            Self::WithNote { source, .. } => source.exit_code(),
         }
     }
 }

@@ -42,6 +42,10 @@ struct Cli {
     #[arg(long)]
     full: bool,
 
+    /// Treat QUERY as an exact file path. Fails fast instead of falling back to search/glob.
+    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "map", "expand", "glob"])]
+    path_exact: bool,
+
     /// Machine-readable JSON output.
     #[arg(long)]
     json: bool,
@@ -205,6 +209,20 @@ fn main() {
             None
         }
     });
+
+    // Exact file mode: read only this path; never fall back to search/glob.
+    if cli.path_exact {
+        let result = srcwalk::run_path_exact(
+            &query,
+            &scope,
+            cli.section.as_deref(),
+            effective_budget,
+            full,
+            &cache,
+        );
+        emit_result(result, &query, cli.json, is_tty);
+        return;
+    }
 
     // Callers mode
     if cli.callers {

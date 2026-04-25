@@ -10,7 +10,7 @@ All notable changes to srcwalk are documented here.
 
 ### Fixed
 
-## [0.2.1] - 2026-04-25
+## [0.2.2] - 2026-04-25
 
 ### Added
 - Lab `--flow` slices for compact function-level call exploration.

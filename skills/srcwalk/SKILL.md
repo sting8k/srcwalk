@@ -1,6 +1,6 @@
 ---
 name: srcwalk
-compatible_srcwalk: ">=0.2.1"
+compatible_srcwalk: ">=0.2.2"
 description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'srcwalk' or 'outline'. Prefer this over cat/grep/find for any code-structure question. For plain text search, reading small files whose path you already know, or listing paths to pipe, use ripgrep / cat / fd directly."
 ---
 

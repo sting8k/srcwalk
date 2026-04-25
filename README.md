@@ -81,8 +81,6 @@ srcwalk handleAuth --scope src/ --expand     # inline source + callees
 
 # Callers (reverse call graph)
 srcwalk handleAuth --callers --scope src/
-srcwalk handleAuth --callers --depth 3 --scope src/   # BFS 3 hops
-srcwalk handleAuth --callers --depth 3 --json         # machine-readable
 
 # Callees (forward call graph)
 srcwalk handleAuth --callees --scope src/
@@ -94,28 +92,6 @@ srcwalk src/auth.ts --deps
 # Map
 srcwalk --map --scope src/
 ```
-
-## Multi-hop caller BFS
-
-Trace callers transitively in one call:
-
-```
-$ srcwalk NewClient --callers --depth 3 --json
-{
-  "edges": [
-    { "hop": 1, "from": "newDefaultClient", "from_file": "client/factory.go",
-      "to": "NewClient", "call_text": "return NewClient(opts)" },
-    { "hop": 2, "from": "Bootstrap", "from_file": "cmd/server/main.go",
-      "to": "newDefaultClient", "call_text": "c, err := newDefaultClient(cfg)" },
-    { "hop": 3, "from": "main", "from_file": "cmd/server/main.go",
-      "to": "Bootstrap", "call_text": "if err := Bootstrap(ctx); err != nil {" }
-  ],
-  "stats": { "edges_per_hop": [4, 7, 3], "suspicious_hops": [] },
-  "elided": { "auto_hubs_promoted": ["Error"], "edges_truncated": 0 }
-}
-```
-
-`call_text` disambiguates overloads. `suspicious_hops` flags cross-package name collisions. `auto_hubs_promoted` shows fan-out-capped symbols.
 
 ## Output examples
 
@@ -152,6 +128,31 @@ $ srcwalk handleAuth --scope src/ --expand
   validateToken    src/auth.ts:24-42
   refreshSession   src/auth.ts:91-120
 ```
+</details>
+
+<details>
+<summary><b>Multi-hop caller BFS</b></summary>
+
+Trace callers transitively in one call:
+
+```
+$ srcwalk NewClient --callers --depth 3 --json
+{
+  "edges": [
+    { "hop": 1, "from": "newDefaultClient", "from_file": "client/factory.go",
+      "to": "NewClient", "call_text": "return NewClient(opts)" },
+    { "hop": 2, "from": "Bootstrap", "from_file": "cmd/server/main.go",
+      "to": "newDefaultClient", "call_text": "c, err := newDefaultClient(cfg)" },
+    { "hop": 3, "from": "main", "from_file": "cmd/server/main.go",
+      "to": "Bootstrap", "call_text": "if err := Bootstrap(ctx); err != nil {" }
+  ],
+  "stats": { "edges_per_hop": [4, 7, 3], "suspicious_hops": [] },
+  "elided": { "auto_hubs_promoted": ["Error"], "edges_truncated": 0 }
+}
+```
+
+`call_text` disambiguates overloads. `suspicious_hops` flags cross-package name collisions. `auto_hubs_promoted` shows fan-out-capped symbols.
+
 </details>
 
 <details>

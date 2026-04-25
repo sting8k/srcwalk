@@ -29,7 +29,7 @@ srcwalk <path>                         # outline if large, full if small
 srcwalk <path>:123                     # focus exact hit line with context
 srcwalk <path> --section 45-89         # exact line range
 srcwalk <path> --section validateToken # jump to a symbol body by name
-srcwalk <path> --full                  # force full output with line numbers
+srcwalk <path> --full                  # only for small files or when outline/section is insufficient
 ```
 
 Large files return structural outlines; drill into rows with `srcwalk <path>:<line>` or `--section <range-or-symbol>`.
@@ -39,7 +39,7 @@ Prefer the drill-in workflow:
 2. Drill with `--section <symbol>` or `--section <start-end>`.
 3. Use `--full` only for small files or when the outline/section lacks required context.
 
-Avoid using `--full` as the default for medium/large source files. It should not become a `cat` replacement; srcwalk is strongest when used for structural navigation.
+Do not use `--full` as the first read for medium/large source or docs files. If a file is roughly >150 source lines or >200 docs lines, run `srcwalk <path>` first, then drill with `--section`. `--full` should not become a `cat` replacement; srcwalk is strongest when used for structural navigation.
 
 ---
 

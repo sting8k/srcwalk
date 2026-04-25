@@ -113,21 +113,55 @@ pub(crate) fn extract_implemented_interfaces(
     lines: &[&str],
 ) -> Vec<String> {
     let mut interfaces = Vec::new();
+    collect_implemented_interface_clauses(node, lines, &mut interfaces);
+    interfaces
+}
+
+fn collect_implemented_interface_clauses(
+    node: tree_sitter::Node,
+    lines: &[&str],
+    out: &mut Vec<String>,
+) {
+    if node.kind() == "implements_clause" || node.kind() == "super_interfaces" {
+        collect_identifier_texts(node, lines, out);
+        return;
+    }
+    if node.kind() == "class_body" {
+        return;
+    }
+
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "implements_clause" || child.kind() == "super_interfaces" {
-            let mut inner = child.walk();
-            for ident in child.children(&mut inner) {
-                if ident.kind().contains("identifier") {
-                    let text = node_text_simple(ident, lines);
-                    if !text.is_empty() {
-                        interfaces.push(text);
-                    }
-                }
-            }
+        collect_implemented_interface_clauses(child, lines, out);
+    }
+}
+
+fn collect_identifier_texts(node: tree_sitter::Node, lines: &[&str], out: &mut Vec<String>) {
+    if node.kind().contains("identifier") {
+        let text = node_text_simple(node, lines);
+        if !text.is_empty() {
+            out.push(text);
         }
     }
-    interfaces
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_identifier_texts(child, lines, out);
+    }
+}
+
+/// Extract neutral C# base-list targets from `class X : Y`.
+/// The `base_list` can contain either a base class or implemented interfaces,
+/// so callers should render this as a factual base relationship, not `impl`.
+pub(crate) fn extract_base_list_targets(node: tree_sitter::Node, lines: &[&str]) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "base_list" {
+            collect_identifier_texts(child, lines, &mut targets);
+        }
+    }
+    targets
 }
 
 // ---------------------------------------------------------------------------

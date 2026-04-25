@@ -10,6 +10,15 @@ All notable changes to srcwalk are documented here.
 
 ### Fixed
 
+## [0.2.4] - 2026-04-26
+
+### Added
+- `--filter 'kind:base'` for neutral C# base-list relationships such as `class X : Y`, without claiming whether `Y` is a class or interface.
+
+### Fixed
+- `--filter 'kind:impl'` now displays Rust trait impl blocks as `[impl] impl Trait for Type path:start-end` instead of mislabeling associated type children.
+- Java and TypeScript `class X implements Interface` relationships are now detected as `kind:impl`.
+
 ## [0.2.3] - 2026-04-25
 
 ### Changed

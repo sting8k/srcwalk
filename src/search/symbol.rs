@@ -5,8 +5,8 @@ use std::time::SystemTime;
 
 use super::file_metadata;
 use crate::lang::treesitter::{
-    definition_weight, elixir_definition_weight, extract_definition_name,
-    extract_elixir_definition_name, extract_impl_trait, extract_impl_type,
+    definition_weight, elixir_definition_weight, extract_base_list_targets,
+    extract_definition_name, extract_elixir_definition_name, extract_impl_trait, extract_impl_type,
     extract_implemented_interfaces, is_elixir_definition, DEFINITION_KINDS,
 };
 
@@ -277,6 +277,7 @@ fn find_usages_batch(
                                 def_name: None,
                                 def_weight: 0,
                                 impl_target: None,
+                                base_target: None,
                                 in_comment: false,
                             });
                         }
@@ -566,6 +567,7 @@ fn walk_for_definitions(
                     def_name: Some(query.to_string()),
                     def_weight: definition_weight(node.kind()),
                     impl_target: None,
+                    base_target: None,
                     in_comment: false,
                 });
             }
@@ -598,20 +600,22 @@ fn walk_for_definitions(
                         def_name: Some(format!("impl {query} for {impl_type}")),
                         def_weight: 80,
                         impl_target: Some(query.to_string()),
+                        base_target: None,
                         in_comment: false,
                     });
                 }
             }
         } else if kind == "class_declaration" || kind == "class_definition" {
+            let class_name =
+                extract_definition_name(node, lines).unwrap_or_else(|| "<anonymous>".to_string());
+            let line_num = node.start_position().row as u32 + 1;
+            let line_text = lines
+                .get(node.start_position().row)
+                .unwrap_or(&"")
+                .trim_end();
+
             let interfaces = extract_implemented_interfaces(node, lines);
             if interfaces.iter().any(|i| i == query) {
-                let class_name = extract_definition_name(node, lines)
-                    .unwrap_or_else(|| "<anonymous>".to_string());
-                let line_num = node.start_position().row as u32 + 1;
-                let line_text = lines
-                    .get(node.start_position().row)
-                    .unwrap_or(&"")
-                    .trim_end();
                 defs.push(Match {
                     path: path.to_path_buf(),
                     line: line_num,
@@ -627,6 +631,29 @@ fn walk_for_definitions(
                     def_name: Some(format!("{class_name} implements {query}")),
                     def_weight: 80,
                     impl_target: Some(query.to_string()),
+                    base_target: None,
+                    in_comment: false,
+                });
+            }
+
+            let base_targets = extract_base_list_targets(node, lines);
+            if base_targets.iter().any(|i| i == query) {
+                defs.push(Match {
+                    path: path.to_path_buf(),
+                    line: line_num,
+                    text: line_text.to_string(),
+                    is_definition: true,
+                    exact: true,
+                    file_lines,
+                    mtime,
+                    def_range: Some((
+                        node.start_position().row as u32 + 1,
+                        node.end_position().row as u32 + 1,
+                    )),
+                    def_name: Some(format!("{class_name} : {query}")),
+                    def_weight: 70,
+                    impl_target: None,
+                    base_target: Some(query.to_string()),
                     in_comment: false,
                 });
             }
@@ -655,6 +682,7 @@ fn walk_for_definitions(
                     def_name: Some(query.to_string()),
                     def_weight: elixir_definition_weight(node, lines),
                     impl_target: None,
+                    base_target: None,
                     in_comment: false,
                 });
             }
@@ -703,6 +731,7 @@ fn find_defs_heuristic_buf(
                 def_name: Some(query.to_string()),
                 def_weight: 60,
                 impl_target: None,
+                base_target: None,
                 in_comment: false,
             });
         }
@@ -769,6 +798,7 @@ fn find_usages(
                         def_name: None,
                         def_weight: 0,
                         impl_target: None,
+                        base_target: None,
                         in_comment: false,
                     });
                     Ok(true)

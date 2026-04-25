@@ -363,6 +363,9 @@ fn match_kind_label(m: &Match, cache: &OutlineCache) -> Option<&'static str> {
     if m.impl_target.is_some() {
         return Some("impl");
     }
+    if m.base_target.is_some() {
+        return Some("base");
+    }
     semantic_candidate_for_match(m, cache).map(|candidate| outline_kind_label(candidate.kind))
 }
 
@@ -584,6 +587,14 @@ fn format_definition_semantic_match(
     out: &mut String,
 ) {
     let path = rel_nonempty(&m.path, scope);
+    if m.impl_target.is_some() {
+        format_relation_definition_match(m, "impl", &path, out);
+        return;
+    }
+    if m.base_target.is_some() {
+        format_relation_definition_match(m, "base", &path, out);
+        return;
+    }
     if let Some(candidate) = semantic_candidate_for_match(m, cache) {
         let qualified_name = if candidate.parents.is_empty() {
             candidate.name.clone()
@@ -626,6 +637,15 @@ fn format_definition_semantic_match(
             "definition"
         };
         let _ = write!(out, "\n  [{kind}] {path}:{}", m.line);
+    }
+}
+
+fn format_relation_definition_match(m: &Match, kind: &str, path: &str, out: &mut String) {
+    let label = m.def_name.as_deref().unwrap_or_else(|| m.text.trim());
+    if let Some((start, end)) = m.def_range {
+        let _ = write!(out, "\n  [{kind}] {label} {path}:{start}-{end}");
+    } else {
+        let _ = write!(out, "\n  [{kind}] {label} {path}:{}", m.line);
     }
 }
 
@@ -1177,6 +1197,26 @@ fn format_search_result(
             } else {
                 format_matches(
                     &faceted.implementations,
+                    &result.scope,
+                    cache,
+                    session,
+                    bloom,
+                    &mut expand_remaining,
+                    &mut expanded_files,
+                    &mut context_shown_files,
+                    &mut smart_truncated,
+                    &mut out,
+                );
+            }
+        }
+
+        if !faceted.bases.is_empty() {
+            let _ = write!(out, "\n\n### Base relationships ({})", faceted.bases.len());
+            if compact_facets {
+                format_compact_facet_matches(&faceted.bases, &result.scope, cache, &mut out);
+            } else {
+                format_matches(
+                    &faceted.bases,
                     &result.scope,
                     cache,
                     session,
@@ -1915,6 +1955,7 @@ mod tests {
             def_name: Some("DependencyProperty".to_string()),
             def_weight: 100,
             impl_target: None,
+            base_target: None,
             in_comment: false,
         };
 

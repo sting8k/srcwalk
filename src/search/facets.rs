@@ -6,6 +6,7 @@ use crate::types::Match;
 pub struct FacetedResult {
     pub definitions: Vec<Match>,
     pub implementations: Vec<Match>,
+    pub bases: Vec<Match>,
     pub tests: Vec<Match>,
     pub comments: Vec<Match>,
     pub usages_local: Vec<Match>,
@@ -25,6 +26,7 @@ pub fn facet_matches(matches: Vec<Match>, _scope: &Path) -> FacetedResult {
 
     let mut definitions = Vec::new();
     let mut implementations = Vec::new();
+    let mut bases = Vec::new();
     let mut tests = Vec::new();
     let mut comments = Vec::new();
     let mut usages_local = Vec::new();
@@ -33,6 +35,8 @@ pub fn facet_matches(matches: Vec<Match>, _scope: &Path) -> FacetedResult {
     for m in matches {
         if m.is_definition && m.impl_target.is_some() {
             implementations.push(m);
+        } else if m.is_definition && m.base_target.is_some() {
+            bases.push(m);
         } else if m.is_definition {
             definitions.push(m);
         } else if m.in_comment {
@@ -49,6 +53,7 @@ pub fn facet_matches(matches: Vec<Match>, _scope: &Path) -> FacetedResult {
     FacetedResult {
         definitions,
         implementations,
+        bases,
         tests,
         comments,
         usages_local,

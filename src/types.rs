@@ -115,6 +115,9 @@ pub struct Match {
     /// For impl/implements matches: the trait or interface being implemented.
     /// None for primary definitions and plain usages.
     pub impl_target: Option<String>,
+    /// For neutral base-list matches such as C# `class X : Y`, where `Y` may be
+    /// a base class or an interface. None for primary definitions and usages.
+    pub base_target: Option<String>,
     /// Whether this match sits inside a comment or doc-comment node.
     /// Populated by tree-sitter post-processing on usage matches.
     pub in_comment: bool,

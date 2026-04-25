@@ -76,6 +76,7 @@ pub fn search(
                         def_name: None,
                         def_weight: 0,
                         impl_target: None,
+                        base_target: None,
                         in_comment: false,
                     });
                     Ok(true)

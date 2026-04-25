@@ -675,3 +675,151 @@ fn caller_only_filter_qualifiers_are_rejected_without_callers() {
         "expected caller-only qualifier diagnostic, got:\n{stderr}"
     );
 }
+
+#[test]
+fn impl_filter_displays_impl_block_not_associated_type_child() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        r#"trait Matcher {
+    type Captures;
+    fn find(&self);
+}
+struct RegexMatcher;
+impl Matcher for RegexMatcher {
+    type Captures = ();
+    fn find(&self) {}
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["Matcher", "--filter", "kind:impl", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "impl-filter search should succeed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("[impl] impl Matcher for RegexMatcher lib.rs:6-9"),
+        "expected impl block row, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("RegexMatcher.Captures"),
+        "impl row should not be mislabeled as associated type child, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn kind_impl_finds_java_class_implements_interface() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("A.java"),
+        r#"interface Matcher {
+    void find();
+}
+class RegexMatcher implements Matcher {
+    public void find() {}
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["Matcher", "--filter", "kind:impl", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "Java kind:impl search should succeed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("[impl] RegexMatcher implements Matcher A.java:4-6"),
+        "expected Java class implements row, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn kind_impl_finds_typescript_class_implements_interface() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.ts"),
+        r#"interface Matcher { find(): void }
+class RegexMatcher implements Matcher {
+  find(): void {}
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["Matcher", "--filter", "kind:impl", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "TypeScript kind:impl search should succeed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("[impl] RegexMatcher implements Matcher a.ts:2-4"),
+        "expected TypeScript class implements row, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn kind_base_finds_csharp_base_list_without_claiming_impl() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("A.cs"),
+        r#"interface IMatcher { void Find(); }
+class RegexMatcher : IMatcher { public void Find() {} }
+"#,
+    )
+    .unwrap();
+
+    let base = srcwalk()
+        .args(["IMatcher", "--filter", "kind:base", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let base_stdout = String::from_utf8_lossy(&base.stdout);
+    assert!(
+        base.status.success(),
+        "C# kind:base search should succeed, stderr:\n{}\nstdout:\n{base_stdout}",
+        String::from_utf8_lossy(&base.stderr)
+    );
+    assert!(
+        base_stdout.contains("[base] RegexMatcher : IMatcher A.cs:2-2"),
+        "expected neutral C# base relationship row, got:\n{base_stdout}"
+    );
+
+    let imp = srcwalk()
+        .args(["IMatcher", "--filter", "kind:impl", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let imp_stdout = String::from_utf8_lossy(&imp.stdout);
+    assert!(
+        imp.status.success(),
+        "C# kind:impl search should succeed, stderr:\n{}\nstdout:\n{imp_stdout}",
+        String::from_utf8_lossy(&imp.stderr)
+    );
+    assert!(
+        imp_stdout.contains("0 matches"),
+        "C# base-list relationship should not be labeled kind:impl, got:\n{imp_stdout}"
+    );
+}

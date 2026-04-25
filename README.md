@@ -60,6 +60,11 @@ curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarc
 
 ```sh
 npx skills add sting8k/srcwalk
+
+# or install the skill file directly
+mkdir -p ~/.pi/agent/skills/srcwalk && \
+  curl -fsSL https://raw.githubusercontent.com/sting8k/srcwalk/main/skills/srcwalk/SKILL.md \
+  -o ~/.pi/agent/skills/srcwalk/SKILL.md
 ```
 
 Full skill at [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md).

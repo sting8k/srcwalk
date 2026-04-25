@@ -141,13 +141,28 @@ jobs:
           subject-path: |
             dist/srcwalk-*.tar.gz
 
+      - name: Build release notes from changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          awk -v tag="$TAG" '
+            index($0, "## [" tag "]") == 1 { in_section=1; next }
+            in_section && index($0, "## [") == 1 { exit }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::No CHANGELOG.md section found for $GITHUB_REF_NAME"
+            exit 1
+          fi
+
       - name: Create release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: |
             dist/srcwalk-*.tar.gz
             dist/srcwalk-*.tar.gz.sha256
-          generate_release_notes: true
+          body_path: release-notes.md
           fail_on_unmatched_files: true
 
   publish-crate:

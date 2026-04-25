@@ -69,6 +69,10 @@ mkdir -p ~/.pi/agent/skills/srcwalk && \
 
 Full skill at [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md).
 
+## Release notes
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for curated release notes. Maintainers should update the matching changelog section before pushing a `vX.Y.Z` tag; the release workflow uses that section as the GitHub Release body.
+
 ## Quick examples
 
 ```sh

@@ -496,15 +496,16 @@ pub fn run_flow(
     let mut out = format!("# Slice: {target} — flow\n\n[symbol] {target} {rel}{range}\n");
 
     let sites = search::callees::extract_call_sites(&content, lang, def_match.def_range);
+    let total_sites = sites.len();
     let sites = search::callees::filter_call_sites(sites, filter)?;
-    if sites.is_empty() {
-        out.push_str("-> calls\n  (none)\n");
+    if let Some(filter) = filter {
+        let _ = writeln!(out, "-> calls (ordered, filtered {filter})");
     } else {
-        if let Some(filter) = filter {
-            let _ = writeln!(out, "-> calls (ordered, filtered {filter})");
-        } else {
-            out.push_str("-> calls (ordered)\n");
-        }
+        out.push_str("-> calls (ordered)\n");
+    }
+    if sites.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
         for site in sites.iter().take(40) {
             let prefix = if site.is_return { " ->ret" } else { "" };
             match &site.return_var {
@@ -575,6 +576,14 @@ pub fn run_flow(
         }
     }
 
+    if filter.is_some() {
+        let _ = write!(
+            out,
+            "\n> Tip: filter matched {}/{} call sites. Qualifiers: callee:NAME.",
+            sites.len(),
+            total_sites
+        );
+    }
     out.push_str("\n> Tip: lab output composes existing facts. Use --callees --detailed for full ordered calls, or --callers for upstream sites.");
     Ok(apply_optional_budget(out, budget_tokens))
 }

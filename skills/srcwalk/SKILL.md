@@ -34,6 +34,13 @@ srcwalk <path> --full                  # force full output with line numbers
 
 Large files return structural outlines; drill into rows with `srcwalk <path>:<line>` or `--section <range-or-symbol>`.
 
+Prefer the drill-in workflow:
+1. Run `srcwalk <path>` first for an outline/auto-sized read.
+2. Drill with `--section <symbol>` or `--section <start-end>`.
+3. Use `--full` only for small files or when the outline/section lacks required context.
+
+Avoid using `--full` as the default for medium/large source files. It should not become a `cat` replacement; srcwalk is strongest when used for structural navigation.
+
 ---
 
 ## Search for symbols (definitions + usages)

@@ -452,6 +452,250 @@ pub fn run_callees(
     Ok(output)
 }
 
+/// Lab: compact downstream flow slice for a known symbol.
+pub fn run_flow(
+    target: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    cache: &OutlineCache,
+    depth: Option<usize>,
+) -> Result<String, SrcwalkError> {
+    use std::fmt::Write as _;
+
+    let bloom = index::bloom::BloomFilterCache::new();
+    let def_match = find_primary_definition(target, scope)?;
+    let content = std::fs::read_to_string(&def_match.path).map_err(|e| SrcwalkError::IoError {
+        path: def_match.path.clone(),
+        source: e,
+    })?;
+    let types::FileType::Code(lang) = lang::detect_file_type(&def_match.path) else {
+        return Ok(format!("# Slice: {target} — flow\n\n(not a code file)"));
+    };
+
+    let rel = format::rel_nonempty(&def_match.path, scope);
+    let range = def_match
+        .def_range
+        .map_or(String::new(), |(s, e)| format!(":{s}-{e}"));
+    let mut out = format!("# Slice: {target} — flow\n\n[symbol] {target} {rel}{range}\n");
+
+    let sites = search::callees::extract_call_sites(&content, lang, def_match.def_range);
+    if sites.is_empty() {
+        out.push_str("-> calls\n  (none)\n");
+    } else {
+        out.push_str("-> calls (ordered)\n");
+        for site in sites.iter().take(40) {
+            let prefix = if site.is_return { " ->ret" } else { "" };
+            match &site.return_var {
+                Some(var) => {
+                    let _ = writeln!(
+                        out,
+                        "  [call] L{}{} {} = {}",
+                        site.line, prefix, var, site.call_text
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "  [call] L{}{} {}", site.line, prefix, site.call_text);
+                }
+            }
+        }
+        if sites.len() > 40 {
+            let _ = writeln!(out, "  ... {} more call sites", sites.len() - 40);
+        }
+    }
+
+    let names = search::callees::extract_callee_names(&content, lang, def_match.def_range);
+    let depth_limit = depth.map_or(1, |d| d.min(3) as u32);
+    let nodes = search::callees::resolve_callees_transitive(
+        &names,
+        &def_match.path,
+        &content,
+        cache,
+        &bloom,
+        depth_limit,
+        30,
+    );
+    if !nodes.is_empty() {
+        out.push_str("\n-> resolves\n");
+        for node in nodes.iter().take(20) {
+            append_resolved_callee(&mut out, scope, &node.callee, 1);
+            for child in node.children.iter().take(5) {
+                append_resolved_callee(&mut out, scope, child, 2);
+            }
+        }
+        if nodes.len() > 20 {
+            let _ = writeln!(out, "  ... {} more resolved callees", nodes.len() - 20);
+        }
+    }
+
+    if let Ok(mut callers) = search::callers::find_callers(target, scope, &bloom, None, Some(cache))
+    {
+        callers.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+        if !callers.is_empty() {
+            out.push_str("\n<- callers\n");
+            for caller in callers.iter().take(8) {
+                let rel_c = format::rel_nonempty(&caller.path, scope);
+                let _ = writeln!(
+                    out,
+                    "  [fn] {} {}:{}",
+                    caller.calling_function, rel_c, caller.line
+                );
+            }
+            if callers.len() > 8 {
+                let _ = writeln!(out, "  ... {} more callers", callers.len() - 8);
+            }
+        }
+    }
+
+    out.push_str("\n> Tip: lab output composes existing facts. Use --callees --detailed for full ordered calls, or --callers for upstream sites.");
+    Ok(apply_optional_budget(out, budget_tokens))
+}
+
+/// Lab: compact upstream blast-radius slice for changing a symbol.
+pub fn run_impact(
+    target: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    let bloom = index::bloom::BloomFilterCache::new();
+    let raw = search::search_symbol_raw(target, scope, None)?;
+    let mut defs: Vec<_> = raw.matches.iter().filter(|m| m.is_definition).collect();
+    defs.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+
+    let mut out = format!("# Slice: {target} — impact\n\n[symbol] {target}\n");
+    if defs.is_empty() {
+        out.push_str("= definitions\n  (none)\n");
+    } else {
+        out.push_str("= definitions\n");
+        for def in defs.iter().take(8) {
+            let rel = format::rel_nonempty(&def.path, scope);
+            let range = def
+                .def_range
+                .map_or(String::new(), |(s, e)| format!(":{s}-{e}"));
+            let text = def.text.trim();
+            let _ = writeln!(out, "  [def] {rel}{range} {text}");
+        }
+        if defs.len() > 8 {
+            let _ = writeln!(out, "  ... {} more definitions", defs.len() - 8);
+        }
+    }
+
+    let mut callers = search::callers::find_callers(target, scope, &bloom, None, Some(cache))?;
+    callers.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+    let total_callers = callers.len();
+    out.push_str("\n<- calls from\n");
+    if callers.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for caller in callers.iter().take(20) {
+            let rel = format::rel_nonempty(&caller.path, scope);
+            let mut facts = String::new();
+            if let Some(recv) = &caller.receiver {
+                let _ = write!(facts, " recv={recv}");
+            }
+            if let Some(args) = caller.arg_count {
+                let _ = write!(facts, " args={args}");
+            }
+            let _ = writeln!(
+                out,
+                "  [fn] {} {}:{}{}",
+                caller.calling_function, rel, caller.line, facts
+            );
+        }
+        if callers.len() > 20 {
+            let _ = writeln!(out, "  ... {} more call sites", callers.len() - 20);
+        }
+    }
+
+    if !callers.is_empty() {
+        let mut by_file: BTreeMap<String, usize> = BTreeMap::new();
+        let mut by_kind: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for caller in &callers {
+            *by_file
+                .entry(format::rel_nonempty(&caller.path, scope))
+                .or_insert(0) += 1;
+            let kind = if is_test_path(&caller.path) {
+                "test"
+            } else {
+                "prod"
+            };
+            *by_kind.entry(kind).or_insert(0) += 1;
+        }
+
+        out.push_str("\n~ groups\n");
+        for (kind, count) in by_kind {
+            let _ = writeln!(out, "  [group] kind={kind} count={count}");
+        }
+        let mut files: Vec<_> = by_file.into_iter().collect();
+        files.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (file, count) in files.into_iter().take(10) {
+            let _ = writeln!(out, "  [group] file={file} count={count}");
+        }
+    }
+
+    let _ = write!(
+        out,
+        "\n> Tip: {total_callers} direct call site{} found. Use --callers --depth 2 for transitive upstream impact, or --callers --count-by file to page groups.",
+        if total_callers == 1 { "" } else { "s" }
+    );
+    Ok(apply_optional_budget(out, budget_tokens))
+}
+
+fn find_primary_definition(target: &str, scope: &Path) -> Result<types::Match, SrcwalkError> {
+    let raw = search::search_symbol_raw(target, scope, None)?;
+    raw.matches
+        .into_iter()
+        .find(|m| m.is_definition && m.def_range.is_some())
+        .ok_or_else(|| SrcwalkError::NoMatches {
+            query: target.to_string(),
+            scope: scope.to_path_buf(),
+            suggestion: symbol_or_file_suggestion(scope, target, None),
+        })
+}
+
+fn append_resolved_callee(
+    out: &mut String,
+    scope: &Path,
+    callee: &search::callees::ResolvedCallee,
+    indent: usize,
+) {
+    use std::fmt::Write as _;
+
+    let rel = format::rel_nonempty(&callee.file, scope);
+    let pad = "  ".repeat(indent);
+    let sig = callee.signature.as_deref().unwrap_or("");
+    if sig.is_empty() {
+        let _ = writeln!(
+            out,
+            "{pad}[fn] {} {}:{}-{}",
+            callee.name, rel, callee.start_line, callee.end_line
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "{pad}[fn] {} {}:{}-{}  {}",
+            callee.name, rel, callee.start_line, callee.end_line, sig
+        );
+    }
+}
+
+fn is_test_path(path: &Path) -> bool {
+    path.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+        s == "test" || s == "tests" || s == "spec" || s == "specs" || s.contains("test")
+    })
+}
+
+fn apply_optional_budget(output: String, budget_tokens: Option<u64>) -> String {
+    match budget_tokens {
+        Some(b) => budget::apply_preserving_footer(&output, b),
+        None => output,
+    }
+}
+
 /// Analyze blast-radius dependencies of a file.
 pub fn run_deps(
     path: &Path,

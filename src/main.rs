@@ -59,7 +59,7 @@ struct Cli {
     glob: Option<String>,
 
     /// Find direct callers as compact facts; use --expand[=N] for source context.
-    #[arg(long, conflicts_with_all = ["callees", "deps", "map"])]
+    #[arg(long, conflicts_with_all = ["callees", "deps", "map", "flow", "impact"])]
     callers: bool,
 
     /// Filter search results or call sites with field:value qualifiers (e.g. path:foo, kind:fn; callers also support args:3 receiver:mgr).
@@ -71,7 +71,7 @@ struct Cli {
     count_by: Option<String>,
 
     /// Show what a symbol calls (forward call graph).
-    #[arg(long, conflicts_with_all = ["callers", "deps", "map"])]
+    #[arg(long, conflicts_with_all = ["callers", "deps", "map", "flow", "impact"])]
     callees: bool,
 
     /// Show ordered call sites with args and assignment context.
@@ -97,11 +97,19 @@ struct Cli {
     skip_hubs: Option<String>,
 
     /// Analyze blast-radius dependencies of a file.
-    #[arg(long, conflicts_with_all = ["callers", "callees", "map"])]
+    #[arg(long, conflicts_with_all = ["callers", "callees", "map", "flow", "impact"])]
     deps: bool,
 
+    /// Lab: summarize downstream flow from a known symbol.
+    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "map", "impact", "expand", "section", "full"])]
+    flow: bool,
+
+    /// Lab: summarize blast radius for changing a symbol.
+    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "map", "flow", "expand", "section", "full"])]
+    impact: bool,
+
     /// Generate a structural codebase map.
-    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "expand", "section", "full"])]
+    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "flow", "impact", "expand", "section", "full"])]
     map: bool,
 
     /// Include symbol names in --map output.
@@ -236,9 +244,25 @@ fn main() {
         return;
     }
 
-    if cli.filter.is_some() && (cli.callees || cli.deps || cli.map || cli.path_exact) {
+    if cli.filter.is_some()
+        && (cli.callees || cli.deps || cli.map || cli.path_exact || cli.flow || cli.impact)
+    {
         eprintln!("error: --filter applies to search results and direct --callers, not this mode");
         process::exit(2);
+    }
+
+    // Lab flow mode
+    if cli.flow {
+        let result = srcwalk::run_flow(&query, &scope, effective_budget, &cache, cli.depth);
+        emit_result(result, &query, cli.json, is_tty);
+        return;
+    }
+
+    // Lab impact mode
+    if cli.impact {
+        let result = srcwalk::run_impact(&query, &scope, effective_budget, &cache);
+        emit_result(result, &query, cli.json, is_tty);
+        return;
     }
 
     // Callers mode

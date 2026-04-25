@@ -1,6 +1,6 @@
 ---
 name: srcwalk
-compatible_srcwalk: ">=0.1.9"
+compatible_srcwalk: ">=0.1.10"
 description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'srcwalk' or 'outline'. Prefer this over cat/grep/find for any code-structure question. For plain text search, reading small files whose path you already know, or listing paths to pipe, use ripgrep / cat / fd directly."
 ---
 
@@ -39,8 +39,9 @@ Large files return structural outlines; drill into rows with `srcwalk <path>:<li
 ## Search for symbols (definitions + usages)
 
 ```bash
-srcwalk <symbol> --scope <dir>         # definitions first, then usages
-srcwalk "foo, bar, baz" --scope <dir>  # multi-symbol, one pass
+srcwalk <symbol> --scope <dir>                  # definitions first, then usages
+srcwalk <symbol> --filter 'path:api kind:fn' --scope <dir>
+srcwalk "foo, bar, baz" --scope <dir>           # multi-symbol, one pass
 ```
 
 Tree-sitter finds where symbols are **defined**, not just where strings appear. Each match shows the surrounding file structure so you know context without a second read.
@@ -53,7 +54,7 @@ Every definition hit reports its **line range** (e.g. `[38-690]` vs `[9-16]`). U
 - Tell overloads apart at a glance without opening each file.
 - Rank where to drill first when a symbol has many definitions.
 
-Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but can include comment/doc mentions. For real call sites, use `--callers`.
+Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but can include comment/doc mentions. Use `--filter 'path:TEXT file:TEXT text:TEXT kind:fn'` to narrow search results. For real call sites, use `--callers`.
 
 ---
 
@@ -66,10 +67,14 @@ Symbol search **definitions** use tree-sitter (precise). **Usages** are text-mat
 ## Callers — who calls this symbol
 
 ```bash
-srcwalk <symbol> --callers --scope <dir>  # compact facts only
+srcwalk <symbol> --callers --scope <dir>
+srcwalk <symbol> --callers --filter 'args:3 receiver:mgr' --scope <dir>
+srcwalk <symbol> --callers --count-by args --scope <dir>
 ```
 
-Structural (tree-sitter), not text-based. Default output is token-light: caller function, file:line, receiver, and argument count when available.
+Structural (tree-sitter), not text-based. Rows include caller function, file:line, receiver, and argument count when available. Use `--filter` / `--count-by` to avoid `rg|sed|awk` callsite classification.
+
+Direct-call filters: `args:N`, `receiver:NAME`, `caller:NAME`, `path:TEXT`, `text:TEXT`. Multiple filters are AND.
 
 Includes type/constructor references (`new Foo()`, `Foo {}`), not just function calls.
 

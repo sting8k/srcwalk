@@ -81,11 +81,14 @@ srcwalk src/auth.ts --section 44-89          # line range
 
 # Symbol search
 srcwalk handleAuth --scope src/              # definitions + usages
+srcwalk Depends --filter 'path:param_functions' --scope .
 srcwalk "foo, bar" --scope src/              # multi-symbol
 srcwalk handleAuth --scope src/ --expand     # inline source + callees
 
 # Callers (reverse call graph)
 srcwalk handleAuth --callers --scope src/
+srcwalk decompileFunction --callers --filter 'args:3' --scope src/
+srcwalk handleAuth --callers --count-by caller --scope src/
 
 # Callees (forward call graph)
 srcwalk handleAuth --callees --scope src/

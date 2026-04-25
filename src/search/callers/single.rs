@@ -715,9 +715,17 @@ pub fn search_callers_expanded(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
+    filter: Option<&str>,
+    count_by: Option<&str>,
 ) -> Result<String, SrcwalkError> {
     let max_matches = limit.unwrap_or(usize::MAX);
-    let callers = find_callers(target, scope, bloom, glob, Some(cache))?;
+    let group_limit = limit.unwrap_or(50);
+    let mut callers = find_callers(target, scope, bloom, glob, Some(cache))?;
+    let filters = parse_callsite_filters(filter)?;
+    let unfiltered_total = callers.len();
+    if !filters.is_empty() {
+        callers.retain(|caller| filters.iter().all(|f| f.matches(caller, scope)));
+    }
 
     if callers.is_empty() {
         return Ok(format!(
@@ -734,6 +742,10 @@ pub fn search_callers_expanded(
             scope.display(),
             target,
         ));
+    }
+
+    if let Some(field) = count_by {
+        return format_callsite_counts(target, scope, &callers, field, filter, group_limit, offset);
     }
 
     // Sort by relevance (context file first, then by proximity)
@@ -827,6 +839,20 @@ pub fn search_callers_expanded(
         footer.push('\n');
     }
     footer.push_str("> Tip: drill into any call site with `srcwalk <path>:<line>`.");
+    if sorted_callers
+        .iter()
+        .any(|caller| caller.arg_count.is_some() || caller.receiver.is_some())
+    {
+        footer.push_str(
+            "\n> Tip: classify callsites with --count-by args or --filter 'args:N receiver:NAME'.",
+        );
+    }
+    if !filters.is_empty() {
+        let _ = write!(
+            footer,
+            "\n> Tip: filter matched {total}/{unfiltered_total} call sites. Qualifiers: args:N receiver:NAME caller:NAME path:TEXT text:TEXT."
+        );
+    }
 
     // ── Adaptive 2nd-hop impact analysis ──
     // Use all_caller_names (pre-truncation) for the fan-out threshold check,
@@ -915,6 +941,153 @@ pub fn search_callers_expanded(
     Ok(output)
 }
 
+fn format_callsite_counts(
+    target: &str,
+    scope: &Path,
+    callers: &[CallerMatch],
+    field: &str,
+    filter: Option<&str>,
+    limit: usize,
+    offset: usize,
+) -> Result<String, SrcwalkError> {
+    let field = normalize_count_field(field)?;
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for caller in callers {
+        let key = callsite_field_value(caller, scope, field);
+        *counts.entry(key).or_insert(0) += 1;
+    }
+
+    let total = callers.len();
+    let filter_suffix = filter.map_or(String::new(), |f| format!(" matching `{f}`"));
+    let mut output = format!(
+        "# Slice: {target} — {total} call site{} grouped by {field}{}\n\n[symbol] {target}\n<- calls\n",
+        if total == 1 { "" } else { "s" },
+        filter_suffix,
+    );
+
+    let mut rows: Vec<_> = counts.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let total_groups = rows.len();
+    let effective_offset = offset.min(total_groups);
+    let page_size = limit.max(1);
+    for (key, count) in rows.into_iter().skip(effective_offset).take(page_size) {
+        let _ = writeln!(output, "  [group] {field}={key} count={count}");
+    }
+
+    let shown_end = (effective_offset + page_size).min(total_groups);
+    let mut footer = String::from(
+        "> Tip: narrow with --filter 'args:N receiver:NAME caller:NAME path:TEXT text:TEXT'; group with --count-by args|caller|receiver|file.",
+    );
+    if total_groups > shown_end {
+        let omitted = total_groups - shown_end;
+        let _ = write!(
+            footer,
+            "\n> Tip: {omitted} more groups available. Continue with --offset {shown_end} --limit {page_size}."
+        );
+    } else if effective_offset > 0 {
+        let _ = write!(
+            footer,
+            "\n> Tip: end of groups at offset {effective_offset}."
+        );
+    }
+    let _ = write!(output, "\n{footer}");
+    Ok(output)
+}
+
+fn normalize_count_field(field: &str) -> Result<&'static str, SrcwalkError> {
+    match field {
+        "args" => Ok("args"),
+        "caller" => Ok("caller"),
+        "receiver" | "recv" => Ok("receiver"),
+        "path" => Ok("path"),
+        "file" => Ok("file"),
+        _ => Err(SrcwalkError::InvalidQuery {
+            query: field.to_string(),
+            reason: "unsupported count field; use args, caller, receiver, path, or file"
+                .to_string(),
+        }),
+    }
+}
+
+fn callsite_field_value(caller: &CallerMatch, scope: &Path, field: &str) -> String {
+    match field {
+        "args" => caller
+            .arg_count
+            .map_or_else(|| "?".to_string(), |argc| argc.to_string()),
+        "caller" => caller.calling_function.clone(),
+        "receiver" => caller
+            .receiver
+            .clone()
+            .unwrap_or_else(|| "<none>".to_string()),
+        "path" => rel_nonempty(&caller.path, scope),
+        "file" => caller
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<unknown>")
+            .to_string(),
+        _ => "<unknown>".to_string(),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CallsiteFilter {
+    field: String,
+    value: String,
+}
+
+fn parse_callsite_filters(filter: Option<&str>) -> Result<Vec<CallsiteFilter>, SrcwalkError> {
+    let Some(filter) = filter else {
+        return Ok(Vec::new());
+    };
+    let mut filters = Vec::new();
+    for part in filter.split_whitespace() {
+        let Some((field, value)) = part.split_once(':') else {
+            return Err(SrcwalkError::InvalidQuery {
+                query: filter.to_string(),
+                reason: "filters must use field:value qualifiers".to_string(),
+            });
+        };
+        let field = field.trim().to_ascii_lowercase();
+        let value = value.trim().to_string();
+        if field.is_empty() || value.is_empty() {
+            return Err(SrcwalkError::InvalidQuery {
+                query: filter.to_string(),
+                reason: "filter field and value cannot be empty".to_string(),
+            });
+        }
+        match field.as_str() {
+            "args" | "receiver" | "recv" | "caller" | "path" | "file" | "text" => {
+                filters.push(CallsiteFilter { field, value });
+            }
+            _ => {
+                return Err(SrcwalkError::InvalidQuery {
+                    query: filter.to_string(),
+                    reason: format!(
+                        "unsupported filter field `{field}`; use args, receiver, caller, path, or text"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(filters)
+}
+
+impl CallsiteFilter {
+    fn matches(&self, caller: &CallerMatch, scope: &Path) -> bool {
+        match self.field.as_str() {
+            "args" => caller
+                .arg_count
+                .is_some_and(|argc| self.value.parse::<u8>().is_ok_and(|wanted| argc == wanted)),
+            "receiver" | "recv" => caller.receiver.as_deref() == Some(self.value.as_str()),
+            "caller" => caller.calling_function == self.value,
+            "path" | "file" => rel_nonempty(&caller.path, scope).contains(&self.value),
+            "text" => caller.call_text.contains(&self.value),
+            _ => false,
+        }
+    }
+}
+
 /// Simple ranking: context file first, then by path length (proximity heuristic).
 fn rank_callers(callers: &mut [CallerMatch], scope: &Path, context: Option<&Path>) {
     callers.sort_by(|a, b| {
@@ -937,4 +1110,59 @@ fn rank_callers(callers: &mut [CallerMatch], scope: &Path, context: Option<&Path
             .then_with(|| a.path.cmp(&b.path))
             .then_with(|| a.line.cmp(&b.line))
     });
+}
+
+#[cfg(test)]
+mod callsite_filter_tests {
+    use super::*;
+
+    fn sample_match() -> CallerMatch {
+        CallerMatch {
+            path: PathBuf::from("/repo/src/main.rs"),
+            line: 42,
+            calling_function: "main".to_string(),
+            call_text: "client.start(1, monitor)".to_string(),
+            caller_range: Some((40, 50)),
+            receiver: Some("client".to_string()),
+            arg_count: Some(2),
+            content: Arc::new(String::new()),
+        }
+    }
+
+    #[test]
+    fn parse_callsite_filters_accepts_qualifiers() {
+        let filters = parse_callsite_filters(Some("args:2 receiver:client caller:main"))
+            .expect("valid filters");
+        assert_eq!(filters.len(), 3);
+        assert_eq!(filters[0].field, "args");
+        assert_eq!(filters[0].value, "2");
+    }
+
+    #[test]
+    fn parse_callsite_filters_rejects_unknown_fields() {
+        let err = parse_callsite_filters(Some("unknown:x")).expect_err("invalid field");
+        assert!(err.to_string().contains("unsupported filter field"));
+    }
+
+    #[test]
+    fn callsite_filters_match_semantic_fields() {
+        let caller = sample_match();
+        let scope = Path::new("/repo");
+        let filters = parse_callsite_filters(Some(
+            "args:2 receiver:client caller:main path:src text:start",
+        ))
+        .expect("valid filters");
+        assert!(filters.iter().all(|f| f.matches(&caller, scope)));
+    }
+
+    #[test]
+    fn count_field_values_use_display_facts() {
+        let caller = sample_match();
+        let scope = Path::new("/repo");
+        assert_eq!(callsite_field_value(&caller, scope, "args"), "2");
+        assert_eq!(callsite_field_value(&caller, scope, "caller"), "main");
+        assert_eq!(callsite_field_value(&caller, scope, "receiver"), "client");
+        assert_eq!(callsite_field_value(&caller, scope, "path"), "src/main.rs");
+        assert_eq!(callsite_field_value(&caller, scope, "file"), "main.rs");
+    }
 }

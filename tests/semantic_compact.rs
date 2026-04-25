@@ -393,3 +393,285 @@ func caller() {
         "explicit --expand should keep source window with call source, got:\n{expanded_stdout}"
     );
 }
+
+#[test]
+fn callers_filter_qualifiers_narrow_callsite_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("caller.go"),
+        r#"package main
+
+func wanted() {
+    sdktranslator.TranslateRequest(from, to, model, rawJSON, stream)
+}
+
+func other() {
+    client.TranslateRequest(payload, stream)
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args([
+            "TranslateRequest",
+            "--callers",
+            "--filter",
+            "args:5 receiver:sdktranslator",
+            "--scope",
+        ])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "filtered callers should succeed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("[fn] wanted")
+            && stdout.contains("recv=sdktranslator")
+            && stdout.contains("args=5"),
+        "expected filtered caller row, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("[fn] other"),
+        "filter should exclude non-matching caller, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("filter matched 1/2 call sites"),
+        "expected filter summary tip, got:\n{stdout}"
+    );
+    assert_tips_are_trailing(&stdout);
+}
+
+#[test]
+fn callers_count_by_aggregates_filtered_callsites() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("caller.go"),
+        r#"package main
+
+func a() {
+    sdktranslator.TranslateRequest(from, to, model, rawJSON, stream)
+}
+
+func b() {
+    sdktranslator.TranslateRequest(payload, stream)
+}
+
+func c() {
+    client.TranslateRequest(payload, stream)
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args([
+            "TranslateRequest",
+            "--callers",
+            "--filter",
+            "receiver:sdktranslator",
+            "--count-by",
+            "args",
+            "--scope",
+        ])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "count-by should succeed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("# Slice: TranslateRequest — 2 call sites grouped by args matching `receiver:sdktranslator`"),
+        "expected count header, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[group] args=5 count=1"),
+        "expected args=5 bucket, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[group] args=2 count=1"),
+        "expected args=2 bucket, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--filter 'args:N receiver:NAME caller:NAME path:TEXT text:TEXT'"),
+        "expected filter tip, got:\n{stdout}"
+    );
+    assert_tips_are_trailing(&stdout);
+}
+
+#[test]
+fn callers_filter_rejects_depth_bfs_until_supported() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("caller.go"),
+        "package main\nfunc caller() { TranslateRequest(payload) }\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args([
+            "TranslateRequest",
+            "--callers",
+            "--depth",
+            "2",
+            "--filter",
+            "args:1",
+            "--scope",
+        ])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "depth+filter should fail until supported"
+    );
+    assert!(
+        stderr.contains("direct --callers only"),
+        "expected direct-callers guardrail, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn callers_count_by_zero_matches_uses_no_callers_diagnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("caller.ts"),
+        "export function caller() { return otherThing(); }\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args([
+            "missingCall",
+            "--callers",
+            "--count-by",
+            "receiver",
+            "--scope",
+        ])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "count-by no matches should be diagnostic success"
+    );
+    assert!(
+        stdout.contains("no call sites found") && !stdout.contains("[group]"),
+        "expected no-callers diagnostic, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn callers_count_by_groups_are_paginated() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("caller.ts"),
+        r#"export function a(client: any) { client.callTool({}); }
+export function b(thisClient: any) { thisClient.callTool({}); }
+export function c(other: any) { other.callTool({}); }
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args([
+            "callTool",
+            "--callers",
+            "--count-by",
+            "receiver",
+            "--limit",
+            "2",
+            "--scope",
+        ])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "count-by pagination should succeed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout.matches("[group]").count(),
+        2,
+        "expected 2 grouped rows, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("more groups available. Continue with --offset 2 --limit 2"),
+        "expected group pagination tip, got:\n{stdout}"
+    );
+    assert_tips_are_trailing(&stdout);
+}
+
+#[test]
+fn general_filter_path_narrows_symbol_search_without_callers() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("param_functions.py"),
+        "from fastapi import Depends\n\ndef get_item(dep = Depends(lambda: 1)):\n    return dep\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("other.py"),
+        "from fastapi import Depends\n\ndef get_other(dep = Depends(lambda: 2)):\n    return dep\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["Depends", "--filter", "path:param_functions", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "general path filter should work without --callers, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("param_functions.py"),
+        "expected filtered path match, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("other.py"),
+        "path filter should remove non-matching files, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn caller_only_filter_qualifiers_are_rejected_without_callers() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("app.py"), "def Depends(x):\n    return x\n").unwrap();
+
+    let out = srcwalk()
+        .args(["Depends", "--filter", "args:1", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "caller-only args filter should fail without --callers"
+    );
+    assert!(
+        stderr.contains("only applies with --callers"),
+        "expected caller-only qualifier diagnostic, got:\n{stderr}"
+    );
+}

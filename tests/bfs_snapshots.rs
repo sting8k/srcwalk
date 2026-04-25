@@ -33,7 +33,8 @@ fn run_callers_capped(
     srcwalk::run_callers(
         target, scope, /* expand */ 0, /* budget_tokens */ None, /* limit */ None,
         /* offset */ 0, /* glob */ None, &cache, depth, /* max_frontier */ None,
-        max_edges, /* skip_hubs */ None, json,
+        max_edges, /* skip_hubs */ None, /* filter */ None, /* count_by */ None,
+        json,
     )
     .expect("run_callers should succeed on fixture")
 }

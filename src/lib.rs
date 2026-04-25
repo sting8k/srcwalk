@@ -84,6 +84,30 @@ pub fn run(
     glob: Option<&str>,
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
+    run_filtered(
+        query,
+        scope,
+        section,
+        budget_tokens,
+        limit,
+        offset,
+        glob,
+        None,
+        cache,
+    )
+}
+
+pub fn run_filtered(
+    query: &str,
+    scope: &Path,
+    section: Option<&str>,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
     run_inner(
         query,
         scope,
@@ -94,6 +118,7 @@ pub fn run(
         limit,
         offset,
         glob,
+        filter,
         cache,
     )
 }
@@ -109,6 +134,30 @@ pub fn run_full(
     glob: Option<&str>,
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
+    run_full_filtered(
+        query,
+        scope,
+        section,
+        budget_tokens,
+        limit,
+        offset,
+        glob,
+        None,
+        cache,
+    )
+}
+
+pub fn run_full_filtered(
+    query: &str,
+    scope: &Path,
+    section: Option<&str>,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
     run_inner(
         query,
         scope,
@@ -119,6 +168,7 @@ pub fn run_full(
         limit,
         offset,
         glob,
+        filter,
         cache,
     )
 }
@@ -136,6 +186,35 @@ pub fn run_expanded(
     glob: Option<&str>,
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
+    run_expanded_filtered(
+        query,
+        scope,
+        section,
+        budget_tokens,
+        full,
+        expand,
+        limit,
+        offset,
+        glob,
+        None,
+        cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_expanded_filtered(
+    query: &str,
+    scope: &Path,
+    section: Option<&str>,
+    budget_tokens: Option<u64>,
+    full: bool,
+    expand: usize,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
     run_inner(
         query,
         scope,
@@ -146,6 +225,7 @@ pub fn run_expanded(
         limit,
         offset,
         glob,
+        filter,
         cache,
     )
 }
@@ -181,8 +261,19 @@ pub fn run_callers(
     max_frontier: Option<usize>,
     max_edges: Option<usize>,
     skip_hubs: Option<&str>,
+    filter: Option<&str>,
+    count_by: Option<&str>,
     json: bool,
 ) -> Result<String, SrcwalkError> {
+    if matches!(depth, Some(d) if d >= 2) && (filter.is_some() || count_by.is_some()) {
+        return Err(SrcwalkError::InvalidQuery {
+            query: target.to_string(),
+            reason:
+                "--filter and --count-by currently apply to direct --callers only; omit --depth"
+                    .to_string(),
+        });
+    }
+
     let session = session::Session::new();
     let bloom = index::bloom::BloomFilterCache::new();
 
@@ -203,9 +294,14 @@ pub fn run_callers(
         )?,
         _ => {
             let mut callers_out = search::callers::search_callers_expanded(
-                target, scope, cache, &session, &bloom, expand, None, limit, offset, glob,
+                target, scope, cache, &session, &bloom, expand, None, limit, offset, glob, filter,
+                count_by,
             )?;
-            callers_out.push_str("\n\n> Tip: use --expand[=N] to show source context; use --depth N for transitive callers (max 5)");
+            if count_by.is_none() {
+                callers_out.push_str(
+                    "\n\n> Tip: use --expand[=N] for source context; use --depth N for transitive callers.",
+                );
+            }
             callers_out
         }
     };
@@ -567,6 +663,7 @@ fn run_inner(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
+    filter: Option<&str>,
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
     let query_type = classify(query, scope);
@@ -647,7 +744,7 @@ fn run_inner(
             let expand = if expand > 0 { expand } else { 2 };
             let output = search::search_multi_symbol_expanded(
                 &parts, scope, cache, &session, &sym_index, &bloom, expand, None, limit, offset,
-                glob,
+                glob, filter,
             )?;
             return match budget_tokens {
                 Some(b) => Ok(budget::apply_preserving_footer(&output, b)),
@@ -658,6 +755,16 @@ fn run_inner(
 
     // FilePath and Glob are read operations, not search — handle before expanded dispatch
     let output_result = match query_type {
+        QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_)
+            if filter.is_some() =>
+        {
+            Err(SrcwalkError::InvalidQuery {
+                query: query.to_string(),
+                reason:
+                    "--filter applies to search results and direct --callers, not file/glob reads"
+                        .to_string(),
+            })
+        }
         QueryType::FilePath(path) => {
             let mut out = read::read_file_with_budget(&path, section, full, budget_tokens, cache)?;
             if section.is_none() && !full && read::would_outline(&path) {
@@ -688,9 +795,9 @@ fn run_inner(
                 bloom: index::bloom::BloomFilterCache::new(),
                 expand,
             };
-            run_query_expanded(&query_type, scope, cache, &ctx, limit, offset, glob)
+            run_query_expanded(&query_type, scope, cache, &ctx, limit, offset, glob, filter)
         }
-        _ => run_query_basic(&query_type, scope, cache, limit, offset, glob),
+        _ => run_query_basic(&query_type, scope, cache, limit, offset, glob, filter),
     };
 
     let output = match output_result {
@@ -726,6 +833,7 @@ fn run_query_expanded(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
+    filter: Option<&str>,
 ) -> Result<String, SrcwalkError> {
     match query_type {
         QueryType::Symbol(name) => search::search_symbol_expanded(
@@ -740,6 +848,7 @@ fn run_query_expanded(
             limit,
             offset,
             glob,
+            filter,
         ),
         QueryType::Concept(text) if text.contains(' ') => search::search_content_expanded(
             text,
@@ -751,6 +860,7 @@ fn run_query_expanded(
             limit,
             offset,
             glob,
+            filter,
         ),
         QueryType::Concept(text) | QueryType::Fallthrough(text) => search::search_symbol_expanded(
             text,
@@ -764,6 +874,7 @@ fn run_query_expanded(
             limit,
             offset,
             glob,
+            filter,
         ),
         QueryType::Regex(pattern) => search::search_regex_expanded(
             pattern,
@@ -775,6 +886,7 @@ fn run_query_expanded(
             limit,
             offset,
             glob,
+            filter,
         ),
         // FilePath/Glob never reach here (gated by use_expanded)
         QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_) => {
@@ -792,20 +904,23 @@ fn run_query_basic(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
+    filter: Option<&str>,
 ) -> Result<String, SrcwalkError> {
     match query_type {
-        QueryType::Symbol(name) => search::search_symbol(name, scope, cache, limit, offset, glob),
+        QueryType::Symbol(name) => {
+            search::search_symbol(name, scope, cache, limit, offset, glob, filter)
+        }
         QueryType::Concept(text) if text.contains(' ') => {
-            multi_word_concept_search(text, scope, cache, limit, offset, glob)
+            multi_word_concept_search(text, scope, cache, limit, offset, glob, filter)
         }
         QueryType::Concept(text) => {
-            single_query_search(text, scope, cache, true, limit, offset, glob)
+            single_query_search(text, scope, cache, true, limit, offset, glob, filter)
         }
         QueryType::Regex(pattern) => {
-            search::search_regex(pattern, scope, cache, limit, offset, glob)
+            search::search_regex(pattern, scope, cache, limit, offset, glob, filter)
         }
         QueryType::Fallthrough(text) => {
-            single_query_search(text, scope, cache, false, limit, offset, glob)
+            single_query_search(text, scope, cache, false, limit, offset, glob, filter)
         }
         QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_) => {
             unreachable!("non-search query type in basic path")
@@ -826,8 +941,10 @@ fn single_query_search(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
+    filter: Option<&str>,
 ) -> Result<String, error::SrcwalkError> {
     let mut sym_result = search::search_symbol_raw(text, scope, glob)?;
+    search::apply_general_filter(&mut sym_result, scope, cache, filter)?;
     let accept_sym = if prefer_definitions {
         sym_result.definitions > 0
     } else {
@@ -840,6 +957,7 @@ fn single_query_search(
     }
 
     let mut content_result = search::search_content_raw(text, scope, glob)?;
+    search::apply_general_filter(&mut content_result, scope, cache, filter)?;
     if content_result.total_found > 0 {
         search::pagination::paginate(&mut content_result, limit, offset);
         return search::format_raw_result(&content_result, cache);
@@ -866,9 +984,11 @@ fn multi_word_concept_search(
     limit: Option<usize>,
     offset: usize,
     glob: Option<&str>,
+    filter: Option<&str>,
 ) -> Result<String, error::SrcwalkError> {
     // Try exact phrase match first
     let mut content_result = search::search_content_raw(text, scope, glob)?;
+    search::apply_general_filter(&mut content_result, scope, cache, filter)?;
     content_result.query = text.to_string();
     if content_result.total_found > 0 {
         search::pagination::paginate(&mut content_result, limit, offset);
@@ -895,6 +1015,7 @@ fn multi_word_concept_search(
     };
 
     let mut relaxed_result = search::search_regex_raw(&relaxed, scope, glob)?;
+    search::apply_general_filter(&mut relaxed_result, scope, cache, filter)?;
     relaxed_result.query = text.to_string();
     if relaxed_result.total_found > 0 {
         search::pagination::paginate(&mut relaxed_result, limit, offset);

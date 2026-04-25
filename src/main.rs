@@ -62,6 +62,14 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["callees", "deps", "map"])]
     callers: bool,
 
+    /// Filter search results or call sites with field:value qualifiers (e.g. path:foo, kind:fn; callers also support args:3 receiver:mgr).
+    #[arg(long, value_name = "QUALIFIERS")]
+    filter: Option<String>,
+
+    /// Count direct caller call sites by field: args, caller, receiver, path, or file.
+    #[arg(long, requires = "callers", value_name = "FIELD")]
+    count_by: Option<String>,
+
     /// Show what a symbol calls (forward call graph).
     #[arg(long, conflicts_with_all = ["callers", "deps", "map"])]
     callees: bool,
@@ -228,6 +236,11 @@ fn main() {
         return;
     }
 
+    if cli.filter.is_some() && (cli.callees || cli.deps || cli.map || cli.path_exact) {
+        eprintln!("error: --filter applies to search results and direct --callers, not this mode");
+        process::exit(2);
+    }
+
     // Callers mode
     if cli.callers {
         let bfs_json = cli.json && matches!(cli.depth, Some(d) if d >= 2);
@@ -244,6 +257,8 @@ fn main() {
             cli.max_frontier,
             cli.max_edges,
             cli.skip_hubs.as_deref(),
+            cli.filter.as_deref(),
+            cli.count_by.as_deref(),
             bfs_json,
         );
         if bfs_json {
@@ -305,7 +320,7 @@ fn main() {
     }
 
     let result = if expand > 0 {
-        srcwalk::run_expanded(
+        srcwalk::run_expanded_filtered(
             &query,
             &scope,
             cli.section.as_deref(),
@@ -315,10 +330,11 @@ fn main() {
             effective_limit,
             cli.offset,
             cli.glob.as_deref(),
+            cli.filter.as_deref(),
             &cache,
         )
     } else if full {
-        srcwalk::run_full(
+        srcwalk::run_full_filtered(
             &query,
             &scope,
             cli.section.as_deref(),
@@ -326,10 +342,11 @@ fn main() {
             effective_limit,
             cli.offset,
             cli.glob.as_deref(),
+            cli.filter.as_deref(),
             &cache,
         )
     } else {
-        srcwalk::run(
+        srcwalk::run_filtered(
             &query,
             &scope,
             cli.section.as_deref(),
@@ -337,6 +354,7 @@ fn main() {
             effective_limit,
             cli.offset,
             cli.glob.as_deref(),
+            cli.filter.as_deref(),
             &cache,
         )
     };

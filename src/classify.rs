@@ -33,15 +33,13 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         return QueryType::Glob(query.into());
     }
 
-    // 3. File path — contains separator or starts with ./ ../
-    //    But only if no spaces around the separator ("TODO: fix this/that" is content, not a path)
-    if (query.starts_with("./") || query.starts_with("../"))
-        || (query.contains('/') && !query.contains(' '))
-    {
-        let resolved = scope.join(query);
-        return match resolved.try_exists() {
-            Ok(true) => QueryType::FilePath(resolved),
-            _ => QueryType::Fallthrough(query.into()),
+    // 3. File path — contains separator or starts with ./ ../.
+    //    Spaces are valid in real paths; filesystem existence is the tie-breaker
+    //    that keeps prose like "TODO: fix this/that" from becoming a path.
+    if looks_like_path_with_separator(query) {
+        return match resolve_existing_path(query, scope) {
+            Some(resolved) => QueryType::FilePath(resolved),
+            None => QueryType::Fallthrough(query.into()),
         };
     }
 
@@ -159,10 +157,6 @@ fn looks_like_exact_symbol(query: &str) -> bool {
 }
 
 fn parse_path_line(query: &str, scope: &Path) -> Option<(std::path::PathBuf, usize)> {
-    if query.contains(' ') {
-        return None;
-    }
-
     let (path_part, line_part) = query.rsplit_once(':')?;
     if path_part.is_empty() || line_part.is_empty() {
         return None;
@@ -173,18 +167,28 @@ fn parse_path_line(query: &str, scope: &Path) -> Option<(std::path::PathBuf, usi
         return None;
     }
 
-    let path = Path::new(path_part);
+    let resolved = resolve_existing_path(path_part, scope)?;
+    Some((resolved, line))
+}
+
+fn resolve_existing_path(query: &str, scope: &Path) -> Option<std::path::PathBuf> {
+    let path = Path::new(query);
     let resolved = if path.is_absolute() {
         path.to_path_buf()
     } else {
         scope.join(path)
     };
+    resolved.try_exists().unwrap_or(false).then_some(resolved)
+}
 
-    if resolved.try_exists().unwrap_or(false) {
-        Some((resolved, line))
-    } else {
-        None
-    }
+fn looks_like_path_with_separator(query: &str) -> bool {
+    !query.is_empty()
+        && (query.starts_with('/')
+            || query.starts_with("~/")
+            || query.starts_with("./")
+            || query.starts_with("../")
+            || query.contains('/')
+            || query.contains('\\'))
 }
 
 /// Does this query look path-like enough that fallback search should be called out.
@@ -499,6 +503,48 @@ mod tests {
         ));
         // Already /wrapped/ → regex via step 0, not this check
         assert!(matches!(classify("/Foo|Bar/", &scope), QueryType::Regex(_)));
+    }
+
+    #[test]
+    fn paths_with_spaces_are_file_paths_when_they_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("source")
+            .join("DNN Platform")
+            .join("Modules")
+            .join("DDRMenu")
+            .join("Common")
+            .join("Utilities.cs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "class Utilities {}\n").unwrap();
+
+        let query = "source/DNN Platform/Modules/DDRMenu/Common/Utilities.cs";
+        match classify(query, dir.path()) {
+            QueryType::FilePath(path) => assert_eq!(path, file),
+            other => panic!("expected FilePath, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn path_line_with_spaces_resolves_when_path_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("source")
+            .join("DNN Platform")
+            .join("Utilities.cs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "class Utilities {}\n").unwrap();
+
+        let query = "source/DNN Platform/Utilities.cs:7";
+        match classify(query, dir.path()) {
+            QueryType::FilePathLine(path, line) => {
+                assert_eq!(path, file);
+                assert_eq!(line, 7);
+            }
+            other => panic!("expected FilePathLine, got {other:?}"),
+        }
     }
 
     #[test]

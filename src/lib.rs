@@ -584,7 +584,7 @@ pub fn run_flow(
             total_sites
         );
     }
-    out.push_str("\n> Tip: lab output composes existing facts. Use --callees --detailed for full ordered calls, or --callers for upstream sites.");
+    out.push_str("\n> Tip: flow is capped for readability. Use --callees --detailed for all ordered calls, or --callers for upstream sites.");
     Ok(apply_optional_budget(out, budget_tokens))
 }
 

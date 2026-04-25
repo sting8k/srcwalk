@@ -5,6 +5,7 @@ use std::sync::{LazyLock, Mutex};
 use streaming_iterator::StreamingIterator;
 
 use crate::cache::OutlineCache;
+use crate::error::SrcwalkError;
 use crate::lang::outline::{get_outline_entries, outline_language};
 use crate::types::{Lang, OutlineEntry};
 
@@ -22,6 +23,8 @@ pub struct ResolvedCallee {
 #[derive(Debug, Clone)]
 pub struct CallSite {
     pub line: u32,
+    /// Captured callee name, e.g. `parse_hubs` or `startAnalysis`.
+    pub callee: String,
     /// Full call text, e.g. `parse_hubs(skip_hubs)`
     pub call_text: String,
     /// Variable the return value is assigned to, if any.
@@ -324,6 +327,7 @@ pub fn extract_call_sites(
 
                 sites.push(CallSite {
                     line,
+                    callee: name,
                     call_text,
                     return_var,
                     is_return,
@@ -362,6 +366,45 @@ pub fn extract_call_sites(
     // Dedup same line + same call_text (method chains can produce duplicates).
     sites.dedup_by(|a, b| a.line == b.line && a.call_text == b.call_text);
     sites
+}
+
+pub fn filter_call_sites(
+    sites: Vec<CallSite>,
+    filter: Option<&str>,
+) -> Result<Vec<CallSite>, SrcwalkError> {
+    let Some(filter) = filter else {
+        return Ok(sites);
+    };
+
+    let mut callee_filters = Vec::new();
+    for part in filter.split_whitespace() {
+        let Some((field, value)) = part.split_once(':') else {
+            return Err(SrcwalkError::InvalidQuery {
+                query: filter.to_string(),
+                reason: "filters must use field:value qualifiers".to_string(),
+            });
+        };
+        if field.is_empty() || value.is_empty() {
+            return Err(SrcwalkError::InvalidQuery {
+                query: filter.to_string(),
+                reason: "filter field and value cannot be empty".to_string(),
+            });
+        }
+        match field {
+            "callee" => callee_filters.push(value.to_string()),
+            _ => {
+                return Err(SrcwalkError::InvalidQuery {
+                    query: filter.to_string(),
+                    reason: format!("unsupported callee filter field `{field}`; use callee"),
+                });
+            }
+        }
+    }
+
+    Ok(sites
+        .into_iter()
+        .filter(|site| callee_filters.iter().all(|wanted| site.callee == *wanted))
+        .collect())
 }
 
 /// Walk up from `@callee` name node to the enclosing call expression.
@@ -933,5 +976,58 @@ end
             names.contains(&"map".to_string()),
             "expected map from Enum.map pipe, got: {names:?}"
         );
+    }
+
+    #[test]
+    fn extract_call_sites_populates_callee_name() {
+        let rust = r#"
+fn run(client: &Client) {
+    let value = client.fetch(1);
+    finish(value);
+}
+"#;
+        let sites = extract_call_sites(rust, Lang::Rust, None);
+
+        assert!(
+            sites.iter().any(|site| site.callee == "fetch"),
+            "expected fetch callsite, got: {sites:?}"
+        );
+        assert!(
+            sites.iter().any(|site| site.callee == "finish"),
+            "expected finish callsite, got: {sites:?}"
+        );
+    }
+
+    #[test]
+    fn filter_call_sites_matches_exact_callee() {
+        let sites = vec![
+            CallSite {
+                line: 1,
+                callee: "fetch".to_string(),
+                call_text: "client.fetch(1)".to_string(),
+                return_var: Some("value".to_string()),
+                is_return: false,
+            },
+            CallSite {
+                line: 2,
+                callee: "finish".to_string(),
+                call_text: "finish(value)".to_string(),
+                return_var: None,
+                is_return: false,
+            },
+        ];
+
+        let filtered = filter_call_sites(sites, Some("callee:fetch")).expect("valid filter");
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].callee, "fetch");
+    }
+
+    #[test]
+    fn filter_call_sites_rejects_unknown_fields() {
+        let err = filter_call_sites(Vec::new(), Some("receiver:client"))
+            .expect_err("unsupported field should fail");
+
+        assert!(err.to_string().contains("unsupported callee filter field"));
     }
 }

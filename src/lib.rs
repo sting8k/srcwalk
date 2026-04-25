@@ -324,6 +324,7 @@ pub fn run_callees(
     cache: &OutlineCache,
     depth: Option<usize>,
     detailed: bool,
+    filter: Option<&str>,
 ) -> Result<String, SrcwalkError> {
     use std::fmt::Write;
     let bloom = index::bloom::BloomFilterCache::new();
@@ -355,10 +356,16 @@ pub fn run_callees(
     // Detailed mode: ordered call sites with args + assignment context.
     if detailed {
         let sites = search::callees::extract_call_sites(&content, lang, def_match.def_range);
+        let total_sites = sites.len();
+        let sites = search::callees::filter_call_sites(sites, filter)?;
         if sites.is_empty() {
-            return Ok(format!("# Callees: {target} ({rel})\n\n(no calls found)"));
+            let suffix = filter.map_or(String::new(), |f| format!(" matching `{f}`"));
+            return Ok(format!(
+                "# Callees: {target} ({rel})\n\n(no calls found{suffix})"
+            ));
         }
-        let mut out = format!("# Callees: {target} ({rel})\n");
+        let filter_suffix = filter.map_or(String::new(), |f| format!(" matching `{f}`"));
+        let mut out = format!("# Callees: {target} ({rel}){filter_suffix}\n");
         for s in &sites {
             let prefix = if s.is_return { "->ret " } else { "" };
             match &s.return_var {
@@ -370,7 +377,16 @@ pub fn run_callees(
                 }
             }
         }
-        out.push_str("\n\n> Tip: detailed call sites can be long. Retry with --budget <N>, or omit --detailed for resolved callee summaries.");
+        if filter.is_some() {
+            let _ = write!(
+                out,
+                "\n\n> Tip: filter matched {}/{} call sites. Qualifiers: callee:NAME.",
+                sites.len(),
+                total_sites
+            );
+        } else {
+            out.push_str("\n\n> Tip: detailed call sites can be long. Retry with --budget <N>, or omit --detailed for resolved callee summaries.");
+        }
         let output = match budget_tokens {
             Some(b) => budget::apply_preserving_footer(&out, b),
             None => out,
@@ -459,6 +475,7 @@ pub fn run_flow(
     budget_tokens: Option<u64>,
     cache: &OutlineCache,
     depth: Option<usize>,
+    filter: Option<&str>,
 ) -> Result<String, SrcwalkError> {
     use std::fmt::Write as _;
 
@@ -479,10 +496,15 @@ pub fn run_flow(
     let mut out = format!("# Slice: {target} — flow\n\n[symbol] {target} {rel}{range}\n");
 
     let sites = search::callees::extract_call_sites(&content, lang, def_match.def_range);
+    let sites = search::callees::filter_call_sites(sites, filter)?;
     if sites.is_empty() {
         out.push_str("-> calls\n  (none)\n");
     } else {
-        out.push_str("-> calls (ordered)\n");
+        if let Some(filter) = filter {
+            let _ = writeln!(out, "-> calls (ordered, filtered {filter})");
+        } else {
+            out.push_str("-> calls (ordered)\n");
+        }
         for site in sites.iter().take(40) {
             let prefix = if site.is_return { " ->ret" } else { "" };
             match &site.return_var {
@@ -503,7 +525,14 @@ pub fn run_flow(
         }
     }
 
-    let names = search::callees::extract_callee_names(&content, lang, def_match.def_range);
+    let names = if filter.is_some() {
+        sites
+            .iter()
+            .map(|site| site.callee.clone())
+            .collect::<Vec<_>>()
+    } else {
+        search::callees::extract_callee_names(&content, lang, def_match.def_range)
+    };
     let depth_limit = depth.map_or(1, |d| d.min(3) as u32);
     let nodes = search::callees::resolve_callees_transitive(
         &names,

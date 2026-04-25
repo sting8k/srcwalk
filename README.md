@@ -96,6 +96,7 @@ srcwalk handleAuth --callers --count-by caller --scope src/
 
 # Callees (forward call graph)
 srcwalk handleAuth --callees --scope src/
+srcwalk handleAuth --callees --detailed --filter 'callee:validateToken' --scope src/
 srcwalk handleAuth --callees --depth 2 --scope src/   # transitive
 
 # Deps (blast radius)

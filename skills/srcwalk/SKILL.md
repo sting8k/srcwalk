@@ -116,12 +116,13 @@ Use this when the question starts from a **known function/method body** and asks
 ```bash
 srcwalk <symbol> --callees --scope <dir>              # summary: resolved with sig + unresolved
 srcwalk <symbol> --callees --detailed --scope <dir>   # ordered call sites with assignments & returns
+srcwalk <symbol> --callees --detailed --filter 'callee:NAME' --scope <dir>
 srcwalk <symbol> --callees --depth N --scope <dir>    # transitive forward graph (up to 5 hops)
 ```
 
 What does this function call? Default output groups resolved callees (file, line range, signature) and unresolved (stdlib/external) separately, then prints a `> Tip: use --detailed ...` footer.
 
-`--detailed` shows **ordered call sites** as they appear in the function body — each line includes the call with assignment context (`result = foo(...)`) and return markers (`->ret`). Use this to understand control flow and data flow through the function.
+`--detailed` shows **ordered call sites** as they appear in the function body — each line includes the call with assignment context (`result = foo(...)`) and return markers (`->ret`). Use this to understand control flow and data flow through the function. Add `--filter 'callee:NAME'` for an exact callee-name slice.
 
 Known function + “what/where/order of calls inside it” ⇒ use `srcwalk <symbol> --callees --detailed`.
 

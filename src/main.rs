@@ -62,7 +62,7 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["callees", "deps", "map", "flow", "impact"])]
     callers: bool,
 
-    /// Filter search results or call sites with field:value qualifiers (e.g. path:foo, kind:fn; callers also support args:3 receiver:mgr).
+    /// Filter search results or call sites with field:value qualifiers (e.g. path:foo, kind:fn; callers also support args:3 receiver:mgr; flow/detailed callees support callee:NAME).
     #[arg(long, value_name = "QUALIFIERS")]
     filter: Option<String>,
 
@@ -245,15 +245,22 @@ fn main() {
     }
 
     if cli.filter.is_some()
-        && (cli.callees || cli.deps || cli.map || cli.path_exact || cli.flow || cli.impact)
+        && (cli.deps || cli.map || cli.path_exact || cli.impact || (cli.callees && !cli.detailed))
     {
-        eprintln!("error: --filter applies to search results and direct --callers, not this mode");
+        eprintln!("error: --filter applies to search results, direct --callers, --flow, and --callees --detailed");
         process::exit(2);
     }
 
     // Lab flow mode
     if cli.flow {
-        let result = srcwalk::run_flow(&query, &scope, effective_budget, &cache, cli.depth);
+        let result = srcwalk::run_flow(
+            &query,
+            &scope,
+            effective_budget,
+            &cache,
+            cli.depth,
+            cli.filter.as_deref(),
+        );
         emit_result(result, &query, cli.json, is_tty);
         return;
     }
@@ -309,6 +316,7 @@ fn main() {
             &cache,
             cli.depth,
             cli.detailed,
+            cli.filter.as_deref(),
         );
         emit_result(result, &query, cli.json, is_tty);
         return;

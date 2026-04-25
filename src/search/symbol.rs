@@ -19,6 +19,8 @@ use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
 
+const MAX_DEFINITION_DEPTH: usize = 8;
+
 /// Multi-symbol batch search.
 /// Single-walk: each file is opened/parsed once; `AhoCorasick` gates by any-query hit;
 /// tree-sitter AST walked once with per-query buckets. Same for usages.
@@ -534,7 +536,7 @@ fn walk_for_definitions(
     lang: Option<crate::types::Lang>,
     depth: usize,
 ) {
-    if depth > 3 {
+    if depth > MAX_DEFINITION_DEPTH {
         return;
     }
 

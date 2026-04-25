@@ -215,15 +215,14 @@ fn full_file_cap_tip_is_footer() {
         .arg(&path)
         .arg("--full")
         .arg("--no-budget")
-        .env("SRCWALK_FULL_SIZE_CAP", "100")
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
         stdout.contains("full=true capped")
-            && stdout.contains("> Tip: full output was capped")
-            && stdout.contains("--section"),
+            && stdout.contains("> Tip: continue with --section")
+            && stdout.contains("--section 201-<end>"),
         "expected full-file cap footer tip:\n{stdout}"
     );
 }

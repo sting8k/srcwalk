@@ -7,6 +7,7 @@ All notable changes to srcwalk are documented here.
 ### Added
 
 ### Changed
+- File reads now default to structural views instead of raw full-file output; raw bodies require explicit `--full` or `--section` and are capped at 200 lines / 5k tokens.
 
 ### Fixed
 

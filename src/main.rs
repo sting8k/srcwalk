@@ -38,7 +38,7 @@ struct Cli {
     #[arg(long)]
     no_budget: bool,
 
-    /// Force full output (override smart view).
+    /// Show explicit raw first page (capped at 200 lines / 5k tokens).
     #[arg(long)]
     full: bool,
 
@@ -216,7 +216,7 @@ fn main() {
     let cache = srcwalk::cache::OutlineCache::new();
     let scope = cli.scope.canonicalize().unwrap_or(cli.scope);
 
-    // Smart view by default (outline for large files). Use --full to force raw content.
+    // Smart structural view by default. Use --full for a capped raw first page.
     let full = cli.full;
     let expand = cli.expand.unwrap_or(0);
 

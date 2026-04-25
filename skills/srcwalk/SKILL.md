@@ -25,21 +25,21 @@ srcwalk <args>
 ## Read a large file (outline + drill-in)
 
 ```bash
-srcwalk <path>                         # outline if large, full if small
+srcwalk <path>                         # structural view; never raw full by default
 srcwalk <path>:123                     # focus exact hit line with context
 srcwalk <path> --section 45-89         # exact line range
 srcwalk <path> --section validateToken # jump to a symbol body by name
-srcwalk <path> --full                  # only for small files or when outline/section is insufficient
+srcwalk <path> --full                  # explicit raw first page, capped at 200 lines / 5k tokens
 ```
 
-Large files return structural outlines; drill into rows with `srcwalk <path>:<line>` or `--section <range-or-symbol>`.
+File reads return structural views by default; drill into rows with `srcwalk <path>:<line>` or `--section <range-or-symbol>`.
 
 Prefer the drill-in workflow:
-1. Run `srcwalk <path>` first for an outline/auto-sized read.
+1. Run `srcwalk <path>` first for a structural view.
 2. Drill with `--section <symbol>` or `--section <start-end>`.
-3. Use `--full` only for small files or when the outline/section lacks required context.
+3. Use `--full` only when you explicitly need raw body text; it returns a capped first page.
 
-Do not use `--full` as the first read for medium/large source or docs files. If a file is roughly >150 source lines or >200 docs lines, run `srcwalk <path>` first, then drill with `--section`. `--full` should not become a `cat` replacement; srcwalk is strongest when used for structural navigation.
+Do not use `--full` as the first read. `--full` and oversized `--section` output are capped at 200 lines / 5k tokens and should not become a `cat` replacement; srcwalk is strongest when used for structural navigation.
 
 ---
 

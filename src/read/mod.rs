@@ -14,7 +14,8 @@ use crate::lang::detect_file_type;
 use crate::lang::outline::get_outline_entries as lang_get_outline_entries;
 use crate::types::{estimate_tokens, FileType, OutlineEntry, ViewMode};
 
-pub(crate) const TOKEN_THRESHOLD: u64 = 6_000;
+pub(crate) const RAW_TOKEN_CAP: u64 = 5_000;
+const RAW_LINE_CAP: u32 = 200;
 const FILE_SIZE_CAP: u64 = 500_000; // 500KB
 
 /// Sections exceeding this token count are degraded to an outline of the range.
@@ -23,18 +24,42 @@ fn section_token_limit() -> u64 {
     std::env::var("SRCWALK_SECTION_SOFT_LIMIT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(5_000)
+        .unwrap_or(RAW_TOKEN_CAP)
 }
 
-/// Max file size for `full=true` reads. Files above this threshold get a
-/// warning header + outline instead of raw content, preventing multi-megabyte
-/// responses that cause MCP client timeouts.
-/// Override with `SRCWALK_FULL_SIZE_CAP` env var (bytes). Default: 2MB.
-fn full_read_size_cap() -> u64 {
-    std::env::var("SRCWALK_FULL_SIZE_CAP")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(2_000_000)
+fn raw_body_over_cap(tokens: u64, lines: u32) -> bool {
+    tokens > RAW_TOKEN_CAP || lines > RAW_LINE_CAP
+}
+
+fn capped_line_end(buf: &[u8], start_byte: usize, max_lines: u32, max_tokens: u64) -> (usize, u32) {
+    let max_bytes = (max_tokens * 4) as usize;
+    let mut end = start_byte;
+    let mut lines = 0u32;
+
+    while end < buf.len() && lines < max_lines && end.saturating_sub(start_byte) < max_bytes {
+        if let Some(rel) = memchr::memchr(b'\n', &buf[end..]) {
+            let next = end + rel + 1;
+            if next.saturating_sub(start_byte) > max_bytes {
+                break;
+            }
+            end = next;
+            lines += 1;
+        } else {
+            let next = buf.len().min(start_byte + max_bytes);
+            if next > end {
+                end = next;
+                lines += 1;
+            }
+            break;
+        }
+    }
+
+    if end == start_byte && start_byte < buf.len() {
+        end = buf.len().min(start_byte + max_bytes.max(1));
+        lines = 1;
+    }
+
+    (end, lines)
 }
 
 /// Main entry point for read mode. Routes through the decision tree.
@@ -117,50 +142,31 @@ pub fn read_file(
     let content = String::from_utf8_lossy(buf);
     let line_count = memchr::memchr_iter(b'\n', buf).count() as u32 + 1;
 
-    // Guard: full=true on very large files. Return first-N numbered lines +
-    // outline + section continue hint instead of dead-ending. This lets the
-    // agent see head content immediately and paginate via `section`.
-    let cap = full_read_size_cap();
-    if full && byte_len > cap {
-        const PROGRESSIVE_LINES: u32 = 200;
-        let file_type = detect_file_type(path);
-        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        #[allow(clippy::cast_precision_loss)] // cap and file sizes fit in f64 mantissa for display
-        let cap_mb = cap as f64 / 1_000_000.0;
-        #[allow(clippy::cast_precision_loss)]
-        let file_mb = byte_len as f64 / 1_000_000.0;
+    let file_type = detect_file_type(path);
+    let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-        // Take the first PROGRESSIVE_LINES via memchr — avoids allocating the full content split.
-        let head_end = memchr::memchr_iter(b'\n', buf)
-            .nth(PROGRESSIVE_LINES as usize - 1)
-            .map_or(buf.len(), |p| p + 1);
+    // Raw body output requires explicit `--full` and is capped by both tokens
+    // and lines. Default path reads always return a structural/smart view.
+    if full {
+        if !raw_body_over_cap(tokens, line_count) {
+            let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
+            let numbered = format::number_lines(&content, 1);
+            return Ok(format!("{header}\n\n{numbered}"));
+        }
+
+        let (head_end, shown) = capped_line_end(buf, 0, RAW_LINE_CAP, RAW_TOKEN_CAP);
         let head = String::from_utf8_lossy(&buf[..head_end]);
         let numbered_head = format::number_lines(&head, 1);
-
         let outline = cache.get_or_compute(path, mtime, || {
             outline::generate(path, file_type, &content, buf, true)
         });
 
         let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
-        let shown = PROGRESSIVE_LINES.min(line_count);
         let next_start = shown + 1;
         return Ok(format!(
-            "{header}\n\n> **full=true capped**: file is {file_mb:.1}MB (cap: {cap_mb:.1}MB). \
-             Showing first {shown} of {line_count} lines.\n\n\
-             {numbered_head}\n\n## Outline\n\n{outline}\n\n> Tip: full output was capped. Continue with --section {next_start}-<end>, or set SRCWALK_FULL_SIZE_CAP={byte_len} to override."
+            "{header}\n\n> **full=true capped**: raw body exceeds {RAW_TOKEN_CAP} tokens or {RAW_LINE_CAP} lines. Showing first {shown} of {line_count} lines.\n\n{numbered_head}\n\n## Outline\n\n{outline}\n\n> Tip: continue with --section {next_start}-<end> or use a narrower --section range."
         ));
     }
-
-    // Full mode or small file → return full content (skip smart view)
-    if full || tokens <= TOKEN_THRESHOLD {
-        let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
-        let numbered = format::number_lines(&content, 1);
-        return Ok(format!("{header}\n\n{numbered}"));
-    }
-
-    // Large file → smart view by file type
-    let file_type = detect_file_type(path);
-    let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
     let capped = byte_len > FILE_SIZE_CAP;
 
@@ -181,7 +187,7 @@ pub fn read_file(
 /// Would this file produce an outline (rather than full content) in default read mode?
 /// Used by the MCP layer to decide whether to append related-file hints.
 pub fn would_outline(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|m| !m.is_dir() && estimate_tokens(m.len()) > TOKEN_THRESHOLD)
+    std::fs::metadata(path).is_ok_and(|m| !m.is_dir() && m.len() > 0)
 }
 
 /// Wrapper around `read_file` that, for `--full` requests with `--budget`,
@@ -532,7 +538,7 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
     let tok_est = estimate_tokens(byte_len);
     let limit = section_token_limit();
 
-    if tok_est > limit {
+    if tok_est > limit || line_count > RAW_LINE_CAP {
         // Degrade: render outline entries within the section range
         let file_type = detect_file_type(path);
         let content = String::from_utf8_lossy(buf);
@@ -548,7 +554,7 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
                 let body = format_section_outline(&filtered);
                 return Ok(format!(
                     "{header}\n\n{body}\n\n\
-                     > Section spans ~{tok_est} tokens (limit {limit}). Showing outline of {start}-{end}.\n\
+                     > Section spans ~{tok_est} tokens / {line_count} lines (limits: {limit} tokens, {RAW_LINE_CAP} lines). Showing outline of {start}-{end}.\n\
                      > Drill: `--section <fn-name>` for a specific symbol."
                 ));
             }
@@ -557,7 +563,7 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
         // Fallback: no structured outline available — return header + advice only
         return Ok(format!(
             "{header}\n\n\
-             > Section spans ~{tok_est} tokens (limit {limit}).\n\
+             > Section spans ~{tok_est} tokens / {line_count} lines (limits: {limit} tokens, {RAW_LINE_CAP} lines).\n\
              > Drill: `--section <fn-name>` for a specific symbol, or use a narrower line range."
         ));
     }
@@ -714,8 +720,12 @@ fn filter_entries_in_range(
 
 /// Format filtered outline entries for section degrade output.
 fn format_section_outline(entries: &[&OutlineEntry]) -> String {
+    const MAX_SECTION_OUTLINE_LINES: usize = 100;
     let mut lines = Vec::new();
     for e in entries {
+        if lines.len() >= MAX_SECTION_OUTLINE_LINES {
+            break;
+        }
         let range = if e.start_line == e.end_line {
             format!("[{}]", e.start_line)
         } else {
@@ -725,6 +735,9 @@ fn format_section_outline(entries: &[&OutlineEntry]) -> String {
         lines.push(format!("  {range:>14}    {sig}"));
         // Show children in range
         for c in &e.children {
+            if lines.len() >= MAX_SECTION_OUTLINE_LINES {
+                break;
+            }
             let cr = if c.start_line == c.end_line {
                 format!("[{}]", c.start_line)
             } else {
@@ -733,6 +746,11 @@ fn format_section_outline(entries: &[&OutlineEntry]) -> String {
             let csig = c.signature.as_deref().unwrap_or(&c.name);
             lines.push(format!("    {cr:>12}    {csig}"));
         }
+    }
+    if entries.len() > MAX_SECTION_OUTLINE_LINES {
+        lines.push(format!(
+            "  ... section outline capped at {MAX_SECTION_OUTLINE_LINES} entries; use a narrower --section range"
+        ));
     }
     lines.join("\n")
 }
@@ -1001,35 +1019,111 @@ mod tests {
     }
 
     #[test]
-    fn full_true_size_cap_returns_outline() {
+    fn default_path_read_returns_outline_not_full() {
+        let path = std::env::temp_dir().join("srcwalk_default_outline.rs");
+        std::fs::write(&path, b"fn alpha() {}\nfn beta() {}\n").unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_file(&path, None, false, &cache).unwrap();
+
+        assert!(out.contains("[outline]"), "expected outline header: {out}");
+        assert!(
+            !out.contains("[full]"),
+            "default read must not be full: {out}"
+        );
+        assert!(
+            out.contains("alpha"),
+            "outline should include symbols: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn explicit_full_fits_raw_caps() {
+        let path = std::env::temp_dir().join("srcwalk_full_fits.rs");
+        std::fs::write(&path, b"fn alpha() {}\nfn beta() {}\n").unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_file(&path, None, true, &cache).unwrap();
+
+        assert!(
+            out.contains("[full]"),
+            "explicit full should be full: {out}"
+        );
+        assert!(
+            out.contains("1  fn alpha()"),
+            "full body should be numbered: {out}"
+        );
+        assert!(
+            !out.contains("full=true capped"),
+            "small full should not cap: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn explicit_full_caps_after_raw_line_limit() {
         use std::io::Write;
 
-        // Create a temp file larger than our small cap (100 bytes)
-        let path = std::env::temp_dir().join("srcwalk_test_large.rs");
+        let path = std::env::temp_dir().join("srcwalk_full_line_cap.rs");
         let mut f = std::fs::File::create(&path).unwrap();
-        // Write enough to exceed the cap — 200 bytes of Rust code
-        for i in 0..20 {
-            writeln!(f, "pub fn func_{i}() {{ println!(\"hello\"); }}").unwrap();
+        for i in 0..250 {
+            writeln!(f, "fn func_{i}() {{}}").unwrap();
         }
         drop(f);
 
-        // Set a tiny cap so the guard triggers
-        std::env::set_var("SRCWALK_FULL_SIZE_CAP", "100");
+        let cache = OutlineCache::new();
+        let out = read_file(&path, None, true, &cache).unwrap();
+
+        assert!(
+            out.contains("full=true capped"),
+            "expected cap warning: {out}"
+        );
+        assert!(
+            out.contains("Showing first 200 of 251 lines"),
+            "expected 200-line page: {out}"
+        );
+        assert!(
+            out.contains("--section 201-<end>"),
+            "expected next-page hint: {out}"
+        );
+        assert!(
+            out.contains("func_0"),
+            "expected first page body/outline: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn oversized_section_degrades_to_section_outline() {
+        use std::io::Write;
+
+        let path = std::env::temp_dir().join("srcwalk_section_line_cap.rs");
+        let mut f = std::fs::File::create(&path).unwrap();
+        for i in 0..250 {
+            writeln!(f, "fn func_{i}() {{}}").unwrap();
+        }
+        drop(f);
 
         let cache = OutlineCache::new();
-        let result = read_file(&path, None, true, &cache).unwrap();
+        let out = read_file(&path, Some("1-250"), false, &cache).unwrap();
 
-        // Should contain the progressive-read warning, not the full file content
         assert!(
-            result.contains("full=true capped"),
-            "expected size cap warning, got: {result}"
+            out.contains("[section, outline (over limit)]"),
+            "expected section outline: {out}"
         );
         assert!(
-            result.contains("func_0"),
-            "expected head/outline content in output"
+            out.contains("200 lines"),
+            "expected line cap mention: {out}"
+        );
+        assert!(
+            !out.contains("fn func_200"),
+            "oversized section outline should be capped: {out}"
         );
 
-        std::env::remove_var("SRCWALK_FULL_SIZE_CAP");
         let _ = std::fs::remove_file(&path);
     }
 

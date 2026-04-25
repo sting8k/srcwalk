@@ -176,7 +176,7 @@ pub fn search_multi_symbol_expanded(
             );
         }
         if smart_truncated {
-            out.push_str("\n\n> Tip: expanded source was smart-truncated. Use the shown file line range with --section <start-end> --full for the full body.");
+            out.push_str("\n\n> Tip: expanded source was smart-truncated. Use the shown file line range with --section <start-end> for a capped raw range.");
         }
         append_did_you_mean(&mut out, &result, scope, glob);
         sections.push(out);
@@ -1311,7 +1311,7 @@ fn format_search_result(
         if !footer.is_empty() {
             footer.push('\n');
         }
-        footer.push_str("> Tip: expanded source was smart-truncated. Use the shown file line range with --section <start-end> --full for the full body.");
+        footer.push_str("> Tip: expanded source was smart-truncated. Use the shown file line range with --section <start-end> for a capped raw range.");
     }
 
     let tokens = estimate_tokens(out.len() as u64);

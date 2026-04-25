@@ -9,13 +9,13 @@
 
 > Tree-sitter outlines · symbol search · caller/callee graphs · blast-radius deps · token-aware maps
 
-Small files come back whole, large files get a structural outline. Your agent reaches for `srcwalk` instead of `cat` and `grep` — cheap outlines first, drill on demand, never blow the token budget.
+File reads default to structural views, not raw full-file dumps. Your agent reaches for `srcwalk` instead of `cat` and `grep` — cheap outlines first, explicit `--section`/`--full` pages on demand, never blow the token budget.
 
 > Originally forked from [jahala/tilth](https://github.com/jahala/tilth), now developed independently.
 
 ## What it does
 
-- **Read** — outline if large, full if small, `--section` to drill into a symbol or line range
+- **Read** — structural outline by default; `--section` or capped `--full` for explicit raw pages
 - **Symbol search** — tree-sitter definitions first, then usages, with resolved callees
 - **Callers** — single-hop or multi-hop BFS (up to 5 hops), hub guard, collision warnings
 - **Callees** — forward call graph, resolved + unresolved, with depth support
@@ -76,7 +76,7 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for curated release notes. Maintainers shou
 ## Quick examples
 
 ```sh
-# Read a file (outline if large, full if small)
+# Read a file (structural view by default; raw pages are explicit)
 srcwalk src/auth.ts
 srcwalk src/auth.ts:72                       # drill into exact hit line
 srcwalk src/auth.ts --section handleAuth     # drill into symbol

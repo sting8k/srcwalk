@@ -97,6 +97,16 @@ For `--json`, inspect `edges[]`, `stats.suspicious_hops[]`, and `elided` before 
 
 ---
 
+
+## Impact — definitions + name-matched caller groups
+
+```bash
+srcwalk <symbol> --impact --scope <dir>
+```
+
+Use this for quick blast-radius triage from a symbol name: it shows definitions, direct name-matched call sites, receiver/file groups, and warnings for broad or definition-less matches. Treat common method names (`run`, `close`, `init`) as name-matched slices; use receiver groups and the warning footer to decide the next drill-down.
+
+---
 ## Blast radius — file dependencies
 
 ```bash

@@ -102,6 +102,9 @@ srcwalk handleAuth --callees --depth 2 --scope src/   # transitive
 # Flow (compact lab slice: ordered calls + local resolves + callers)
 srcwalk handleAuth --flow --filter 'callee:validateToken' --scope src/
 
+# Impact (definitions + name-matched callers + receiver/file groups)
+srcwalk validateToken --impact --scope src/
+
 # Deps (blast radius)
 srcwalk src/auth.ts --deps
 

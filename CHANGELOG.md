@@ -13,7 +13,8 @@ All notable changes to srcwalk are documented here.
 ## [0.2.1] - 2026-04-25
 
 ### Added
-- Lab `--flow` and `--impact` slices for compact function-level call and impact exploration.
+- Lab `--flow` slices for compact function-level call exploration.
+- `--impact` slices for name-matched direct caller impact, with receiver/file grouping and broad-symbol warnings.
 - `--filter 'callee:NAME'` for `--flow` and `--callees --detailed` callsite slices.
 
 ### Changed

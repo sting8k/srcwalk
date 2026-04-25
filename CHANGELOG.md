@@ -10,6 +10,20 @@ All notable changes to srcwalk are documented here.
 
 ### Fixed
 
+## [0.2.1] - 2026-04-25
+
+### Added
+- Lab `--flow` and `--impact` slices for compact function-level call and impact exploration.
+- `--filter 'callee:NAME'` for `--flow` and `--callees --detailed` callsite slices.
+
+### Changed
+- `--flow` resolves prioritize local helpers and stay hard-capped for readable agent output.
+- README and srcwalk skill examples now document flow and detailed callee filtering.
+
+### Fixed
+- Existing file paths with spaces now classify as paths without requiring `--path-exact`.
+- Nested C# methods under namespace/class containers are detected as symbol definitions, enabling method-level `--flow`.
+
 ## [0.2.0] - 2026-04-25
 
 ### Added

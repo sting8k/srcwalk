@@ -65,31 +65,48 @@ cargo install --path .       # → ~/.cargo/bin/srcwalk
 
 ## Version bumps
 
-Update all three, then tag:
-1. `Cargo.toml` — `version = "X.Y.Z"`
-2. `npm/package.json` — `"version": "X.Y.Z"`
-3. `cargo update -p srcwalk` — refreshes `Cargo.lock`
-4. Tag `vX.Y.Z` → CI builds binaries for 5 platforms + creates GitHub Release.
+Update all release metadata, then tag:
+1. `Cargo.toml` — `version = "X.Y.Z"` and package name must be `srcwalk`.
+2. `npm/package.json` — `"version": "X.Y.Z"` and package name must be `srcwalk`.
+3. `skills/srcwalk/SKILL.md` — update `compatible_srcwalk` when CLI behavior changes.
+4. `CHANGELOG.md` — add a curated `## [X.Y.Z] - YYYY-MM-DD` section. GitHub Release body is extracted from this section.
+5. `cargo update -p srcwalk` — refreshes `Cargo.lock`.
+6. Tag `vX.Y.Z` → CI builds binaries, creates GitHub Release, publishes crates.io/npm.
 
 ## Release flow
 
 ```bash
 # 1. Validate
-cargo test
-cargo clippy -- -D warnings
+git status --short
 cargo fmt --check
+cargo clippy -- -D warnings
+cargo test
 
-# 2. Bump version (all three)
-# Cargo.toml, npm/package.json, then:
+# 2. Bump version + changelog
+# Cargo.toml, npm/package.json, skills/srcwalk/SKILL.md, CHANGELOG.md, then:
 cargo update -p srcwalk   # refreshes Cargo.lock
+rg -n 'name = "srcwalk"|"name": "srcwalk"|version = "X.Y.Z"|"version": "X.Y.Z"|## \[X.Y.Z\]' \
+  Cargo.toml npm/package.json Cargo.lock CHANGELOG.md skills/srcwalk/SKILL.md
 
 # 3. Commit & push, wait for CI green
 git add -A && git commit -m "chore: bump vX.Y.Z"
 git push srcwalk main
+gh run list --repo sting8k/srcwalk --branch main --limit 3
 # Wait for CI ✅
 
-# 4. Tag & release (triggers build + publish)
-git tag vX.Y.Z && git push srcwalk vX.Y.Z
+# 4. Tag sanity: tag must not already exist and must point at current main
+git fetch srcwalk --tags
+git rev-parse -q --verify refs/tags/vX.Y.Z && echo "tag already exists; stop"
+git tag vX.Y.Z main
+git show vX.Y.Z:Cargo.toml | sed -n '1,20p'   # confirm name=srcwalk, version=X.Y.Z
+
+# 5. Release (triggers build + publish)
+git push srcwalk vX.Y.Z
+gh run watch --repo sting8k/srcwalk $(gh run list --repo sting8k/srcwalk --workflow Release --limit 1 --json databaseId -q '.[0].databaseId') --exit-status
+
+# 6. Post-release checks
+gh release view vX.Y.Z --repo sting8k/srcwalk --json assets,body | jq
+# Confirm release body came from CHANGELOG.md and assets are srcwalk-*.
 ```
 
 ## Key conventions

@@ -96,4 +96,48 @@ fn impact_warns_for_broad_name_matched_symbols() {
         stdout.contains("Impact output is capped for readability"),
         "expected capped footer, got:\n{stdout}"
     );
+    assert!(
+        stdout.contains("impact scans direct name matches within the selected scope"),
+        "expected scan caveat, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn impact_reports_zero_callers_as_not_proof_of_no_runtime_callers() {
+    let dir = temp_dir("impact_zero");
+    fs::write(
+        dir.join("sample.ts"),
+        r#"
+export function uniqueTarget() {
+  return 1;
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["uniqueTarget", "--impact", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "impact should succeed, stderr:
+{stderr}
+stdout:
+{stdout}"
+    );
+    assert!(
+        stdout.contains("0 direct name-matched call sites found"),
+        "expected zero-call footer, got:
+{stdout}"
+    );
+    assert!(
+        stdout.contains("not proof of no runtime callers"),
+        "expected zero-call caveat, got:
+{stdout}"
+    );
 }

@@ -100,11 +100,11 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["callers", "callees", "map", "flow", "impact"])]
     deps: bool,
 
-    /// Lab: summarize downstream flow from a known symbol.
+    /// Summarize a known symbol's ordered calls, local resolves, and direct callers.
     #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "map", "impact", "expand", "section", "full"])]
     flow: bool,
 
-    /// Lab: summarize blast radius for changing a symbol.
+    /// Summarize definitions, name-matched callers, and receiver/file groups.
     #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "map", "flow", "expand", "section", "full"])]
     impact: bool,
 

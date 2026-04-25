@@ -729,6 +729,10 @@ pub fn run_impact(
         "\n> Tip: {total_callers} direct name-matched call site{} found. Impact output is capped for readability. Use --callers --depth 2 for transitive upstream impact, or --callers --count-by receiver|file to page groups.",
         if total_callers == 1 { "" } else { "s" }
     );
+    if total_callers == 0 {
+        out.push_str("\n> Note: no direct name-matched calls found in scope; this is not proof of no runtime callers.");
+    }
+    out.push_str("\n> Note: impact scans direct name matches within the selected scope; dynamic dispatch, reflection, generated/ignored files, and out-of-scope callers may be missed.");
     Ok(apply_optional_budget(out, budget_tokens))
 }
 

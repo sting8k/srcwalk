@@ -117,6 +117,7 @@ Use this when the question starts from a **known function/method body** and asks
 srcwalk <symbol> --callees --scope <dir>              # summary: resolved with sig + unresolved
 srcwalk <symbol> --callees --detailed --scope <dir>   # ordered call sites with assignments & returns
 srcwalk <symbol> --callees --detailed --filter 'callee:NAME' --scope <dir>
+srcwalk <symbol> --flow --filter 'callee:NAME' --scope <dir>  # compact lab slice
 srcwalk <symbol> --callees --depth N --scope <dir>    # transitive forward graph (up to 5 hops)
 ```
 
@@ -124,7 +125,7 @@ What does this function call? Default output groups resolved callees (file, line
 
 `--detailed` shows **ordered call sites** as they appear in the function body — each line includes the call with assignment context (`result = foo(...)`) and return markers (`->ret`). Use this to understand control flow and data flow through the function. Add `--filter 'callee:NAME'` for an exact callee-name slice.
 
-Known function + “what/where/order of calls inside it” ⇒ use `srcwalk <symbol> --callees --detailed`.
+Known function + “what/where/order of calls inside it” ⇒ use `srcwalk <symbol> --callees --detailed`. For a capped overview that combines ordered calls, local helper resolves, and upstream callers, use `--flow`.
 
 If the symbol name is overloaded/common, first find the exact definition with `srcwalk <symbol> --scope <dir>`, then drill into the chosen file/range or narrow `--scope` before running `--callees`.
 

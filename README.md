@@ -99,6 +99,9 @@ srcwalk handleAuth --callees --scope src/
 srcwalk handleAuth --callees --detailed --filter 'callee:validateToken' --scope src/
 srcwalk handleAuth --callees --depth 2 --scope src/   # transitive
 
+# Flow (compact lab slice: ordered calls + local resolves + callers)
+srcwalk handleAuth --flow --filter 'callee:validateToken' --scope src/
+
 # Deps (blast radius)
 srcwalk src/auth.ts --deps
 

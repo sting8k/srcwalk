@@ -544,16 +544,17 @@ pub fn run_flow(
         depth_limit,
         30,
     );
-    if !nodes.is_empty() {
-        out.push_str("\n-> resolves\n");
-        for node in nodes.iter().take(20) {
+    let flow_nodes = prioritize_flow_resolves(nodes, &def_match.path);
+    if !flow_nodes.is_empty() {
+        out.push_str("\n-> resolves (local helpers first)\n");
+        for node in flow_nodes.iter().take(20) {
             append_resolved_callee(&mut out, scope, &node.callee, 1);
             for child in node.children.iter().take(5) {
                 append_resolved_callee(&mut out, scope, child, 2);
             }
         }
-        if nodes.len() > 20 {
-            let _ = writeln!(out, "  ... {} more resolved callees", nodes.len() - 20);
+        if flow_nodes.len() > 20 {
+            let _ = writeln!(out, "  ... {} more resolved callees", flow_nodes.len() - 20);
         }
     }
 
@@ -692,6 +693,49 @@ fn find_primary_definition(target: &str, scope: &Path) -> Result<types::Match, S
             scope: scope.to_path_buf(),
             suggestion: symbol_or_file_suggestion(scope, target, None),
         })
+}
+
+fn prioritize_flow_resolves(
+    mut nodes: Vec<search::callees::ResolvedCalleeNode>,
+    source_path: &Path,
+) -> Vec<search::callees::ResolvedCalleeNode> {
+    nodes.retain(|node| is_flow_helper(&node.callee));
+    nodes.sort_by_key(|node| {
+        (
+            flow_resolve_location_rank(&node.callee.file, source_path),
+            node.callee.start_line,
+            node.callee.name.clone(),
+        )
+    });
+    nodes
+}
+
+fn flow_resolve_location_rank(path: &Path, source_path: &Path) -> u8 {
+    if path == source_path {
+        return 0;
+    }
+    if path.parent() == source_path.parent() {
+        return 1;
+    }
+    2
+}
+
+fn is_flow_helper(callee: &search::callees::ResolvedCallee) -> bool {
+    if callee.end_line > callee.start_line {
+        return true;
+    }
+    callee.signature.as_deref().is_some_and(|sig| {
+        let sig = sig.trim_start();
+        sig.contains('(')
+            || sig.starts_with("fn ")
+            || sig.starts_with("pub fn ")
+            || sig.starts_with("pub(crate) fn ")
+            || sig.starts_with("async fn ")
+            || sig.starts_with("pub async fn ")
+            || sig.starts_with("function ")
+            || sig.starts_with("def ")
+            || sig.starts_with("func ")
+    })
 }
 
 fn append_resolved_callee(

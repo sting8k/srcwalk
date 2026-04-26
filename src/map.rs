@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 
 use crate::cache::OutlineCache;
+use crate::error::SrcwalkError;
 use crate::lang::detect_file_type;
 use crate::read::outline;
 use crate::types::{estimate_tokens, FileType};
@@ -60,14 +61,14 @@ fn format_walk_note(cfg: &WalkConfig) -> String {
 
 /// Generate a structural codebase map.
 /// By default files show compact token estimates; symbol names are opt-in.
-#[must_use]
 pub fn generate(
     scope: &Path,
     depth: usize,
     budget: Option<u64>,
     cache: &OutlineCache,
     include_symbols: bool,
-) -> String {
+    glob: Option<&str>,
+) -> Result<String, SrcwalkError> {
     let mut tree: BTreeMap<PathBuf, Vec<FileEntry>> = BTreeMap::new();
 
     let cfg = WalkConfig {
@@ -79,7 +80,8 @@ pub fn generate(
         parents: true,
     };
 
-    let walker = WalkBuilder::new(scope)
+    let mut builder = WalkBuilder::new(scope);
+    builder
         .follow_links(true)
         .hidden(cfg.hidden)
         .git_ignore(cfg.git_ignore)
@@ -95,8 +97,23 @@ pub fn generate(
             }
             true
         })
-        .max_depth(Some(depth + 1))
-        .build();
+        .max_depth(Some(depth + 1));
+
+    if let Some(pattern) = glob.filter(|p| !p.is_empty()) {
+        let mut overrides = ignore::overrides::OverrideBuilder::new(scope);
+        overrides
+            .add(pattern)
+            .map_err(|e| SrcwalkError::InvalidQuery {
+                query: pattern.to_string(),
+                reason: format!("invalid glob: {e}"),
+            })?;
+        builder.overrides(overrides.build().map_err(|e| SrcwalkError::InvalidQuery {
+            query: pattern.to_string(),
+            reason: format!("invalid glob: {e}"),
+        })?);
+    }
+
+    let walker = builder.build();
 
     for entry in walker.flatten() {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
@@ -180,7 +197,7 @@ pub fn generate(
     } else {
         out.push_str("\n\n> Tip: add --symbols, or narrow with --scope <dir>.\n");
     }
-    out
+    Ok(out)
 }
 
 /// Compute total tokens for each directory (sum of all descendant files).
@@ -269,17 +286,31 @@ fn format_tree(
     indent: usize,
     out: &mut String,
 ) {
-    // Collect subdirectories that have entries
+    // Show directories first, largest first, so truncated maps keep the
+    // highest-signal navigation scaffold near the top.
     let mut subdirs: Vec<&PathBuf> = tree
         .keys()
         .filter(|k| k.parent() == Some(dir) && *k != dir)
         .collect();
-    subdirs.sort();
+    subdirs.sort_by(|a, b| {
+        let a_total = totals.get(*a).copied().unwrap_or(0);
+        let b_total = totals.get(*b).copied().unwrap_or(0);
+        b_total.cmp(&a_total).then_with(|| a.cmp(b))
+    });
 
     let prefix = "  ".repeat(indent);
 
-    // Show files in this directory
+    for subdir in subdirs {
+        let dir_name = subdir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let total = totals.get(subdir).copied().unwrap_or(0);
+        let _ = writeln!(out, "{prefix}{dir_name}/  ~{}", fmt_tokens(total));
+        format_tree(tree, totals, subdir, indent + 1, out);
+    }
+
     if let Some(files) = tree.get(dir) {
+        let mut files: Vec<&FileEntry> = files.iter().collect();
+        files.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.name.cmp(&b.name)));
+
         for f in files {
             if let Some(ref symbols) = f.symbols {
                 if symbols.is_empty() {
@@ -297,14 +328,6 @@ fn format_tree(
                 let _ = writeln!(out, "{prefix}{}  ~{}", f.name, fmt_tokens(f.tokens));
             }
         }
-    }
-
-    // Recurse into subdirectories — show rollup token total next to dir name.
-    for subdir in subdirs {
-        let dir_name = subdir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        let total = totals.get(subdir).copied().unwrap_or(0);
-        let _ = writeln!(out, "{prefix}{dir_name}/  ~{}", fmt_tokens(total));
-        format_tree(tree, totals, subdir, indent + 1, out);
     }
 }
 

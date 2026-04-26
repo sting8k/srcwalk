@@ -1,31 +1,28 @@
 ---
 name: srcwalk
-compatible_srcwalk: ">=0.2.3"
-description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'srcwalk' or 'outline'. Prefer this over cat/grep/find for any code-structure question. For plain text search, reading small files whose path you already know, or listing paths to pipe, use ripgrep / cat / fd directly."
+compatible_srcwalk: ">=0.2.5"
+description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'srcwalk' or 'outline'. Prefer this over cat/grep/find/ripgrep for any code-structure question. For plain text search, reading small files whose path you already know, or listing paths to pipe, use ripgrep / cat / fd directly."
 ---
 
 # Srcwalk — Code Intelligence CLI
 
-srcwalk is a code-intelligence tool built on tree-sitter. It answers questions grep and cat can't: *where is this symbol defined*, *who calls it*, *what does this file depend on*, *what does this codebase look like structurally*.
+srcwalk is a code-intelligence tool built on tree-sitter. Answers questions grep and cat can't: *where is this symbol defined*, *who calls it*, *what does this file depend on*, *what does this codebase look like structurally*.
 
 **Use srcwalk for:** outlines of large files, symbol definitions, callers (single-hop or transitive BFS), callees/forward call flow from a known function, file dependencies, codebase maps, jumping to a symbol body, call-chain tracing, comparing sizes of partial/overloaded definitions with the same name.
 
 **Don't use srcwalk for** plain text search, reading small files whose path you know, listing paths to pipe, or complex regex. Use `rg`, `cat`, `fd` directly — they're faster and you already know how to read their output.
 
-**Binary:** `~/.cargo/bin/srcwalk` (in PATH).
-
 ```bash
 srcwalk <args>
 ```
 
-**Follow output hints first:** srcwalk prints contextual `> Tip:` footers for pagination, budget/cap truncation, section drill-in, callers/callees/deps, and graph traversal. Prefer those hints as next-step guidance before scanning this whole skill.
+**Follow output hints first:** srcwalk prints contextual `> Tip:` footers for guidance, and graph traversal. Prefer those hints as next-step guidance.
 
 ---
 
 ## Read a large file (outline + drill-in)
 
 ```bash
-srcwalk <path>                         # structural view; never raw full by default
 srcwalk <path>:123                     # focus exact hit line with context
 srcwalk <path> --section 45-89         # exact line range
 srcwalk <path> --section validateToken # jump to a symbol body by name
@@ -151,8 +148,10 @@ If the symbol name is overloaded/common, first find the exact definition with `s
 ## Codebase map
 
 ```bash
-srcwalk --map --scope <dir>            # compact tree, no symbols
-srcwalk --map --scope <dir> --symbols  # include symbol names
+srcwalk --map --scope <dir>                   # compact tree, no symbols
+srcwalk --map --scope <dir> --depth 2         # shallower/deeper tree
+srcwalk --map --scope <dir> --glob '*.rs'     # focus file types
+srcwalk --map --scope <dir> --symbols         # include symbol names
 ```
 
 `--map` respects `.gitignore`, `.ignore`, and git excludes — token totals

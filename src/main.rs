@@ -47,7 +47,7 @@ struct Cli {
     path_exact: bool,
 
     /// Machine-readable JSON output.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "map")]
     json: bool,
 
     /// Show source context for top N matches/callers (default: 2 when flag present).
@@ -63,7 +63,7 @@ struct Cli {
     callers: bool,
 
     /// Filter search results or call sites with field:value qualifiers (e.g. path:foo, kind:fn; callers also support args:3 receiver:mgr; flow/detailed callees support callee:NAME).
-    #[arg(long, value_name = "QUALIFIERS")]
+    #[arg(long, value_name = "QUALIFIERS", conflicts_with = "map")]
     filter: Option<String>,
 
     /// Count direct caller call sites by field: args, caller, receiver, path, or file.
@@ -78,7 +78,7 @@ struct Cli {
     #[arg(long, requires = "callees")]
     detailed: bool,
 
-    /// BFS depth for --callers/--callees. 1 = direct (default). Capped at 5.
+    /// Depth for --callers/--callees BFS or --map tree. Default map: 3; BFS capped at 5.
     #[arg(long, value_name = "N")]
     depth: Option<usize>,
 
@@ -200,8 +200,21 @@ fn main() {
     if cli.map {
         let cache = srcwalk::cache::OutlineCache::new();
         let scope = cli.scope.canonicalize().unwrap_or(cli.scope);
-        let output = srcwalk::map::generate(&scope, 3, effective_budget, &cache, cli.symbols);
-        emit_output(&output, is_tty);
+        let depth = cli.depth.unwrap_or(3);
+        match srcwalk::map::generate(
+            &scope,
+            depth,
+            effective_budget,
+            &cache,
+            cli.symbols,
+            cli.glob.as_deref(),
+        ) {
+            Ok(output) => emit_output(&output, is_tty),
+            Err(e) => {
+                eprintln!("{e}");
+                process::exit(e.exit_code());
+            }
+        }
         return;
     }
 

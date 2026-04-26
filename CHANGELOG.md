@@ -10,6 +10,19 @@ All notable changes to srcwalk are documented here.
 
 ### Fixed
 
+## [0.2.5] - 2026-04-26
+
+### Added
+- `--map` now honors `--glob` to focus structural maps by file pattern while preserving directory rollups.
+
+### Changed
+- `--map --depth N` now controls tree depth instead of always using depth 3.
+- `--map` now orders directories first, largest first, then files largest first for more useful agent navigation scaffolds.
+- The srcwalk skill map examples now mention `--depth` and `--glob`.
+
+### Fixed
+- `--map --filter` and `--map --json` now fail clearly instead of acting as silent no-ops.
+
 ## [0.2.4] - 2026-04-26
 
 ### Added

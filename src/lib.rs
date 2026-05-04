@@ -585,7 +585,7 @@ pub fn run_flow(
             total_sites
         );
     }
-    out.push_str("\n> Tip: flow is capped for readability. Use --callees --detailed for all ordered calls, or --callers for upstream sites.");
+    out.push_str("\n> Tip: flow is capped for readability. Use `srcwalk callees <symbol> --detailed` for all ordered calls, or `srcwalk callers <symbol>` for upstream sites.");
     Ok(apply_optional_budget(out, budget_tokens))
 }
 
@@ -726,7 +726,7 @@ pub fn run_impact(
 
     let _ = write!(
         out,
-        "\n> Tip: {total_callers} direct name-matched call site{} found. Impact output is capped for readability. Use --callers --depth 2 for transitive upstream impact, or --callers --count-by receiver|file to page groups.",
+        "\n> Tip: {total_callers} direct name-matched call site{} found. Impact output is capped for readability. Use `srcwalk callers <symbol> --depth 2` for transitive upstream impact, or `srcwalk callers <symbol> --count-by receiver|file` to page groups.",
         if total_callers == 1 { "" } else { "s" }
     );
     if total_callers == 0 {
@@ -1157,7 +1157,7 @@ fn run_inner(
                     out.push_str("\n\n> Related: ");
                     out.push_str(&hints.join(", "));
                 }
-                out.push_str("\n> Tip: use --deps to see imports and dependents (blast radius)");
+                out.push_str("\n> Tip: use `srcwalk deps <file>` to see imports and dependents");
             }
             Ok(out)
         }

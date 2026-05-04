@@ -5,8 +5,10 @@ All notable changes to srcwalk are documented here.
 ## [Unreleased]
 
 ### Added
+- Action-first analysis subcommands: `find`, `callers`, `callees`, `flow`, `impact`, `deps`, and `map`. Legacy flag syntax remains supported.
 
 ### Changed
+- CLI help and the srcwalk skill now present the mental model as target-first file reading plus action-first analysis commands.
 
 ### Fixed
 

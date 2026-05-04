@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use clap::{CommandFactory, Parser};
+use clap::{Args, CommandFactory, Parser};
 use clap_complete::Shell;
 
 // mimalloc: faster than system allocator for parallel walker workloads
@@ -13,7 +13,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// srcwalk — Tree-sitter indexed lookups, smart code reading for AI agents.
 /// One tool replaces `read_file`, grep, glob, `ast_grep`, and find.
 #[derive(Parser)]
-#[command(name = "srcwalk", version, about)]
+#[command(name = "srcwalk", version, about, after_help = ROOT_HELP)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -26,7 +26,7 @@ struct Cli {
     scope: PathBuf,
 
     /// Focus line, line range, markdown heading, or symbol (e.g. "45", "45-89", "## Architecture").
-    #[arg(long)]
+    #[arg(long, hide = true)]
     section: Option<String>,
 
     /// Max tokens in response. Reduces detail to fit.
@@ -39,91 +39,91 @@ struct Cli {
     no_budget: bool,
 
     /// Show explicit raw first page (capped at 200 lines / 5k tokens).
-    #[arg(long)]
+    #[arg(long, hide = true)]
     full: bool,
 
     /// Treat QUERY as an exact file path. Fails fast instead of falling back to search/glob.
-    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "map", "expand", "glob"])]
+    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "deps", "map", "expand", "glob"])]
     path_exact: bool,
 
     /// Machine-readable JSON output.
-    #[arg(long, conflicts_with = "map")]
+    #[arg(long, hide = true, conflicts_with = "map")]
     json: bool,
 
     /// Show source context for top N matches/callers (default: 2 when flag present).
-    #[arg(long, num_args = 0..=1, default_missing_value = "2", require_equals = true)]
+    #[arg(long, hide = true, num_args = 0..=1, default_missing_value = "2", require_equals = true)]
     expand: Option<usize>,
 
     /// File pattern filter (e.g. "*.rs", "!*.test.ts", "*.{go,rs}").
-    #[arg(long)]
+    #[arg(long, hide = true)]
     glob: Option<String>,
 
     /// Find direct callers as compact facts; use --expand[=N] for source context.
-    #[arg(long, conflicts_with_all = ["callees", "deps", "map", "flow", "impact"])]
+    #[arg(long, hide = true, conflicts_with_all = ["callees", "deps", "map", "flow", "impact"])]
     callers: bool,
 
     /// Filter search results or call sites with field:value qualifiers (e.g. path:foo, kind:fn; callers also support args:3 receiver:mgr; flow/detailed callees support callee:NAME).
-    #[arg(long, value_name = "QUALIFIERS", conflicts_with = "map")]
+    #[arg(long, hide = true, value_name = "QUALIFIERS", conflicts_with = "map")]
     filter: Option<String>,
 
     /// Count direct caller call sites by field: args, caller, receiver, path, or file.
-    #[arg(long, requires = "callers", value_name = "FIELD")]
+    #[arg(long, hide = true, requires = "callers", value_name = "FIELD")]
     count_by: Option<String>,
 
     /// Show what a symbol calls (forward call graph).
-    #[arg(long, conflicts_with_all = ["callers", "deps", "map", "flow", "impact"])]
+    #[arg(long, hide = true, conflicts_with_all = ["callers", "deps", "map", "flow", "impact"])]
     callees: bool,
 
     /// Show ordered call sites with args and assignment context.
-    #[arg(long, requires = "callees")]
+    #[arg(long, hide = true, requires = "callees")]
     detailed: bool,
 
     /// Depth for --callers/--callees BFS or --map tree. Default map: 3; BFS capped at 5.
-    #[arg(long, value_name = "N")]
+    #[arg(long, hide = true, value_name = "N")]
     depth: Option<usize>,
 
     /// Max callers to expand per BFS hop (hub guard). Default: 50.
-    #[arg(long, value_name = "K", requires = "callers")]
+    #[arg(long, hide = true, value_name = "K", requires = "callers")]
     max_frontier: Option<usize>,
 
     /// Max total edges across all BFS hops. Default: 500.
-    #[arg(long, value_name = "M", requires = "callers")]
+    #[arg(long, hide = true, value_name = "M", requires = "callers")]
     max_edges: Option<usize>,
 
     /// Comma-separated symbols to skip as BFS frontier (hub guard).
     /// Default: new,clone,from,into,to_string,drop,fmt,default.
     /// Pass empty string "" to disable.
-    #[arg(long, value_name = "CSV", requires = "callers")]
+    #[arg(long, hide = true, value_name = "CSV", requires = "callers")]
     skip_hubs: Option<String>,
 
     /// Analyze blast-radius dependencies of a file.
-    #[arg(long, conflicts_with_all = ["callers", "callees", "map", "flow", "impact"])]
+    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "map", "flow", "impact"])]
     deps: bool,
 
     /// Summarize a known symbol's ordered calls, local resolves, and direct callers.
-    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "map", "impact", "expand", "section", "full"])]
+    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "deps", "map", "impact", "expand", "section", "full"])]
     flow: bool,
 
     /// Summarize definitions, name-matched callers, and receiver/file groups.
-    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "map", "flow", "expand", "section", "full"])]
+    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "deps", "map", "flow", "expand", "section", "full"])]
     impact: bool,
 
     /// Generate a structural codebase map.
-    #[arg(long, conflicts_with_all = ["callers", "callees", "deps", "flow", "impact", "expand", "section", "full"])]
+    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "deps", "flow", "impact", "expand", "section", "full"])]
     map: bool,
 
     /// Include symbol names in --map output.
-    #[arg(long, requires = "map")]
+    #[arg(long, hide = true, requires = "map")]
     symbols: bool,
 
     /// Max results. Default: unlimited (or 50 for interactive TTY).
     /// Applies to: symbol/content/regex/callers search and deps dependents.
     /// NOTE: multi-symbol ("A,B,C") applies the limit per-query, not total.
-    #[arg(long, value_name = "N")]
+    #[arg(long, hide = true, value_name = "N")]
     limit: Option<usize>,
 
     /// Skip N results (for pagination). Use with --limit.
-    #[arg(long, value_name = "N", default_value = "0")]
+    #[arg(long, hide = true, value_name = "N", default_value = "0")]
     offset: usize,
 
     /// Print shell completions for the given shell.
@@ -131,10 +131,385 @@ struct Cli {
     completions: Option<Shell>,
 }
 
+const ROOT_HELP: &str = "\
+Common:\n  srcwalk <path>              Read a file smartly\n  srcwalk <path>:<line>       Read around a line\n  srcwalk find <query>        Find definitions/usages/text/globs\n  srcwalk callers <symbol>    Show who calls a symbol\n  srcwalk callees <symbol>    Show what a symbol calls\n  srcwalk deps <file>         Show imports and dependents\n  srcwalk map                 Show a structural repo map\n\nShortcuts:\n  srcwalk flow <symbol>       Compact caller/callee slice\n  srcwalk impact <symbol>     Heuristic blast-radius triage\n\nCompatibility:\n  Legacy flag syntax still works, e.g. `srcwalk Foo --callers`.";
+
 #[derive(clap::Subcommand)]
 enum Command {
+    /// Find definitions, usages, text, regex, or glob matches.
+    Find(FindCmd),
+    /// Show who calls a symbol.
+    Callers(CallersCmd),
+    /// Show what a symbol calls.
+    Callees(CalleesCmd),
+    /// Compact caller/callee slice for a known symbol.
+    Flow(FlowCmd),
+    /// Heuristic blast-radius triage for a symbol.
+    Impact(ImpactCmd),
+    /// Analyze imports and dependents for a file.
+    Deps(DepsCmd),
+    /// Generate a structural codebase map.
+    Map(MapCmd),
     /// Show the project fingerprint (languages, scale, structural overview).
     Overview,
+}
+
+#[derive(Args)]
+struct FindCmd {
+    /// Symbol name, glob pattern, regex, or text to search.
+    query: String,
+    #[command(flatten)]
+    common: CommonArgs,
+    /// Show source context for top N matches (default: 2 when flag present).
+    #[arg(long, num_args = 0..=1, default_missing_value = "2", require_equals = true)]
+    expand: Option<usize>,
+    /// File pattern filter (e.g. "*.rs", "!*.test.ts", "*.{go,rs}").
+    #[arg(long)]
+    glob: Option<String>,
+    /// Filter search results with field:value qualifiers.
+    #[arg(long, value_name = "QUALIFIERS")]
+    filter: Option<String>,
+    /// Max results.
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
+    /// Skip N results.
+    #[arg(long, value_name = "N", default_value = "0")]
+    offset: usize,
+}
+
+#[derive(Args)]
+struct CallersCmd {
+    /// Symbol whose callers should be found.
+    symbol: String,
+    #[command(flatten)]
+    common: CommonArgs,
+    /// Show source context for top N callers (default: 2 when flag present).
+    #[arg(long, num_args = 0..=1, default_missing_value = "2", require_equals = true)]
+    expand: Option<usize>,
+    /// File pattern filter.
+    #[arg(long)]
+    glob: Option<String>,
+    /// Filter call sites with field:value qualifiers.
+    #[arg(long, value_name = "QUALIFIERS")]
+    filter: Option<String>,
+    /// Count direct caller call sites by field: args, caller, receiver, path, or file.
+    #[arg(long, value_name = "FIELD")]
+    count_by: Option<String>,
+    /// BFS depth for transitive callers, capped at 5.
+    #[arg(long, value_name = "N")]
+    depth: Option<usize>,
+    /// Max callers to expand per BFS hop.
+    #[arg(long, value_name = "K")]
+    max_frontier: Option<usize>,
+    /// Max total edges across all BFS hops.
+    #[arg(long, value_name = "M")]
+    max_edges: Option<usize>,
+    /// Comma-separated symbols to skip as BFS frontier.
+    #[arg(long, value_name = "CSV")]
+    skip_hubs: Option<String>,
+    /// Max results.
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
+    /// Skip N results.
+    #[arg(long, value_name = "N", default_value = "0")]
+    offset: usize,
+}
+
+#[derive(Args)]
+struct CalleesCmd {
+    /// Symbol whose callees should be found.
+    symbol: String,
+    #[command(flatten)]
+    common: CommonArgs,
+    /// Show ordered call sites with args and assignment context.
+    #[arg(long)]
+    detailed: bool,
+    /// Depth for callee search.
+    #[arg(long, value_name = "N")]
+    depth: Option<usize>,
+    /// Filter detailed call sites with field:value qualifiers.
+    #[arg(long, value_name = "QUALIFIERS", requires = "detailed")]
+    filter: Option<String>,
+}
+
+#[derive(Args)]
+struct FlowCmd {
+    /// Symbol to summarize.
+    symbol: String,
+    #[command(flatten)]
+    common: CommonArgs,
+    /// Optional depth for the compact flow slice.
+    #[arg(long, value_name = "N")]
+    depth: Option<usize>,
+    /// Filter flow facts with field:value qualifiers.
+    #[arg(long, value_name = "QUALIFIERS")]
+    filter: Option<String>,
+}
+
+#[derive(Args)]
+struct ImpactCmd {
+    /// Symbol to summarize with heuristic blast-radius triage.
+    symbol: String,
+    #[command(flatten)]
+    common: CommonArgs,
+}
+
+#[derive(Args)]
+struct DepsCmd {
+    /// File to analyze.
+    file: String,
+    #[command(flatten)]
+    common: CommonArgs,
+    /// Max dependents.
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
+    /// Skip N dependents.
+    #[arg(long, value_name = "N", default_value = "0")]
+    offset: usize,
+}
+
+#[derive(Args)]
+struct MapCmd {
+    #[command(flatten)]
+    common: MapCommonArgs,
+    /// Map tree depth. Default: 3.
+    #[arg(long, value_name = "N")]
+    depth: Option<usize>,
+    /// File pattern filter.
+    #[arg(long)]
+    glob: Option<String>,
+    /// Include symbol names in map output.
+    #[arg(long)]
+    symbols: bool,
+}
+
+#[derive(Args)]
+struct CommonArgs {
+    /// Directory to search within or resolve relative paths against.
+    #[arg(long, default_value = ".")]
+    scope: PathBuf,
+    /// Max tokens in response. Reduces detail to fit.
+    #[arg(long)]
+    budget: Option<u64>,
+    /// Disable default budget cap.
+    #[arg(long)]
+    no_budget: bool,
+    /// Machine-readable JSON output.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct MapCommonArgs {
+    /// Directory to map.
+    #[arg(long, default_value = ".")]
+    scope: PathBuf,
+    /// Max tokens in response. Reduces detail to fit.
+    #[arg(long)]
+    budget: Option<u64>,
+    /// Disable default budget cap.
+    #[arg(long)]
+    no_budget: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Mode {
+    Search,
+    PathExact,
+    Map,
+    Flow,
+    Impact,
+    Callers,
+    Callees,
+    Deps,
+}
+
+struct RunConfig {
+    mode: Mode,
+    query: Option<String>,
+    scope: PathBuf,
+    section: Option<String>,
+    budget: Option<u64>,
+    no_budget: bool,
+    full: bool,
+    json: bool,
+    expand: usize,
+    glob: Option<String>,
+    filter: Option<String>,
+    count_by: Option<String>,
+    detailed: bool,
+    depth: Option<usize>,
+    max_frontier: Option<usize>,
+    max_edges: Option<usize>,
+    skip_hubs: Option<String>,
+    symbols: bool,
+    limit: Option<usize>,
+    offset: usize,
+}
+
+impl RunConfig {
+    fn from_legacy(cli: Cli) -> Self {
+        let mode = if cli.map {
+            Mode::Map
+        } else if cli.path_exact {
+            Mode::PathExact
+        } else if cli.flow {
+            Mode::Flow
+        } else if cli.impact {
+            Mode::Impact
+        } else if cli.callers {
+            Mode::Callers
+        } else if cli.callees {
+            Mode::Callees
+        } else if cli.deps {
+            Mode::Deps
+        } else {
+            Mode::Search
+        };
+        Self {
+            mode,
+            query: cli.query,
+            scope: cli.scope,
+            section: cli.section,
+            budget: cli.budget,
+            no_budget: cli.no_budget,
+            full: cli.full,
+            json: cli.json,
+            expand: cli.expand.unwrap_or(0),
+            glob: cli.glob,
+            filter: cli.filter,
+            count_by: cli.count_by,
+            detailed: cli.detailed,
+            depth: cli.depth,
+            max_frontier: cli.max_frontier,
+            max_edges: cli.max_edges,
+            skip_hubs: cli.skip_hubs,
+            symbols: cli.symbols,
+            limit: cli.limit,
+            offset: cli.offset,
+        }
+    }
+
+    fn from_command(command: Command) -> Option<Self> {
+        match command {
+            Command::Overview => None,
+            Command::Find(cmd) => Some(
+                Self::from_common(Mode::Search, cmd.query, cmd.common)
+                    .with_find(cmd.expand, cmd.glob, cmd.filter, cmd.limit, cmd.offset),
+            ),
+            Command::Callers(cmd) => Some(Self::from_callers(cmd)),
+            Command::Callees(cmd) => Some(Self::from_callees(cmd)),
+            Command::Flow(cmd) => Some(Self::from_flow(cmd)),
+            Command::Impact(cmd) => Some(Self::from_common(Mode::Impact, cmd.symbol, cmd.common)),
+            Command::Deps(cmd) => Some(
+                Self::from_common(Mode::Deps, cmd.file, cmd.common)
+                    .with_pagination(cmd.limit, cmd.offset),
+            ),
+            Command::Map(cmd) => Some(Self::from_map(cmd)),
+        }
+    }
+
+    fn from_common(mode: Mode, query: String, common: CommonArgs) -> Self {
+        Self {
+            mode,
+            query: Some(query),
+            scope: common.scope,
+            section: None,
+            budget: common.budget,
+            no_budget: common.no_budget,
+            full: false,
+            json: common.json,
+            expand: 0,
+            glob: None,
+            filter: None,
+            count_by: None,
+            detailed: false,
+            depth: None,
+            max_frontier: None,
+            max_edges: None,
+            skip_hubs: None,
+            symbols: false,
+            limit: None,
+            offset: 0,
+        }
+    }
+
+    fn from_map(cmd: MapCmd) -> Self {
+        Self {
+            mode: Mode::Map,
+            query: None,
+            scope: cmd.common.scope,
+            section: None,
+            budget: cmd.common.budget,
+            no_budget: cmd.common.no_budget,
+            full: false,
+            json: false,
+            expand: 0,
+            glob: cmd.glob,
+            filter: None,
+            count_by: None,
+            detailed: false,
+            depth: cmd.depth,
+            max_frontier: None,
+            max_edges: None,
+            skip_hubs: None,
+            symbols: cmd.symbols,
+            limit: None,
+            offset: 0,
+        }
+    }
+
+    fn with_find(
+        mut self,
+        expand: Option<usize>,
+        glob: Option<String>,
+        filter: Option<String>,
+        limit: Option<usize>,
+        offset: usize,
+    ) -> Self {
+        self.expand = expand.unwrap_or(0);
+        self.glob = glob;
+        self.filter = filter;
+        self.limit = limit;
+        self.offset = offset;
+        self
+    }
+
+    fn from_callers(cmd: CallersCmd) -> Self {
+        let mut config = Self::from_common(Mode::Callers, cmd.symbol, cmd.common);
+        config.expand = cmd.expand.unwrap_or(0);
+        config.glob = cmd.glob;
+        config.filter = cmd.filter;
+        config.count_by = cmd.count_by;
+        config.depth = cmd.depth;
+        config.max_frontier = cmd.max_frontier;
+        config.max_edges = cmd.max_edges;
+        config.skip_hubs = cmd.skip_hubs;
+        config.limit = cmd.limit;
+        config.offset = cmd.offset;
+        config
+    }
+
+    fn from_callees(cmd: CalleesCmd) -> Self {
+        let mut config = Self::from_common(Mode::Callees, cmd.symbol, cmd.common);
+        config.detailed = cmd.detailed;
+        config.depth = cmd.depth;
+        config.filter = cmd.filter;
+        config
+    }
+
+    fn from_flow(cmd: FlowCmd) -> Self {
+        let mut config = Self::from_common(Mode::Flow, cmd.symbol, cmd.common);
+        config.depth = cmd.depth;
+        config.filter = cmd.filter;
+        config
+    }
+
+    fn with_pagination(mut self, limit: Option<usize>, offset: usize) -> Self {
+        self.limit = limit;
+        self.offset = offset;
+        self
+    }
 }
 
 /// Reset SIGPIPE to the OS default on Unix.
@@ -166,48 +541,51 @@ fn main() {
         return;
     }
 
-    // Subcommands
-    if let Some(cmd) = cli.command {
-        match cmd {
-            Command::Overview => {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                let output = srcwalk::overview::fingerprint(&cwd);
-                if output.is_empty() {
-                    eprintln!("No project fingerprint could be generated.");
-                    process::exit(1);
-                }
-                println!("{output}");
-            }
+    if matches!(cli.command, Some(Command::Overview)) {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let output = srcwalk::overview::fingerprint(&cwd);
+        if output.is_empty() {
+            eprintln!("No project fingerprint could be generated.");
+            process::exit(1);
         }
+        println!("{output}");
         return;
     }
 
+    let config = match cli.command {
+        Some(command) => RunConfig::from_command(command).expect("overview handled above"),
+        None => RunConfig::from_legacy(cli),
+    };
+    run(config);
+}
+
+fn run(config: RunConfig) {
     let is_tty = io::stdout().is_terminal();
 
     // Effective budget: explicit --budget wins, --no-budget disables,
     // otherwise default 5000 tokens for piped (non-TTY) output.
-    let effective_budget = if cli.no_budget {
+    let effective_budget = if config.no_budget {
         None
-    } else if cli.budget.is_some() {
-        cli.budget
+    } else if config.budget.is_some() {
+        config.budget
     } else if !is_tty {
         Some(5_000)
     } else {
         None
     };
 
-    // Map mode
-    if cli.map {
-        let cache = srcwalk::cache::OutlineCache::new();
-        let scope = cli.scope.canonicalize().unwrap_or(cli.scope);
-        let depth = cli.depth.unwrap_or(3);
+    let cache = srcwalk::cache::OutlineCache::new();
+    let scope = config.scope.canonicalize().unwrap_or(config.scope);
+
+    if matches!(config.mode, Mode::Map) {
+        let depth = config.depth.unwrap_or(3);
         match srcwalk::map::generate(
             &scope,
             depth,
             effective_budget,
             &cache,
-            cli.symbols,
-            cli.glob.as_deref(),
+            config.symbols,
+            config.glob.as_deref(),
         ) {
             Ok(output) => emit_output(&output, is_tty),
             Err(e) => {
@@ -218,91 +596,81 @@ fn main() {
         return;
     }
 
-    // CLI mode: single query
-    let query = if let Some(q) = cli.query {
+    let query = if let Some(q) = config.query {
         q
     } else {
         eprintln!("usage: srcwalk <query> [--scope DIR] [--section N-M] [--budget N]");
         process::exit(3);
     };
 
-    let cache = srcwalk::cache::OutlineCache::new();
-    let scope = cli.scope.canonicalize().unwrap_or(cli.scope);
-
-    // Smart structural view by default. Use --full for a capped raw first page.
-    let full = cli.full;
-    let expand = cli.expand.unwrap_or(0);
-
     // TTY interactive mode: cap at 50 unless user set --limit or --full.
     // Piped / scripted → unlimited so grep/wc/etc. see everything.
-    let effective_limit = cli.limit.or({
-        if is_tty && !full {
+    let effective_limit = config.limit.or({
+        if is_tty && !config.full {
             Some(50)
         } else {
             None
         }
     });
 
-    // Exact file mode: read only this path; never fall back to search/glob.
-    if cli.path_exact {
+    if matches!(config.mode, Mode::PathExact) {
         let result = srcwalk::run_path_exact(
             &query,
             &scope,
-            cli.section.as_deref(),
+            config.section.as_deref(),
             effective_budget,
-            full,
+            config.full,
             &cache,
         );
-        emit_result(result, &query, cli.json, is_tty);
+        emit_result(result, &query, config.json, is_tty);
         return;
     }
 
-    if cli.filter.is_some()
-        && (cli.deps || cli.map || cli.path_exact || cli.impact || (cli.callees && !cli.detailed))
+    if config.filter.is_some() && matches!(config.mode, Mode::Deps | Mode::Impact)
+        || (config.filter.is_some() && matches!(config.mode, Mode::Callees) && !config.detailed)
     {
-        eprintln!("error: --filter applies to search results, direct --callers, --flow, and --callees --detailed");
+        eprintln!(
+            "error: --filter applies to search results, direct callers, flow, and detailed callees"
+        );
         process::exit(2);
     }
 
-    // Lab flow mode
-    if cli.flow {
+    if matches!(config.mode, Mode::Flow) {
         let result = srcwalk::run_flow(
             &query,
             &scope,
             effective_budget,
             &cache,
-            cli.depth,
-            cli.filter.as_deref(),
+            config.depth,
+            config.filter.as_deref(),
         );
-        emit_result(result, &query, cli.json, is_tty);
+        emit_result(result, &query, config.json, is_tty);
         return;
     }
 
-    // Lab impact mode
-    if cli.impact {
+    if matches!(config.mode, Mode::Impact) {
         let result = srcwalk::run_impact(&query, &scope, effective_budget, &cache);
-        emit_result(result, &query, cli.json, is_tty);
+        emit_result(result, &query, config.json, is_tty);
         return;
     }
 
-    // Callers mode
-    if cli.callers {
-        let bfs_json = cli.json && matches!(cli.depth, Some(d) if d >= 2);
+    if matches!(config.mode, Mode::Callers) {
+        let bfs_json = config.json && matches!(config.depth, Some(d) if d >= 2);
         let result = srcwalk::run_callers(
             &query,
             &scope,
-            expand,
+            config.expand,
             effective_budget,
             effective_limit,
-            cli.offset,
-            cli.glob.as_deref(),
+            config.offset,
+            config.glob.as_deref(),
             &cache,
-            cli.depth,
-            cli.max_frontier,
-            cli.max_edges,
-            cli.skip_hubs.as_deref(),
-            cli.filter.as_deref(),
-            cli.count_by.as_deref(),
+            config.depth,
+            config.max_frontier,
+            config.max_edges,
+            config.skip_hubs.as_deref(),
+            config.filter.as_deref(),
+            config.count_by.as_deref(),
             bfs_json,
         );
         if bfs_json {
@@ -316,27 +684,25 @@ fn main() {
             }
             return;
         }
-        emit_result(result, &query, cli.json, is_tty);
+        emit_result(result, &query, config.json, is_tty);
         return;
     }
 
-    // Callees mode
-    if cli.callees {
+    if matches!(config.mode, Mode::Callees) {
         let result = srcwalk::run_callees(
             &query,
             &scope,
             effective_budget,
             &cache,
-            cli.depth,
-            cli.detailed,
-            cli.filter.as_deref(),
+            config.depth,
+            config.detailed,
+            config.filter.as_deref(),
         );
-        emit_result(result, &query, cli.json, is_tty);
+        emit_result(result, &query, config.json, is_tty);
         return;
     }
 
-    // Deps mode
-    if cli.deps {
+    if matches!(config.mode, Mode::Deps) {
         let path = if Path::new(&query).is_absolute() {
             PathBuf::from(&query)
         } else {
@@ -357,54 +723,54 @@ fn main() {
             &scope,
             effective_budget,
             &cache,
-            cli.limit,
-            cli.offset,
+            config.limit,
+            config.offset,
         );
-        emit_result(result, &query, cli.json, is_tty);
+        emit_result(result, &query, config.json, is_tty);
         return;
     }
 
-    let result = if expand > 0 {
+    let result = if config.expand > 0 {
         srcwalk::run_expanded_filtered(
             &query,
             &scope,
-            cli.section.as_deref(),
+            config.section.as_deref(),
             effective_budget,
-            full,
-            expand,
+            config.full,
+            config.expand,
             effective_limit,
-            cli.offset,
-            cli.glob.as_deref(),
-            cli.filter.as_deref(),
+            config.offset,
+            config.glob.as_deref(),
+            config.filter.as_deref(),
             &cache,
         )
-    } else if full {
+    } else if config.full {
         srcwalk::run_full_filtered(
             &query,
             &scope,
-            cli.section.as_deref(),
+            config.section.as_deref(),
             effective_budget,
             effective_limit,
-            cli.offset,
-            cli.glob.as_deref(),
-            cli.filter.as_deref(),
+            config.offset,
+            config.glob.as_deref(),
+            config.filter.as_deref(),
             &cache,
         )
     } else {
         srcwalk::run_filtered(
             &query,
             &scope,
-            cli.section.as_deref(),
+            config.section.as_deref(),
             effective_budget,
             effective_limit,
-            cli.offset,
-            cli.glob.as_deref(),
-            cli.filter.as_deref(),
+            config.offset,
+            config.glob.as_deref(),
+            config.filter.as_deref(),
             &cache,
         )
     };
 
-    emit_result(result, &query, cli.json, is_tty);
+    emit_result(result, &query, config.json, is_tty);
 }
 
 fn emit_result(

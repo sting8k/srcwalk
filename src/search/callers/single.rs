@@ -844,7 +844,7 @@ pub fn search_callers_expanded(
         .any(|caller| caller.arg_count.is_some() || caller.receiver.is_some())
     {
         footer.push_str(
-            "\n> Tip: classify callsites with --count-by args or --filter 'args:N receiver:NAME'.",
+            "\n> Tip: classify callsites with `--count-by args` or `--filter 'args:N receiver:NAME'`.",
         );
     }
     if !filters.is_empty() {
@@ -915,7 +915,7 @@ pub fn search_callers_expanded(
                         footer.push('\n');
                     }
                     footer.push_str(
-                        "> Tip: impact list was capped. Use --callers --depth 2 for the full 2-hop graph.",
+                        "> Tip: impact list was capped. Use `srcwalk callers <symbol> --depth 2` for the full 2-hop graph.",
                     );
                 }
 

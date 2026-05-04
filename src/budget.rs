@@ -168,14 +168,15 @@ mod tests {
             .map(|i| format!("line {i}: lots of generated content"))
             .collect::<Vec<_>>()
             .join("\n");
-        let output =
-            format!("# Header\n{body}\n\n> Related: src/a.rs, src/b.rs\n> Tip: use --deps");
+        let output = format!(
+            "# Header\n{body}\n\n> Related: src/a.rs, src/b.rs\n> Tip: use `srcwalk deps <file>`"
+        );
 
         let rendered = apply_preserving_footer(&output, 80);
 
         assert!(rendered.contains("... truncated"), "{rendered}");
         assert!(
-            rendered.ends_with("> Related: src/a.rs, src/b.rs\n> Tip: use --deps"),
+            rendered.ends_with("> Related: src/a.rs, src/b.rs\n> Tip: use `srcwalk deps <file>`"),
             "{rendered}"
         );
     }

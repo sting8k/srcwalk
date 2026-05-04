@@ -587,7 +587,7 @@ fn format_bfs_json(
         .collect();
 
     let payload = serde_json::json!({
-        "query": format!("--callers {} --depth {}", target, max_depth),
+        "query": format!("callers {} --depth {}", target, max_depth),
         "root": target,
         "scope": scope.display().to_string(),
         "max_depth": max_depth,

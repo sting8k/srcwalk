@@ -180,7 +180,7 @@ pub fn read_file(
     };
     let header = format::file_header(path, byte_len, line_count, mode);
     Ok(format!(
-        "{header}\n\n{outline}\n\n> Tip: drill into a symbol with --section <name> or a line range"
+        "{header}\n\n{outline}\n\n> Tip: drill into a symbol with --section <name> or a line range\n> Tip: need raw file text? retry with --full, or use --section <range> for a smaller slice."
     ))
 }
 
@@ -1034,6 +1034,10 @@ mod tests {
         assert!(
             out.contains("alpha"),
             "outline should include symbols: {out}"
+        );
+        assert!(
+            out.contains("retry with --full"),
+            "outline footer should mention --full for raw text: {out}"
         );
 
         let _ = std::fs::remove_file(&path);

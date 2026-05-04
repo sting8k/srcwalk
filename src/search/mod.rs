@@ -81,7 +81,7 @@ pub fn search_symbol(
         out.push_str("\n\n> Tip: use --expand to inline definition source");
     }
     if result.usages >= 5 {
-        out.push_str("\n> Tip: for precise call sites use --callers instead of text-based usages");
+        out.push_str("\n> Tip: for precise call sites use `srcwalk callers <symbol>` instead of text-based usages");
     }
     Ok(out)
 }

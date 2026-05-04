@@ -84,32 +84,32 @@ srcwalk src/auth.ts --section 72             # focused line context
 srcwalk src/auth.ts --section 44-89          # line range
 
 # Symbol search
-srcwalk handleAuth --scope src/              # definitions + usages
-srcwalk Depends --filter 'path:param_functions' --scope .
-srcwalk "foo, bar" --scope src/              # multi-symbol
-srcwalk handleAuth --scope src/ --expand     # inline source + callees
+srcwalk find handleAuth --scope src/              # definitions + usages
+srcwalk find Depends --filter 'path:param_functions' --scope .
+srcwalk find "foo, bar" --scope src/              # multi-symbol
+srcwalk find handleAuth --scope src/ --expand     # inline source + callees
 
 # Callers (reverse call graph)
-srcwalk handleAuth --callers --scope src/
-srcwalk decompileFunction --callers --filter 'args:3' --scope src/
-srcwalk handleAuth --callers --count-by caller --scope src/
+srcwalk callers handleAuth --scope src/
+srcwalk callers decompileFunction --filter 'args:3' --scope src/
+srcwalk callers handleAuth --count-by caller --scope src/
 
 # Callees (forward call graph)
-srcwalk handleAuth --callees --scope src/
-srcwalk handleAuth --callees --detailed --filter 'callee:validateToken' --scope src/
-srcwalk handleAuth --callees --depth 2 --scope src/   # transitive
+srcwalk callees handleAuth --scope src/
+srcwalk callees handleAuth --detailed --filter 'callee:validateToken' --scope src/
+srcwalk callees handleAuth --depth 2 --scope src/   # transitive
 
-# Flow (compact lab slice: ordered calls + local resolves + callers)
-srcwalk handleAuth --flow --filter 'callee:validateToken' --scope src/
+# Flow (compact slice: ordered calls + local resolves + callers)
+srcwalk flow handleAuth --filter 'callee:validateToken' --scope src/
 
-# Impact (definitions + name-matched callers + receiver/file groups)
-srcwalk validateToken --impact --scope src/
+# Impact (heuristic blast-radius triage)
+srcwalk impact validateToken --scope src/
 
 # Deps (blast radius)
-srcwalk src/auth.ts --deps
+srcwalk deps src/auth.ts
 
 # Map
-srcwalk --map --scope src/
+srcwalk map --scope src/
 ```
 
 ## Output examples
@@ -155,7 +155,7 @@ $ srcwalk handleAuth --scope src/ --expand
 Trace callers transitively in one call:
 
 ```
-$ srcwalk NewClient --callers --depth 3 --json
+$ srcwalk callers NewClient --depth 3 --json
 {
   "edges": [
     { "hop": 1, "from": "newDefaultClient", "from_file": "client/factory.go",
@@ -188,7 +188,7 @@ no matches for "searchSymbol" in src/
 <summary><b>Token-aware map</b></summary>
 
 ```
-$ srcwalk --map --scope .
+$ srcwalk map --scope .
 src/       (~14.9k tokens)
   read/    (~10.2k tokens)
     outline/  (~3.7k tokens)

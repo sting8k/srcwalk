@@ -1,187 +1,124 @@
 ---
 name: srcwalk
-compatible_srcwalk: ">=0.2.5"
-description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'srcwalk' or 'outline'. Prefer this over cat/grep/find/ripgrep for any code-structure question. For plain text search, reading small files whose path you already know, or listing paths to pipe, use ripgrep / cat / fd directly."
+compatible_srcwalk: ">=0.2.6"
+description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'srcwalk' or 'outline'. Prefer this for code-structure questions and token-aware file reading. For pure text grep or path listing, use ripgrep / fd directly."
 ---
 
-# Srcwalk — Code Intelligence CLI
+# srcwalk — agent routing policy
 
-srcwalk is a code-intelligence tool built on tree-sitter. Answers questions grep and cat can't: *where is this symbol defined*, *who calls it*, *what does this file depend on*, *what does this codebase look like structurally*.
+Use srcwalk for structural code questions: repo maps, large-file outlines, symbol definitions/usages, callers, callees, file dependencies, and precise drill-in reads.
 
-**Use srcwalk for:** outlines of large files, symbol definitions, callers (single-hop or transitive BFS), callees/forward call flow from a known function, file dependencies, codebase maps, jumping to a symbol body, call-chain tracing, comparing sizes of partial/overloaded definitions with the same name.
+For plain text grep or path listing, prefer `rg`/`fd`. For known files, use srcwalk when structural outline, token-aware reading, sections, or line-focused drill-in will help; otherwise a normal file read is fine.
 
-**Don't use srcwalk for** plain text search, reading small files whose path you know, listing paths to pipe, or complex regex. Use `rg`, `cat`, `fd` directly — they're faster and you already know how to read their output.
+## Mental model
 
-```bash
-srcwalk <args>
-```
+- **Target-first for reading:** `srcwalk <path>`, `srcwalk <path>:<line>`, `srcwalk <path> --section <symbol|range>`.
+- **Action-first for analysis:** `srcwalk find|callers|callees|deps|map ...`.
+- Start compact. Drill in when you need source evidence, exact context, or a narrower answer.
+- Follow `> Tip:` footers first; they are contextual next-step hints.
 
-**Follow output hints first:** srcwalk prints contextual `> Tip:` footers for guidance, and graph traversal. Prefer those hints as next-step guidance.
+## Choose the command by intent
 
----
-
-## Read a large file (outline + drill-in)
-
-```bash
-srcwalk <path>:123                     # focus exact hit line with context
-srcwalk <path> --section 45-89         # exact line range
-srcwalk <path> --section validateToken # jump to a symbol body by name
-srcwalk <path> --full                  # explicit raw first page, capped at 200 lines / 5k tokens
-```
-
-File reads return structural views by default; drill into rows with `srcwalk <path>:<line>` or `--section <range-or-symbol>`.
-
-Prefer the drill-in workflow:
-1. Run `srcwalk <path>` first for a structural view.
-2. Drill with `--section <symbol>` or `--section <start-end>`.
-3. Use `--full` only when you explicitly need raw body text; it returns a capped first page.
-
-Do not use `--full` as the first read. `--full` and oversized `--section` output are capped at 200 lines / 5k tokens and should not become a `cat` replacement; srcwalk is strongest when used for structural navigation.
-
----
-
-## Search for symbols (definitions + usages)
-
-```bash
-srcwalk <symbol> --scope <dir>                  # definitions first, then usages
-srcwalk <symbol> --filter 'path:api kind:fn' --scope <dir>
-srcwalk "foo, bar, baz" --scope <dir>           # multi-symbol, one pass
-```
-
-Tree-sitter finds where symbols are **defined**, not just where strings appear. Each match shows the surrounding file structure so you know context without a second read.
-
-Expanded definitions include a **callee footer** (`── calls ──`) listing resolved callees with file, line range, and signature — follow call chains without separate searches.
-
-Every definition hit reports its **line range** (e.g. `[38-690]` vs `[9-16]`). Use this to:
-
-- Pick the real implementation vs a generated stub in a partial/split class (C#, Kotlin) — the tiny range is usually the stub.
-- Tell overloads apart at a glance without opening each file.
-- Rank where to drill first when a symbol has many definitions.
-
-Symbol search **definitions** use tree-sitter (precise). **Usages** are text-matched — fast across large codebases but can include comment/doc mentions. Use `--filter 'path:TEXT file:TEXT text:TEXT kind:fn'` to narrow search results. For real call sites, use `--callers`.
-
----
-
-## Bare filename + `--section` auto-pick
-
-`srcwalk config.go --section parseConfig` auto-picks the primary non-ignored, shallowest `config.go` when duplicates exist. If a monorepo has multiple legitimate matches or you need a vendored/generated copy, pass an explicit path: `srcwalk pkg/foo/config.go --section ...`.
-
----
-
-## Callers — who calls this symbol
-
-```bash
-srcwalk <symbol> --callers --scope <dir>
-srcwalk <symbol> --callers --filter 'args:3 receiver:mgr' --scope <dir>
-srcwalk <symbol> --callers --count-by args --scope <dir>
-```
-
-Structural (tree-sitter), not text-based. Rows include caller function, file:line, receiver, and argument count when available. Use `--filter` / `--count-by` to avoid `rg|sed|awk` callsite classification.
-
-Direct-call filters: `args:N`, `receiver:NAME`, `caller:NAME`, `path:TEXT`, `text:TEXT`. Multiple filters are AND.
-
-Includes type/constructor references (`new Foo()`, `Foo {}`), not just function calls.
-
-### Multi-hop callers (BFS)
-
-```bash
-srcwalk <symbol> --callers --depth <N> --scope <dir>
-srcwalk <symbol> --callers --depth <N> --json
-```
-
-Trace callers transitively up to `N` hops (max 5). Use this instead of looping `--callers` manually.
-
-- `--depth N` — 1 (default) up to 5.
-- `--max-frontier K` — callers expanded per hop (default 50). Excess symbols auto-promoted to hubs, listed in `elided.auto_hubs_promoted`.
-- `--max-edges M` — global edge cap (default 500). Truncation is deterministic.
-- `--skip-hubs CSV` — explicit hub-skip list. Default is language-agnostic (`new,clone,from,into,to_string,drop,fmt,default`). `--skip-hubs ""` to disable.
-- `--json` — machine-readable edge list.
-
-For `--json`, inspect `edges[]`, `stats.suspicious_hops[]`, and `elided` before trusting deep hops. Use `call_text` to disambiguate overloaded/common names when needed.
-
----
-
-
-## Impact — definitions + name-matched caller groups
-
-```bash
-srcwalk <symbol> --impact --scope <dir>
-```
-
-Use this for quick blast-radius triage from a symbol name: it shows definitions, direct name-matched call sites, receiver/file groups, and warnings for broad or definition-less matches. Treat common method names (`run`, `close`, `init`) as name-matched slices; use receiver groups and the warning footer to decide the next drill-down.
-
----
-## Blast radius — file dependencies
-
-```bash
-srcwalk <file> --deps
-```
-
-Imports (what this file depends on) and dependents (what depends on it). Use before modifying a file to understand impact.
-
-Dependents are paginated: default output shows the first 15 dependent files. Use the footer tip or pass `--limit N --offset M` to continue.
-
----
-
-## Callees — forward call graph
-
-Use this when the question starts from a **known function/method body** and asks what it calls next: forward flow, ordered helper calls, setup pipelines, internal vs external calls, or transitive downstream impact. Do **not** use it for global text counts, file counts, or “who calls X?” — those are `rg`/`fd`/`--callers` jobs.
-
-```bash
-srcwalk <symbol> --callees --scope <dir>              # summary: resolved with sig + unresolved
-srcwalk <symbol> --callees --detailed --scope <dir>   # ordered call sites with assignments & returns
-srcwalk <symbol> --callees --detailed --filter 'callee:NAME' --scope <dir>
-srcwalk <symbol> --flow --filter 'callee:NAME' --scope <dir>  # compact lab slice
-srcwalk <symbol> --callees --depth N --scope <dir>    # transitive forward graph (up to 5 hops)
-```
-
-What does this function call? Default output groups resolved callees (file, line range, signature) and unresolved (stdlib/external) separately, then prints a `> Tip: use --detailed ...` footer.
-
-`--detailed` shows **ordered call sites** as they appear in the function body — each line includes the call with assignment context (`result = foo(...)`) and return markers (`->ret`). Use this to understand control flow and data flow through the function. Add `--filter 'callee:NAME'` for an exact callee-name slice.
-
-Known function + “what/where/order of calls inside it” ⇒ use `srcwalk <symbol> --callees --detailed`. For a capped overview that combines ordered calls, local helper resolves, and upstream callers, use `--flow`.
-
-If the symbol name is overloaded/common, first find the exact definition with `srcwalk <symbol> --scope <dir>`, then drill into the chosen file/range or narrow `--scope` before running `--callees`.
-
----
-
-## Codebase map
-
-```bash
-srcwalk --map --scope <dir>                   # compact tree, no symbols
-srcwalk --map --scope <dir> --depth 2         # shallower/deeper tree
-srcwalk --map --scope <dir> --glob '*.rs'     # focus file types
-srcwalk --map --scope <dir> --symbols         # include symbol names
-```
-
-`--map` respects `.gitignore`, `.ignore`, and git excludes — token totals
-reflect what you would actually have to read, not the unfiltered tree on
-disk. A header note calls out when ignores are active.
-
-Default `--map` is intentionally compact; use `--symbols` only when you need symbol names.
-
----
-
-## Pick the command by question
-
-Start narrow. Run the smallest command that can answer the question, then use `--expand[=N]` or footer tips only if compact output lacks needed context.
-
-| Question | Example |
+| User intent | Use first |
 |---|---|
-| What is this repo shaped like? | `srcwalk --map --scope .` |
-| What is in this large file? | `srcwalk <file>` |
-| Where is this symbol defined? | `srcwalk <symbol> --scope .` |
-| Who directly calls this? | `srcwalk <symbol> --callers --scope .` |
-| What does this function call? | `srcwalk <symbol> --callees --scope .` |
-| Need ordered calls/data flow inside a function? | `srcwalk <symbol> --callees --detailed --scope .` |
-| Need source around a hit? | add `--expand` or `srcwalk <path>:<line>` |
-| What depends on this file? | `srcwalk <file> --deps` |
-| Need transitive callers? | `srcwalk <symbol> --callers --depth 2 --scope .` |
-| Need transitive downstream calls? | `srcwalk <symbol> --callees --depth 2 --scope .` |
-| Need exact body/range? | `srcwalk <file> --section <range-or-symbol>` |
+| Understand repo shape / entry points | `srcwalk map --scope .` |
+| Read or inspect a large known file | `srcwalk <path>` |
+| Jump around a hit line | `srcwalk <path>:<line>` |
+| Read exact body/range | `srcwalk <path> --section <symbol|start-end>` |
+| Find definition/usages/text/glob | `srcwalk find <query> --scope <dir>` |
+| Find several symbols in one pass | `srcwalk find "A, B, C" --scope <dir>` |
+| Who directly calls this? | `srcwalk callers <symbol> --scope <dir>` |
+| Who reaches this transitively? | `srcwalk callers <symbol> --depth 2 --scope <dir>` |
+| What does this function call? | `srcwalk callees <symbol> --scope <dir>` |
+| Ordered calls/data flow inside function | `srcwalk callees <symbol> --detailed --scope <dir>` |
+| Transitive downstream calls | `srcwalk callees <symbol> --depth 2 --scope <dir>` |
+| File imports and dependents | `srcwalk deps <file>` |
+| Quick caller+callee orientation slice | `srcwalk flow <symbol> --scope <dir>` |
+| Heuristic blast-radius triage | `srcwalk impact <symbol> --scope <dir>` |
 
----
+Legacy flag syntax still works (`srcwalk Foo --callers`, `srcwalk --map`), but prefer action-first commands for analysis.
 
-## Supported languages (tree-sitter)
+## Default workflows
 
-Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift. Unsupported languages still work for file reading — you just won't get structural outlines or definition detection.
+### Explore unfamiliar code
+
+```bash
+srcwalk map --scope .
+srcwalk map --scope src --depth 2
+srcwalk find <likely_symbol> --scope src
+srcwalk <path>:<line>
+```
+
+`map` respects `.gitignore`, `.ignore`, git excludes, and parent ignores. Direct explicit file reads can still inspect ignored files.
+
+### Read a large file
+
+```bash
+srcwalk <path>
+srcwalk <path>:123
+srcwalk <path> --section 45-89
+srcwalk <path> --section SomeFunction
+```
+
+Prefer outline/section reads before `--full` for large files. Use `--full` when raw text is useful; output is capped.
+
+### Find and drill into symbols
+
+```bash
+srcwalk find <symbol> --scope <dir>
+srcwalk find <symbol> --expand --scope <dir>
+srcwalk find <symbol> --filter 'path:api kind:fn' --scope <dir>
+```
+
+Definition hits are tree-sitter based. Usage hits are text-matched and may include comments/docs. For actual call sites, switch to `srcwalk callers <symbol>`.
+
+### Trace upstream callers
+
+```bash
+srcwalk callers <symbol> --scope <dir>
+srcwalk callers <symbol> --filter 'args:3 receiver:mgr' --scope <dir>
+srcwalk callers <symbol> --count-by receiver --scope <dir>
+srcwalk callers <symbol> --depth 2 --scope <dir>
+```
+
+Use direct callers for concrete call-site evidence. Use `--depth` for transitive reachability, capped at 5 hops. For JSON BFS, inspect `edges[]`, `stats.suspicious_hops[]`, and `elided` when making claims from deep hops.
+
+### Trace downstream callees
+
+```bash
+srcwalk callees <symbol> --scope <dir>
+srcwalk callees <symbol> --detailed --scope <dir>
+srcwalk callees <symbol> --detailed --filter 'callee:NAME' --scope <dir>
+srcwalk callees <symbol> --depth 2 --scope <dir>
+```
+
+Use `callees` when the question starts from a known function and asks what it calls. Use `--detailed` for ordered call sites with assignment/return context.
+
+### Check file blast radius
+
+```bash
+srcwalk deps <file>
+srcwalk deps <file> --limit 30 --offset 30
+```
+
+Use before editing a file to see imports and dependents.
+
+## Shortcuts and caveats
+
+- `srcwalk flow <symbol>`: compact orientation slice combining ordered calls, local resolves, and direct callers. Good for quick understanding; not a full graph.
+- `srcwalk impact <symbol>`: heuristic name-matched blast-radius triage. Good for broad “what might be affected?” checks; not proof. Common names like `run`, `init`, `close` need follow-up with receiver/file groups or callers.
+- `srcwalk find <query>` can handle symbol names, text, regex-like queries, and globs through smart classification.
+- Bare filename + `--section` may auto-pick the primary non-ignored shallow match. If duplicates matter, pass an explicit path.
+
+## Escalation rules
+
+1. If you need orientation, start with `map` or `find`.
+2. If output gives a path/line, drill with `srcwalk <path>:<line>`.
+3. If the question is “who calls/reaches this?”, use `callers`.
+4. If the question is “what happens inside/after this function?”, use `callees --detailed`.
+5. Use `flow`/`impact` as quick orientation/triage, then verify important claims with `callers`, `callees`, or exact file reads.
+6. Prefer narrowing `--scope` over broad repo-wide repeated searches.
+
+## Supported structural languages
+
+Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift. Unsupported languages still work for reading files, but structural facts may be unavailable.

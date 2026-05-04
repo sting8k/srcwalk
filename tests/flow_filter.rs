@@ -76,6 +76,45 @@ fn noisy() {}
 }
 
 #[test]
+fn flow_shows_call_arg_slots() {
+    let dir = temp_dir("flow_arg_slots");
+    fs::write(
+        dir.join("lib.rs"),
+        r#"
+fn entry() {
+    let value = helper(1, "two");
+    finish(value);
+}
+
+fn helper(a: i32, b: &str) -> i32 { a }
+fn finish(value: i32) {}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["entry", "--flow", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "flow should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("helper(arg1=1, arg2=\"two\")"),
+        "expected arg slots for helper call, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("finish(arg1=value)"),
+        "expected arg slot for finish call, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn flow_resolves_skip_module_like_noise() {
     let dir = temp_dir("flow_resolve_noise");
     fs::write(
@@ -106,7 +145,7 @@ fn helper() {}
         "flow should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("-> resolves (local helpers first)"),
+        stdout.contains("-> resolves (selected local helpers)"),
         "expected local-helper resolves heading, got:\n{stdout}"
     );
     assert!(

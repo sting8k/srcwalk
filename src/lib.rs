@@ -367,15 +367,7 @@ pub fn run_callees(
         let filter_suffix = filter.map_or(String::new(), |f| format!(" matching `{f}`"));
         let mut out = format!("# Callees: {target} ({rel}){filter_suffix}\n");
         for s in &sites {
-            let prefix = if s.is_return { "->ret " } else { "" };
-            match &s.return_var {
-                Some(var) => {
-                    let _ = write!(out, "\nL{} {}{} = {}", s.line, prefix, var, s.call_text);
-                }
-                None => {
-                    let _ = write!(out, "\nL{} {}{}", s.line, prefix, s.call_text);
-                }
-            }
+            let _ = write!(out, "\n{}", format_call_site(s));
         }
         if filter.is_some() {
             let _ = write!(
@@ -507,19 +499,7 @@ pub fn run_flow(
         out.push_str("  (none)\n");
     } else {
         for site in sites.iter().take(40) {
-            let prefix = if site.is_return { " ->ret" } else { "" };
-            match &site.return_var {
-                Some(var) => {
-                    let _ = writeln!(
-                        out,
-                        "  [call] L{}{} {} = {}",
-                        site.line, prefix, var, site.call_text
-                    );
-                }
-                None => {
-                    let _ = writeln!(out, "  [call] L{}{} {}", site.line, prefix, site.call_text);
-                }
-            }
+            let _ = writeln!(out, "  [call] {}", format_call_site(site));
         }
         if sites.len() > 40 {
             let _ = writeln!(out, "  ... {} more call sites", sites.len() - 40);
@@ -546,15 +526,15 @@ pub fn run_flow(
     );
     let flow_nodes = prioritize_flow_resolves(nodes, &def_match.path);
     if !flow_nodes.is_empty() {
-        out.push_str("\n-> resolves (local helpers first)\n");
-        for node in flow_nodes.iter().take(20) {
+        out.push_str("\n-> resolves (selected local helpers)\n");
+        for node in flow_nodes.iter().take(12) {
             append_resolved_callee(&mut out, scope, &node.callee, 1);
-            for child in node.children.iter().take(5) {
+            for child in node.children.iter().take(2) {
                 append_resolved_callee(&mut out, scope, child, 2);
             }
         }
-        if flow_nodes.len() > 20 {
-            let _ = writeln!(out, "  ... {} more resolved callees", flow_nodes.len() - 20);
+        if flow_nodes.len() > 12 {
+            let _ = writeln!(out, "  ... {} more resolved callees", flow_nodes.len() - 12);
         }
     }
 
@@ -746,6 +726,55 @@ fn find_primary_definition(target: &str, scope: &Path) -> Result<types::Match, S
             scope: scope.to_path_buf(),
             suggestion: symbol_or_file_suggestion(scope, target, None),
         })
+}
+
+fn format_call_site(site: &search::callees::CallSite) -> String {
+    let prefix = if site.is_return { "->ret " } else { "" };
+    let call = format_call_with_args(site);
+    match &site.return_var {
+        Some(var) => format!("L{} {}{} = {}", site.line, prefix, var, call),
+        None => format!("L{} {}{}", site.line, prefix, call),
+    }
+}
+
+fn format_call_with_args(site: &search::callees::CallSite) -> String {
+    if site.args.is_empty() {
+        return site.call_text.clone();
+    }
+
+    let args = site
+        .args
+        .iter()
+        .take(6)
+        .enumerate()
+        .map(|(idx, arg)| format!("arg{}={}", idx + 1, compact_arg(arg)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if site.args.len() > 6 { ", ..." } else { "" };
+    let prefix = site.call_prefix.as_deref().unwrap_or(&site.callee);
+    format!("{prefix}({args}{suffix})")
+}
+
+fn compact_arg(arg: &str) -> String {
+    const LIMIT: usize = 120;
+    const HEAD: usize = 72;
+    const TAIL: usize = 40;
+
+    let arg = arg.split_whitespace().collect::<Vec<_>>().join(" ");
+    if arg.chars().count() <= LIMIT {
+        return arg;
+    }
+
+    let head = arg.chars().take(HEAD).collect::<String>();
+    let tail = arg
+        .chars()
+        .rev()
+        .take(TAIL)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{head} … {tail}")
 }
 
 fn prioritize_flow_resolves(

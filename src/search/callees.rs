@@ -27,6 +27,10 @@ pub struct CallSite {
     pub callee: String,
     /// Full call text, e.g. `parse_hubs(skip_hubs)`
     pub call_text: String,
+    /// Text before the call's argument list, e.g. `client.fetch`.
+    pub call_prefix: Option<String>,
+    /// Top-level argument snippets, ordered as written at the call site.
+    pub args: Vec<String>,
     /// Variable the return value is assigned to, if any.
     pub return_var: Option<String>,
     /// True if this call is the direct return expression of the function.
@@ -67,7 +71,15 @@ pub(crate) fn callee_query_str(lang: Lang) -> Option<&'static str> {
             // class Foo(Base) — superclass
             "(class_definition superclasses: (argument_list (identifier) @callee))\n",
         )),
-        Lang::JavaScript | Lang::TypeScript | Lang::Tsx => Some(concat!(
+        Lang::JavaScript => Some(concat!(
+            "(call_expression function: (identifier) @callee)\n",
+            "(call_expression function: (member_expression property: (property_identifier) @callee))\n",
+            // new Foo()
+            "(new_expression constructor: (identifier) @callee)\n",
+            // class Foo extends Bar
+            "(class_heritage (identifier) @callee)\n",
+        )),
+        Lang::TypeScript | Lang::Tsx => Some(concat!(
             "(call_expression function: (identifier) @callee)\n",
             "(call_expression function: (member_expression property: (property_identifier) @callee))\n",
             // new Foo()
@@ -110,6 +122,7 @@ pub(crate) fn callee_query_str(lang: Lang) -> Option<&'static str> {
         Lang::CSharp => Some(concat!(
             "(invocation_expression function: (identifier) @callee)\n",
             "(invocation_expression function: (member_access_expression name: (identifier) @callee))\n",
+            "(invocation_expression function: (conditional_access_expression (member_binding_expression name: (identifier) @callee)))\n",
             // new ProgramDB()
             "(object_creation_expression (identifier) @callee)\n",
             // : BaseService, IDisposable
@@ -323,12 +336,15 @@ pub fn extract_call_sites(
                     .trim()
                     .to_string();
 
+                let (call_prefix, args) = extract_argument_info(call_node, content_bytes);
                 let (return_var, is_return) = find_assignment_context(call_node, content_bytes);
 
                 sites.push(CallSite {
                     line,
                     callee: name,
                     call_text,
+                    call_prefix,
+                    args,
                     return_var,
                     is_return,
                 });
@@ -405,6 +421,56 @@ pub fn filter_call_sites(
         .into_iter()
         .filter(|site| callee_filters.iter().all(|wanted| site.callee == *wanted))
         .collect())
+}
+
+fn extract_argument_info(
+    call_node: tree_sitter::Node,
+    content_bytes: &[u8],
+) -> (Option<String>, Vec<String>) {
+    let Some(args_node) = call_node
+        .child_by_field_name("arguments")
+        .or_else(|| direct_argument_list_child(call_node))
+    else {
+        return (None, Vec::new());
+    };
+
+    let call_prefix = content_bytes
+        .get(call_node.start_byte()..args_node.start_byte())
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .map(compact_call_prefix)
+        .filter(|prefix| !prefix.is_empty());
+
+    let mut cursor = args_node.walk();
+    let args = args_node
+        .named_children(&mut cursor)
+        .filter_map(|arg| arg.utf8_text(content_bytes).ok())
+        .map(compact_whitespace)
+        .filter(|arg| !arg.is_empty())
+        .collect();
+
+    (call_prefix, args)
+}
+
+fn compact_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn compact_call_prefix(prefix: &str) -> String {
+    compact_whitespace(prefix)
+        .replace(" .", ".")
+        .replace(". ", ".")
+        .replace(" ::", "::")
+        .replace(":: ", "::")
+        .replace(" ->", "->")
+        .replace("-> ", "->")
+}
+
+fn direct_argument_list_child(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let mut cursor = node.walk();
+    let child = node
+        .children(&mut cursor)
+        .find(|child| child.kind().contains("argument"));
+    child
 }
 
 /// Walk up from `@callee` name node to the enclosing call expression.
@@ -979,6 +1045,38 @@ end
     }
 
     #[test]
+    fn callee_queries_compile_for_all_supported_languages() {
+        let langs = [
+            Lang::Rust,
+            Lang::TypeScript,
+            Lang::Tsx,
+            Lang::JavaScript,
+            Lang::Python,
+            Lang::Go,
+            Lang::Java,
+            Lang::Scala,
+            Lang::C,
+            Lang::Cpp,
+            Lang::Ruby,
+            Lang::Php,
+            Lang::Swift,
+            Lang::Kotlin,
+            Lang::CSharp,
+            Lang::Elixir,
+        ];
+
+        for lang in langs {
+            let Some(query) = callee_query_str(lang) else {
+                continue;
+            };
+            let language = crate::lang::outline::outline_language(lang)
+                .unwrap_or_else(|| panic!("missing parser for {lang:?}"));
+            tree_sitter::Query::new(&language, query)
+                .unwrap_or_else(|err| panic!("callee query failed for {lang:?}: {err:?}"));
+        }
+    }
+
+    #[test]
     fn extract_call_sites_populates_callee_name() {
         let rust = r#"
 fn run(client: &Client) {
@@ -988,14 +1086,110 @@ fn run(client: &Client) {
 "#;
         let sites = extract_call_sites(rust, Lang::Rust, None);
 
-        assert!(
-            sites.iter().any(|site| site.callee == "fetch"),
-            "expected fetch callsite, got: {sites:?}"
+        let fetch = sites
+            .iter()
+            .find(|site| site.callee == "fetch")
+            .expect("expected fetch callsite");
+        assert_eq!(fetch.args, vec!["1"]);
+        let finish = sites
+            .iter()
+            .find(|site| site.callee == "finish")
+            .expect("expected finish callsite");
+        assert_eq!(finish.args, vec!["value"]);
+    }
+
+    #[test]
+    fn extract_simple_call_site_across_languages() {
+        let cases = [
+            (Lang::Rust, "fn run() { helper(1); }"),
+            (Lang::TypeScript, "function run() { helper(1); }"),
+            (Lang::Tsx, "function Run() { helper(1); return <div />; }"),
+            (Lang::JavaScript, "function run() { helper(1); }"),
+            (Lang::Python, "def run():\n    helper(1)\n"),
+            (Lang::Go, "package p\nfunc run() { helper(1) }\n"),
+            (Lang::Java, "class C { void run() { helper(1); } }"),
+            (Lang::Scala, "object C { def run() = { helper(1) } }"),
+            (Lang::C, "void run() { helper(1); }"),
+            (Lang::Cpp, "void run() { helper(1); }"),
+            (Lang::Ruby, "def run\n  helper(1)\nend\n"),
+            (Lang::Php, "<?php function run() { helper(1); }"),
+            (Lang::Swift, "func run() { helper(1) }"),
+            (Lang::Kotlin, "fun run() { helper(1) }"),
+            (Lang::CSharp, "class C { void Run() { helper(1); } }"),
+            (
+                Lang::Elixir,
+                "defmodule M do\n  def run do\n    helper(1)\n  end\nend\n",
+            ),
+        ];
+
+        for (lang, code) in cases {
+            let sites = extract_call_sites(code, lang, None);
+            assert!(
+                sites.iter().any(|site| site.callee == "helper"),
+                "expected helper call for {lang:?}, got: {sites:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_javascript_call_sites() {
+        let javascript = r#"
+async function downloadBinary(url, dest) {
+    const res = await fetch(url);
+    const fileStream = createWriteStream(dest, { flags: "w" });
+    fileStream.on("finish", () => resolve());
+    chmodSync(dest, 0o755);
+}
+"#;
+        let sites = extract_call_sites(javascript, Lang::JavaScript, None);
+
+        let fetch = sites
+            .iter()
+            .find(|site| site.callee == "fetch")
+            .expect("expected fetch callsite");
+        assert_eq!(fetch.args, vec!["url"]);
+        let create = sites
+            .iter()
+            .find(|site| site.callee == "createWriteStream")
+            .expect("expected createWriteStream callsite");
+        assert_eq!(create.args, vec!["dest", "{ flags: \"w\" }"]);
+        let chmod = sites
+            .iter()
+            .find(|site| site.callee == "chmodSync")
+            .expect("expected chmodSync callsite");
+        assert_eq!(chmod.args, vec!["dest", "0o755"]);
+    }
+
+    #[test]
+    fn extract_csharp_optional_invocation_call_sites() {
+        let csharp = r#"
+class C {
+    void Run() {
+        _options.OnRegistered?.Invoke(ev);
+        pending.RetryTimer?.Dispose();
+    }
+}
+"#;
+        let sites = extract_call_sites(csharp, Lang::CSharp, None);
+
+        let invoke = sites
+            .iter()
+            .find(|site| site.callee == "Invoke")
+            .expect("expected optional Invoke callsite");
+        assert_eq!(
+            invoke.call_prefix.as_deref(),
+            Some("_options.OnRegistered?.Invoke")
         );
-        assert!(
-            sites.iter().any(|site| site.callee == "finish"),
-            "expected finish callsite, got: {sites:?}"
+        assert_eq!(invoke.args, vec!["ev"]);
+        let dispose = sites
+            .iter()
+            .find(|site| site.callee == "Dispose")
+            .expect("expected optional Dispose callsite");
+        assert_eq!(
+            dispose.call_prefix.as_deref(),
+            Some("pending.RetryTimer?.Dispose")
         );
+        assert!(dispose.args.is_empty());
     }
 
     #[test]
@@ -1005,6 +1199,8 @@ fn run(client: &Client) {
                 line: 1,
                 callee: "fetch".to_string(),
                 call_text: "client.fetch(1)".to_string(),
+                call_prefix: Some("client.fetch".to_string()),
+                args: vec!["1".to_string()],
                 return_var: Some("value".to_string()),
                 is_return: false,
             },
@@ -1012,6 +1208,8 @@ fn run(client: &Client) {
                 line: 2,
                 callee: "finish".to_string(),
                 call_text: "finish(value)".to_string(),
+                call_prefix: Some("finish".to_string()),
+                args: vec!["value".to_string()],
                 return_var: None,
                 is_return: false,
             },

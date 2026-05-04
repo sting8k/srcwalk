@@ -730,13 +730,13 @@ pub fn search_callers_expanded(
     if callers.is_empty() {
         return Ok(format!(
             "# Callers of \"{}\" in {} — no call sites found\n\n\
-             Tip: srcwalk detects only direct, by-name call sites. The symbol may still be invoked via:\n\
-               - Rust trait objects (`dyn Trait`) or generic bounds\n\
-               - Go interface dispatch or function values stored in structs\n\
-               - Java/Kotlin interface or abstract methods, reflection\n\
-               - TypeScript/JS class hierarchies, callbacks, or dynamic property access\n\
-               - Python duck typing, `getattr`, decorators\n\n\
-             Try `srcwalk(\"{}\")` (symbol search) to find the declaring interface/trait, \
+             > Caveat: srcwalk detects only direct, by-name call sites. The symbol may still be invoked via:\n\
+             > - Rust trait objects (`dyn Trait`) or generic bounds\n\
+             > - Go interface dispatch or function values stored in structs\n\
+             > - Java/Kotlin interface or abstract methods, reflection\n\
+             > - TypeScript/JS class hierarchies, callbacks, or dynamic property access\n\
+             > - Python duck typing, `getattr`, decorators\n\n\
+             > Next: try `srcwalk(\"{}\")` (symbol search) to find the declaring interface/trait, \
              then run `callers` on that name, or search for implementors.",
             target,
             scope.display(),
@@ -827,30 +827,30 @@ pub fn search_callers_expanded(
         let page_size = shown.max(1);
         let _ = write!(
             footer,
-            "> Tip: {omitted} more call sites available. Continue with --offset {next_offset} --limit {page_size}."
+            "> Next: {omitted} more call sites available. Continue with --offset {next_offset} --limit {page_size}."
         );
     } else if effective_offset > 0 {
         let _ = write!(
             footer,
-            "> Tip: end of results at offset {effective_offset}."
+            "> Note: end of results at offset {effective_offset}."
         );
     }
     if !footer.is_empty() {
         footer.push('\n');
     }
-    footer.push_str("> Tip: drill into any call site with `srcwalk <path>:<line>`.");
+    footer.push_str("> Next: drill into any call site with `srcwalk <path>:<line>`.");
     if sorted_callers
         .iter()
         .any(|caller| caller.arg_count.is_some() || caller.receiver.is_some())
     {
         footer.push_str(
-            "\n> Tip: classify callsites with `--count-by args` or `--filter 'args:N receiver:NAME'`.",
+            "\n> Next: classify callsites with `--count-by args` or `--filter 'args:N receiver:NAME'`.",
         );
     }
     if !filters.is_empty() {
         let _ = write!(
             footer,
-            "\n> Tip: filter matched {total}/{unfiltered_total} call sites. Qualifiers: args:N receiver:NAME caller:NAME path:TEXT text:TEXT."
+            "\n> Note: filter matched {total}/{unfiltered_total} call sites. Qualifiers: args:N receiver:NAME caller:NAME path:TEXT text:TEXT."
         );
     }
 
@@ -915,7 +915,7 @@ pub fn search_callers_expanded(
                         footer.push('\n');
                     }
                     footer.push_str(
-                        "> Tip: impact list was capped. Use `srcwalk callers <symbol> --depth 2` for the full 2-hop graph.",
+                        "> Caveat: impact list was capped. Use `srcwalk callers <symbol> --depth 2` for the full 2-hop graph.",
                     );
                 }
 
@@ -976,18 +976,18 @@ fn format_callsite_counts(
 
     let shown_end = (effective_offset + page_size).min(total_groups);
     let mut footer = String::from(
-        "> Tip: narrow with --filter 'args:N receiver:NAME caller:NAME path:TEXT text:TEXT'; group with --count-by args|caller|receiver|file.",
+        "> Next: narrow with --filter 'args:N receiver:NAME caller:NAME path:TEXT text:TEXT'; group with --count-by args|caller|receiver|file.",
     );
     if total_groups > shown_end {
         let omitted = total_groups - shown_end;
         let _ = write!(
             footer,
-            "\n> Tip: {omitted} more groups available. Continue with --offset {shown_end} --limit {page_size}."
+            "\n> Next: {omitted} more groups available. Continue with --offset {shown_end} --limit {page_size}."
         );
     } else if effective_offset > 0 {
         let _ = write!(
             footer,
-            "\n> Tip: end of groups at offset {effective_offset}."
+            "\n> Note: end of groups at offset {effective_offset}."
         );
     }
     let _ = write!(output, "\n{footer}");

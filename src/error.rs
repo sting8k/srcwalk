@@ -12,6 +12,11 @@ pub enum SrcwalkError {
         scope: PathBuf,
         suggestion: Option<String>,
     },
+    PathLikeNotFound {
+        path: PathBuf,
+        scope: PathBuf,
+        basename: Option<String>,
+    },
     PermissionDenied {
         path: PathBuf,
     },
@@ -54,6 +59,31 @@ impl std::fmt::Display for SrcwalkError {
                 }
                 Ok(())
             }
+            Self::PathLikeNotFound {
+                path,
+                scope,
+                basename,
+            } => {
+                writeln!(f, "not found: {}", path.display())?;
+                writeln!(
+                    f,
+                    "> Caveat: this looks like a file path, but no file exists at that path under {}.",
+                    scope.display()
+                )?;
+                match basename {
+                    Some(name) if !name.is_empty() => write!(
+                        f,
+                        "> Next: check the path, or locate candidates with `fd '{}$' {}`.",
+                        name,
+                        scope.display()
+                    ),
+                    _ => write!(
+                        f,
+                        "> Next: check the path, or locate candidates with `fd <name> {}`.",
+                        scope.display()
+                    ),
+                }
+            }
             Self::PermissionDenied { path } => {
                 write!(f, "{} [permission denied]", path.display())
             }
@@ -78,7 +108,10 @@ impl SrcwalkError {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::NotFound { .. } | Self::NoMatches { .. } | Self::IoError { .. } => 2,
+            Self::NotFound { .. }
+            | Self::NoMatches { .. }
+            | Self::PathLikeNotFound { .. }
+            | Self::IoError { .. } => 2,
             Self::InvalidQuery { .. } | Self::ParseError { .. } => 3,
             Self::PermissionDenied { .. } => 4,
             Self::WithNote { source, .. } => source.exit_code(),

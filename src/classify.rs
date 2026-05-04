@@ -181,7 +181,7 @@ fn resolve_existing_path(query: &str, scope: &Path) -> Option<std::path::PathBuf
     resolved.try_exists().unwrap_or(false).then_some(resolved)
 }
 
-fn looks_like_path_with_separator(query: &str) -> bool {
+pub fn looks_like_path_with_separator(query: &str) -> bool {
     !query.is_empty()
         && (query.starts_with('/')
             || query.starts_with("~/")
@@ -189,26 +189,6 @@ fn looks_like_path_with_separator(query: &str) -> bool {
             || query.starts_with("../")
             || query.contains('/')
             || query.contains('\\'))
-}
-
-/// Does this query look path-like enough that fallback search should be called out.
-pub fn looks_like_path_query(query: &str) -> bool {
-    if query.contains(' ') || query.is_empty() {
-        return false;
-    }
-    if query
-        .bytes()
-        .any(|b| matches!(b, b'*' | b'?' | b'{' | b'['))
-    {
-        return false;
-    }
-    query.starts_with('/')
-        || query.starts_with("~/")
-        || query.starts_with("./")
-        || query.starts_with("../")
-        || query.contains('/')
-        || query.contains('\\')
-        || looks_like_filename(query)
 }
 
 /// Does this query look like a filename? Has an extension, or matches known extensionless names.

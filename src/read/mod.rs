@@ -19,12 +19,15 @@ const RAW_LINE_CAP: u32 = 200;
 const FILE_SIZE_CAP: u64 = 500_000; // 500KB
 
 /// Sections exceeding this token count are degraded to an outline of the range.
-/// Override with `SRCWALK_SECTION_SOFT_LIMIT` env var.
-fn section_token_limit() -> u64 {
-    std::env::var("SRCWALK_SECTION_SOFT_LIMIT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(RAW_TOKEN_CAP)
+/// Explicit `--budget` overrides this limit; otherwise `SRCWALK_SECTION_SOFT_LIMIT`
+/// can override the default raw token cap.
+fn section_token_limit(budget: Option<u64>) -> u64 {
+    budget.unwrap_or_else(|| {
+        std::env::var("SRCWALK_SECTION_SOFT_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(RAW_TOKEN_CAP)
+    })
 }
 
 fn raw_body_over_cap(tokens: u64, lines: u32) -> bool {
@@ -102,9 +105,9 @@ pub fn read_file(
         return Ok(format::file_header(path, 0, 0, ViewMode::Empty));
     }
 
-    // Section param → return those lines verbatim, any size
+    // Section param → return those lines verbatim when within the section token limit.
     if let Some(range) = section {
-        return read_section(path, range, cache);
+        return read_section(path, range, None, cache);
     }
 
     // Binary detection
@@ -164,7 +167,7 @@ pub fn read_file(
         let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
         let next_start = shown + 1;
         return Ok(format!(
-            "{header}\n\n> **full=true capped**: raw body exceeds {RAW_TOKEN_CAP} tokens or {RAW_LINE_CAP} lines. Showing first {shown} of {line_count} lines.\n\n{numbered_head}\n\n## Outline\n\n{outline}\n\n> Tip: continue with --section {next_start}-<end> or use a narrower --section range."
+            "{header}\n\n> Caveat: full=true capped; raw body exceeds {RAW_TOKEN_CAP} tokens or {RAW_LINE_CAP} lines. Showing first {shown} of {line_count} lines.\n\n{numbered_head}\n\n## Outline\n\n{outline}\n\n> Next: continue with --section {next_start}-<end> or use a narrower --section range."
         ));
     }
 
@@ -180,7 +183,7 @@ pub fn read_file(
     };
     let header = format::file_header(path, byte_len, line_count, mode);
     Ok(format!(
-        "{header}\n\n{outline}\n\n> Tip: drill into a symbol with --section <name> or a line range\n> Tip: need raw file text? retry with --full, or use --section <range> for a smaller slice."
+        "{header}\n\n{outline}\n\n> Next: drill into a symbol with --section <name> or a line range\n> Next: need raw file text? retry with --full, or use --section <range> for a smaller slice."
     ))
 }
 
@@ -213,7 +216,10 @@ pub fn read_file_with_budget(
     let Some(b) = budget else {
         return read_file(path, section, full, cache);
     };
-    if !full || section.is_some() {
+    if let Some(range) = section {
+        return read_section(path, range, Some(b), cache);
+    }
+    if !full {
         return read_file(path, section, full, cache);
     }
 
@@ -245,8 +251,8 @@ pub fn read_file_with_budget(
         std::fs::read(path).map_or(0, |buf| memchr::memchr_iter(b'\n', &buf).count() as u32 + 1);
     let header = format::file_header(path, meta.len(), line_count, ViewMode::Signatures);
     Ok(format!(
-        "{header}\n\n> File too large for budget {b} tokens at any granularity. \
-         Drill: `--section <fn-name>` or raise `--budget`."
+        "{header}\n\n> Caveat: file too large for budget {b} tokens at any granularity.\
+         > Next: use --section <fn-name> or raise --budget."
     ))
 }
 
@@ -299,8 +305,7 @@ fn render_signatures_view(path: &Path, cache: &OutlineCache) -> Result<String, S
 fn append_cascade_note(body: &str, prev_kind: &str, prev_bytes: usize, budget: u64) -> String {
     let prev_tokens = estimate_tokens(prev_bytes as u64);
     format!(
-        "{body}\n\n> Note: {prev_kind} ({prev_tokens} tokens) exceeded budget ({budget}). \
-         Drill: `--section <fn-name>` for specific symbol, or raise `--budget`."
+        "{body}\n\n> Note: {prev_kind} ({prev_tokens} tokens) exceeded budget ({budget}).\n> Next: use --section <fn-name> for a specific symbol, or raise --budget."
     )
 }
 
@@ -453,7 +458,12 @@ fn suggest_headings(buf: &[u8], query: &str, top_n: usize) -> Vec<String> {
 /// Read a specific line range from a file.
 /// Uses memchr to find the Nth newline offset and slice the mmap buffer directly
 /// instead of collecting all lines into a Vec.
-fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<String, SrcwalkError> {
+fn read_section(
+    path: &Path,
+    range: &str,
+    budget: Option<u64>,
+    _cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
     let file = fs::File::open(path).map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
         source: e,
@@ -493,7 +503,7 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
     } else {
         // Check for comma-separated multi-symbol request
         if range.contains(',') {
-            return read_multi_symbol_section(path, buf, range);
+            return read_multi_symbol_section(path, buf, range, budget);
         }
         let suggestions = suggest_symbols(buf, path, range, 3);
         let reason = if suggestions.is_empty() {
@@ -536,9 +546,9 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
     let byte_len = selected.len() as u64;
     let line_count = (e - s) as u32;
     let tok_est = estimate_tokens(byte_len);
-    let limit = section_token_limit();
+    let limit = section_token_limit(budget);
 
-    if tok_est > limit || line_count > RAW_LINE_CAP {
+    if tok_est > limit {
         // Degrade: render outline entries within the section range
         let file_type = detect_file_type(path);
         let content = String::from_utf8_lossy(buf);
@@ -554,8 +564,8 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
                 let body = format_section_outline(&filtered);
                 return Ok(format!(
                     "{header}\n\n{body}\n\n\
-                     > Section spans ~{tok_est} tokens / {line_count} lines (limits: {limit} tokens, {RAW_LINE_CAP} lines). Showing outline of {start}-{end}.\n\
-                     > Drill: `--section <fn-name>` for a specific symbol."
+                     > Caveat: section spans ~{tok_est} tokens / {line_count} lines (limit: {limit} tokens). Showing outline of {start}-{end}.\n\
+                     > Next: retry with --budget <N>, or use a narrower --section range."
                 ));
             }
         }
@@ -563,8 +573,8 @@ fn read_section(path: &Path, range: &str, _cache: &OutlineCache) -> Result<Strin
         // Fallback: no structured outline available — return header + advice only
         return Ok(format!(
             "{header}\n\n\
-             > Section spans ~{tok_est} tokens / {line_count} lines (limits: {limit} tokens, {RAW_LINE_CAP} lines).\n\
-             > Drill: `--section <fn-name>` for a specific symbol, or use a narrower line range."
+             > Caveat: section spans ~{tok_est} tokens / {line_count} lines (limit: {limit} tokens).\n\
+             > Next: retry with --budget <N>, or use a narrower --section range."
         ));
     }
 
@@ -591,7 +601,12 @@ fn format_focused_lines(content: &str, start: u32, focus_line: usize) -> String 
 }
 
 /// Resolve multiple comma-separated symbol names and return their bodies concatenated.
-fn read_multi_symbol_section(path: &Path, buf: &[u8], range: &str) -> Result<String, SrcwalkError> {
+fn read_multi_symbol_section(
+    path: &Path,
+    buf: &[u8],
+    range: &str,
+    budget: Option<u64>,
+) -> Result<String, SrcwalkError> {
     let symbols: Vec<&str> = range
         .split(',')
         .map(str::trim)
@@ -664,7 +679,7 @@ fn read_multi_symbol_section(path: &Path, buf: &[u8], range: &str) -> Result<Str
     }
 
     let tok_est = estimate_tokens(total_bytes);
-    let limit = section_token_limit();
+    let limit = section_token_limit(budget);
 
     if tok_est > limit {
         // Over budget — show outline-style summary instead
@@ -672,8 +687,8 @@ fn read_multi_symbol_section(path: &Path, buf: &[u8], range: &str) -> Result<Str
         let names: Vec<&str> = blocks.iter().map(|(_, _, n)| n.as_str()).collect();
         return Ok(format!(
             "{header}\n\n\
-             > {count} symbols ({names}) span ~{tok_est} tokens (limit {limit}).\n\
-             > Drill: `--section <fn-name>` for one at a time.",
+             > Caveat: {count} symbols ({names}) span ~{tok_est} tokens (limit {limit}).\n\
+             > Next: use a narrower --section list, or retry with --budget <N>.",
             count = blocks.len(),
             names = names.join(", "),
         ));
@@ -1102,30 +1117,63 @@ mod tests {
     }
 
     #[test]
-    fn oversized_section_degrades_to_section_outline() {
+    fn long_section_over_200_lines_returns_source_when_within_token_limit() {
         use std::io::Write;
 
-        let path = std::env::temp_dir().join("srcwalk_section_line_cap.rs");
+        let path = std::env::temp_dir().join("srcwalk_section_long_fn.rs");
         let mut f = std::fs::File::create(&path).unwrap();
-        for i in 0..250 {
-            writeln!(f, "fn func_{i}() {{}}").unwrap();
+        writeln!(f, "fn long_fn() {{").unwrap();
+        for i in 0..220 {
+            writeln!(f, "    let value_{i} = {i};").unwrap();
         }
+        writeln!(f, "}}").unwrap();
         drop(f);
 
         let cache = OutlineCache::new();
-        let out = read_file(&path, Some("1-250"), false, &cache).unwrap();
+        let out = read_file(&path, Some("long_fn"), false, &cache).unwrap();
 
+        assert!(out.contains("[section]"), "expected raw section: {out}");
         assert!(
-            out.contains("[section, outline (over limit)]"),
-            "expected section outline: {out}"
+            out.contains("let value_219 = 219;"),
+            "expected full long function source: {out}"
         );
         assert!(
-            out.contains("200 lines"),
-            "expected line cap mention: {out}"
+            !out.contains("[section, outline (over limit)]"),
+            "line count alone should not force an outline: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn section_budget_controls_token_degradation() {
+        let path = std::env::temp_dir().join("srcwalk_section_budget.rs");
+        let mut body = String::from("fn noisy() {\n");
+        for i in 0..80 {
+            body.push_str(&format!(
+                "    let value_{i} = \"padding padding padding padding padding padding padding padding\";\n"
+            ));
+        }
+        body.push_str("}\n");
+        std::fs::write(&path, body).unwrap();
+
+        let cache = OutlineCache::new();
+        let low_budget =
+            read_file_with_budget(&path, Some("noisy"), false, Some(100), &cache).unwrap();
+        assert!(
+            low_budget.contains("[section, outline (over limit)]"),
+            "expected low budget to outline: {low_budget}"
         );
         assert!(
-            !out.contains("fn func_200"),
-            "oversized section outline should be capped: {out}"
+            low_budget.contains("limit: 100 tokens"),
+            "expected budget limit in footer: {low_budget}"
+        );
+
+        let high_budget =
+            read_file_with_budget(&path, Some("noisy"), false, Some(5_000), &cache).unwrap();
+        assert!(
+            high_budget.contains("[section]") && high_budget.contains("padding padding"),
+            "expected high budget to return source: {high_budget}"
         );
 
         let _ = std::fs::remove_file(&path);
@@ -1270,7 +1318,7 @@ mod tests {
         std::fs::write(&path, code).unwrap();
 
         let cache = OutlineCache::new();
-        let err = read_section(&path, "resolve_sym", &cache).unwrap_err();
+        let err = read_section(&path, "resolve_sym", None, &cache).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("symbol not found. Closest:"),
@@ -1293,7 +1341,7 @@ mod tests {
         std::fs::write(&path, code).unwrap();
 
         let cache = OutlineCache::new();
-        let out = read_section(&path, "aaa,ccc", &cache).unwrap();
+        let out = read_section(&path, "aaa,ccc", None, &cache).unwrap();
         assert!(
             out.contains("2 symbols, section"),
             "header should show symbol count: {out}"
@@ -1313,7 +1361,7 @@ mod tests {
 
         let cache = OutlineCache::new();
         // Request in reverse order
-        let out = read_section(&path, "second,first", &cache).unwrap();
+        let out = read_section(&path, "second,first", None, &cache).unwrap();
         let pos_first = out.find("first()").unwrap();
         let pos_second = out.find("second()").unwrap();
         assert!(
@@ -1331,7 +1379,7 @@ mod tests {
         std::fs::write(&path, code).unwrap();
 
         let cache = OutlineCache::new();
-        let out = read_section(&path, "real_fn,nope_fn", &cache).unwrap();
+        let out = read_section(&path, "real_fn,nope_fn", None, &cache).unwrap();
         assert!(
             out.contains("real_fn()"),
             "should contain found symbol: {out}"
@@ -1352,7 +1400,7 @@ mod tests {
         std::fs::write(&path, code).unwrap();
 
         let cache = OutlineCache::new();
-        let err = read_section(&path, "zzz_fake,yyy_fake", &cache).unwrap_err();
+        let err = read_section(&path, "zzz_fake,yyy_fake", None, &cache).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("symbols not found"),

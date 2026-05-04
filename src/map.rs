@@ -193,9 +193,9 @@ pub fn generate(
         None => out,
     };
     if include_symbols {
-        out.push_str("\n\n> Tip: narrow with --scope <dir>.\n");
+        out.push_str("\n\n> Next: narrow with --scope <dir>.\n");
     } else {
-        out.push_str("\n\n> Tip: add --symbols, or narrow with --scope <dir>.\n");
+        out.push_str("\n\n> Next: add --symbols, or narrow with --scope <dir>.\n");
     }
     Ok(out)
 }

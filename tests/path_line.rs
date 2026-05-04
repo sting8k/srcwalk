@@ -81,3 +81,41 @@ fn numeric_section_reads_focused_context() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn long_symbol_section_reads_source_when_budget_allows() {
+    let dir = temp_repo("long_symbol_section");
+    let mut body = String::from("fn long_fn() {\n");
+    for i in 0..220 {
+        body.push_str(&format!("    let value_{i} = {i};\n"));
+    }
+    body.push_str("}\n");
+    fs::write(dir.join("lib.rs"), body).unwrap();
+
+    let out = srcwalk()
+        .arg("lib.rs")
+        .arg("--scope")
+        .arg(&dir)
+        .arg("--section")
+        .arg("long_fn")
+        .arg("--budget")
+        .arg("10000")
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "expected long section read to succeed"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("[section]") && stdout.contains("let value_219 = 219;"),
+        "expected long function source, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("[section, outline (over limit)]"),
+        "long low-token function should not degrade to outline:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

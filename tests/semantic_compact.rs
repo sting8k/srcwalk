@@ -4,16 +4,33 @@ fn srcwalk() -> Command {
     Command::new(env!("CARGO_BIN_EXE_srcwalk"))
 }
 
-fn assert_tips_are_trailing(stdout: &str) {
+fn assert_footers_are_trailing(stdout: &str) {
+    fn is_footer_line(line: &str) -> bool {
+        line.starts_with("> Next:") || line.starts_with("> Note:") || line.starts_with("> Caveat:")
+    }
+
     let trimmed = stdout.trim_end();
-    let last_tip = trimmed
-        .rfind("> Tip:")
-        .unwrap_or_else(|| panic!("expected at least one footer tip:\n{stdout}"));
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let mut idx = lines.len();
+    let mut saw_footer = false;
+    while idx > 0 {
+        let line = lines[idx - 1];
+        if is_footer_line(line) {
+            saw_footer = true;
+            idx -= 1;
+        } else if line.is_empty() && saw_footer {
+            idx -= 1;
+        } else {
+            break;
+        }
+    }
+
+    assert!(saw_footer, "expected at least one footer line:\n{stdout}");
     assert!(
-        trimmed[last_tip..]
-            .lines()
-            .all(|line| line.starts_with("> Tip:") || line.is_empty()),
-        "tips should be trailing footer lines, got:\n{stdout}"
+        lines[idx..]
+            .iter()
+            .all(|line| line.is_empty() || is_footer_line(line)),
+        "footers should be trailing lines, got:\n{stdout}"
     );
 }
 
@@ -62,7 +79,7 @@ fn symbol_search_exposes_class_kind_range_and_child_context() {
 }
 
 #[test]
-fn symbol_search_pagination_tip_remains_trailing_with_semantic_context() {
+fn symbol_search_pagination_footer_remains_trailing_with_semantic_context() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("DependencyProperty.cs"),
@@ -98,10 +115,10 @@ fn symbol_search_pagination_tip_remains_trailing_with_semantic_context() {
         "pagination should not remove semantic class context, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("--offset 1 --limit 1"),
-        "expected actionable pagination tip, got:\n{stdout}"
+        stdout.contains("> Next:") && stdout.contains("--offset 1 --limit 1"),
+        "expected actionable pagination next-step, got:\n{stdout}"
     );
-    assert_tips_are_trailing(&stdout);
+    assert_footers_are_trailing(&stdout);
 }
 
 #[test]
@@ -335,14 +352,14 @@ func other() {
         "default caller output should omit call text; use --expand for source context, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("--expand[=N]"),
-        "expected footer tip to mention --expand, got:\n{stdout}"
+        stdout.contains("> Next: use --expand[=N]"),
+        "expected footer next-step to mention --expand, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("--offset 1 --limit 1"),
-        "expected caller pagination tip, got:\n{stdout}"
+        stdout.contains("> Next:") && stdout.contains("--offset 1 --limit 1"),
+        "expected caller pagination next-step, got:\n{stdout}"
     );
-    assert_tips_are_trailing(&stdout);
+    assert_footers_are_trailing(&stdout);
 }
 
 #[test]
@@ -441,10 +458,10 @@ func other() {
         "filter should exclude non-matching caller, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("filter matched 1/2 call sites"),
-        "expected filter summary tip, got:\n{stdout}"
+        stdout.contains("> Note: filter matched 1/2 call sites"),
+        "expected filter summary note, got:\n{stdout}"
     );
-    assert_tips_are_trailing(&stdout);
+    assert_footers_are_trailing(&stdout);
 }
 
 #[test]
@@ -502,10 +519,12 @@ func c() {
         "expected args=2 bucket, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("--filter 'args:N receiver:NAME caller:NAME path:TEXT text:TEXT'"),
-        "expected filter tip, got:\n{stdout}"
+        stdout.contains(
+            "> Next: narrow with --filter 'args:N receiver:NAME caller:NAME path:TEXT text:TEXT'"
+        ),
+        "expected filter next-step, got:\n{stdout}"
     );
-    assert_tips_are_trailing(&stdout);
+    assert_footers_are_trailing(&stdout);
 }
 
 #[test]
@@ -612,10 +631,10 @@ export function c(other: any) { other.callTool({}); }
         "expected 2 grouped rows, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("more groups available. Continue with --offset 2 --limit 2"),
-        "expected group pagination tip, got:\n{stdout}"
+        stdout.contains("> Next: 1 more groups available. Continue with --offset 2 --limit 2"),
+        "expected group pagination next-step, got:\n{stdout}"
     );
-    assert_tips_are_trailing(&stdout);
+    assert_footers_are_trailing(&stdout);
 }
 
 #[test]

@@ -52,16 +52,16 @@ fn map_default_is_compact_without_symbols() {
         "default map should not include symbols or repeated token units, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("add --symbols") && stdout.contains("--scope <dir>"),
-        "expected compact map tip, got:\n{stdout}"
+        stdout.contains("> Next: add --symbols") && stdout.contains("--scope <dir>"),
+        "expected compact map footer, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn map_budget_truncation_keeps_footer_tip() {
-    let dir = temp_repo("map_budget_tip");
+fn map_budget_truncation_keeps_footer() {
+    let dir = temp_repo("map_budget_footer");
     fs::create_dir_all(dir.join("src")).unwrap();
     for i in 0..40 {
         fs::write(
@@ -83,8 +83,8 @@ fn map_budget_truncation_keeps_footer_tip() {
     assert!(out.status.success(), "expected map to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("truncated") && stdout.contains("add --symbols"),
-        "expected truncated map to keep footer tip, got:\n{stdout}"
+        stdout.contains("truncated") && stdout.contains("> Next: add --symbols"),
+        "expected truncated map to keep footer, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -249,8 +249,8 @@ fn map_symbols_includes_symbol_names() {
         "expected symbol names with --symbols, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("narrow with --scope <dir>"),
-        "expected symbols map tip, got:\n{stdout}"
+        stdout.contains("> Next: narrow with --scope <dir>"),
+        "expected symbols map footer, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);

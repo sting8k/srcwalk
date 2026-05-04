@@ -56,7 +56,7 @@ def multiply(a, b):
 }
 
 #[test]
-fn callees_default_shows_hint() {
+fn callees_default_shows_footer() {
     setup_fixtures();
     let out = srcwalk()
         .args(["--callees", "process", "--scope"])
@@ -65,13 +65,13 @@ fn callees_default_shows_hint() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("Tip: use --detailed"),
-        "default output should contain hint, got:\n{stdout}"
+        stdout.contains("Next: use --detailed"),
+        "default output should contain footer, got:\n{stdout}"
     );
 }
 
 #[test]
-fn callees_budget_truncation_keeps_hint() {
+fn callees_budget_truncation_keeps_footer() {
     setup_fixtures();
     let out = srcwalk()
         .args(["--callees", "process", "--scope"])
@@ -81,13 +81,13 @@ fn callees_budget_truncation_keeps_hint() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("truncated") && stdout.contains("Tip: use --detailed"),
-        "budgeted output should keep hint after truncation, got:\n{stdout}"
+        stdout.contains("truncated") && stdout.contains("Next: use --detailed"),
+        "budgeted output should keep footer after truncation, got:\n{stdout}"
     );
 }
 
 #[test]
-fn callees_detailed_has_own_budget_tip() {
+fn callees_detailed_has_own_budget_caveat() {
     setup_fixtures();
     let out = srcwalk()
         .args(["--callees", "process", "--scope"])
@@ -97,9 +97,9 @@ fn callees_detailed_has_own_budget_tip() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("Tip: detailed call sites can be long")
-            && !stdout.contains("Tip: use --detailed"),
-        "--detailed output should contain its own hint, got:\n{stdout}"
+        stdout.contains("Caveat: detailed call sites can be long")
+            && !stdout.contains("Next: use --detailed"),
+        "--detailed output should contain its own caveat, got:\n{stdout}"
     );
 }
 

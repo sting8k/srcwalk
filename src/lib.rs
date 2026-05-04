@@ -299,7 +299,7 @@ pub fn run_callers(
             )?;
             if count_by.is_none() {
                 callers_out.push_str(
-                    "\n\n> Tip: use --expand[=N] for source context; use --depth N for transitive callers.",
+                    "\n\n> Next: use --expand[=N] for source context; use --depth N for transitive callers.",
                 );
             }
             callers_out
@@ -380,12 +380,12 @@ pub fn run_callees(
         if filter.is_some() {
             let _ = write!(
                 out,
-                "\n\n> Tip: filter matched {}/{} call sites. Qualifiers: callee:NAME.",
+                "\n\n> Note: filter matched {}/{} call sites. Qualifiers: callee:NAME.",
                 sites.len(),
                 total_sites
             );
         } else {
-            out.push_str("\n\n> Tip: detailed call sites can be long. Retry with --budget <N>, or omit --detailed for resolved callee summaries.");
+            out.push_str("\n\n> Caveat: detailed call sites can be long. Retry with --budget <N>, or omit --detailed for resolved callee summaries.");
         }
         let output = match budget_tokens {
             Some(b) => budget::apply_preserving_footer(&out, b),
@@ -459,7 +459,7 @@ pub fn run_callees(
         );
     }
 
-    out.push_str("\n\n> Tip: use --detailed for ordered call sites with args and assignments");
+    out.push_str("\n\n> Next: use --detailed for ordered call sites with args and assignments");
 
     let output = match budget_tokens {
         Some(b) => budget::apply_preserving_footer(&out, b),
@@ -580,12 +580,12 @@ pub fn run_flow(
     if filter.is_some() {
         let _ = write!(
             out,
-            "\n> Tip: filter matched {}/{} call sites. Qualifiers: callee:NAME.",
+            "\n> Note: filter matched {}/{} call sites. Qualifiers: callee:NAME.",
             sites.len(),
             total_sites
         );
     }
-    out.push_str("\n> Tip: flow is capped for readability. Use `srcwalk callees <symbol> --detailed` for all ordered calls, or `srcwalk callers <symbol>` for upstream sites.");
+    out.push_str("\n> Caveat: flow is capped for readability. Use `srcwalk callees <symbol> --detailed` for all ordered calls, or `srcwalk callers <symbol>` for upstream sites.");
     Ok(apply_optional_budget(out, budget_tokens))
 }
 
@@ -726,7 +726,7 @@ pub fn run_impact(
 
     let _ = write!(
         out,
-        "\n> Tip: {total_callers} direct name-matched call site{} found. Impact output is capped for readability. Use `srcwalk callers <symbol> --depth 2` for transitive upstream impact, or `srcwalk callers <symbol> --count-by receiver|file` to page groups.",
+        "\n> Caveat: {total_callers} direct name-matched call site{} found. Impact output is capped for readability. Use `srcwalk callers <symbol> --depth 2` for transitive upstream impact, or `srcwalk callers <symbol> --count-by receiver|file` to page groups.",
         if total_callers == 1 { "" } else { "s" }
     );
     if total_callers == 0 {
@@ -1068,22 +1068,19 @@ fn run_inner(
         query_type
     };
 
-    if resolution_note.is_none()
-        && classify::looks_like_path_query(query)
+    if classify::looks_like_path_with_separator(query)
         && !matches!(
             query_type,
             QueryType::FilePath(_) | QueryType::FilePathLine(_, _)
         )
     {
-        let mode = if matches!(query_type, QueryType::Glob(_)) {
-            "glob"
-        } else {
-            "search"
-        };
-        resolution_note = Some(format!(
-            "> Note: query looks like a path but was not found under {}; interpreting as {mode}.\n> Tip: pass --scope <repo>, use an absolute path, or use --path-exact to fail fast.",
-            scope.display()
-        ));
+        return Err(SrcwalkError::PathLikeNotFound {
+            path: scope.join(query),
+            scope: scope.to_path_buf(),
+            basename: std::path::Path::new(query)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+        });
     }
 
     let use_expanded = expand > 0
@@ -1157,7 +1154,7 @@ fn run_inner(
                     out.push_str("\n\n> Related: ");
                     out.push_str(&hints.join(", "));
                 }
-                out.push_str("\n> Tip: use `srcwalk deps <file>` to see imports and dependents");
+                out.push_str("\n> Next: use `srcwalk deps <file>` to see imports and dependents");
             }
             Ok(out)
         }

@@ -486,7 +486,7 @@ fn format_bfs(
     if has_budget_notes {
         let _ = writeln!(
             out,
-            "\n> Tip: graph was capped. Retry with --max-edges <N> --max-frontier <N>, narrow with --scope <dir>, or use --skip-hubs \"\" to include hubs."
+            "\n> Caveat: graph was capped. Retry with --max-edges <N> --max-frontier <N>, narrow with --scope <dir>, or use --skip-hubs \"\" to include hubs."
         );
     }
 

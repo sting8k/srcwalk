@@ -78,10 +78,10 @@ pub fn search_symbol(
     append_did_you_mean(&mut out, &result, scope, glob);
     // Contextual hints
     if result.definitions > 0 {
-        out.push_str("\n\n> Tip: use --expand to inline definition source");
+        out.push_str("\n\n> Next: use --expand to inline definition source");
     }
     if result.usages >= 5 {
-        out.push_str("\n> Tip: for precise call sites use `srcwalk callers <symbol>` instead of text-based usages");
+        out.push_str("\n> Next: for precise call sites use `srcwalk callers <symbol>` instead of text-based usages");
     }
     Ok(out)
 }
@@ -172,11 +172,11 @@ pub fn search_multi_symbol_expanded(
             let page_size = result.matches.len().max(1);
             let _ = write!(
                 out,
-                "\n\n> Tip: {omitted} more matches available. Continue with --offset {next_offset} --limit {page_size}."
+                "\n\n> Next: {omitted} more matches available. Continue with --offset {next_offset} --limit {page_size}."
             );
         }
         if smart_truncated {
-            out.push_str("\n\n> Tip: expanded source was smart-truncated. Use the shown file line range with --section <start-end> for a capped raw range.");
+            out.push_str("\n\n> Caveat: expanded source was smart-truncated. Use the shown file line range with --section <start-end> for a capped raw range.");
         }
         append_did_you_mean(&mut out, &result, scope, glob);
         sections.push(out);
@@ -1328,15 +1328,19 @@ fn format_search_result(
         let page_size = result.matches.len().max(1);
         let _ = write!(
             footer,
-            "> Tip: {omitted} more matches available. Continue with --offset {next_offset} --limit {page_size}."
+            "> Next: {omitted} more matches available. Continue with --offset {next_offset} --limit {page_size}."
         );
     } else if result.offset > 0 {
-        let _ = write!(footer, "> Tip: end of results at offset {}.", result.offset);
+        let _ = write!(
+            footer,
+            "> Note: end of results at offset {}.",
+            result.offset
+        );
     } else if result.total_found > result.matches.len() {
         let omitted = result.total_found - result.matches.len();
         let _ = write!(
             footer,
-            "> Tip: {omitted} more matches hidden by display limits. Narrow with --scope <dir> or --glob <pattern>."
+            "> Next: {omitted} more matches hidden by display limits. Narrow with --scope <dir> or --glob <pattern>."
         );
     }
 
@@ -1344,14 +1348,14 @@ fn format_search_result(
         if !footer.is_empty() {
             footer.push('\n');
         }
-        footer.push_str("> Tip: drill into any hit with `srcwalk <path>:<line>`.");
+        footer.push_str("> Next: drill into any hit with `srcwalk <path>:<line>`.");
     }
 
     if smart_truncated {
         if !footer.is_empty() {
             footer.push('\n');
         }
-        footer.push_str("> Tip: expanded source was smart-truncated. Use the shown file line range with --section <start-end> for a capped raw range.");
+        footer.push_str("> Caveat: expanded source was smart-truncated. Use the shown file line range with --section <start-end> for a capped raw range.");
     }
 
     let tokens = estimate_tokens(out.len() as u64);
@@ -1595,11 +1599,11 @@ fn format_glob_result(result: &glob::GlobResult, scope: &Path) -> Result<String,
         let omitted = result.total_found - shown_end;
         let _ = write!(
             out,
-            "\n\n> Tip: {omitted} more files available. Continue with --offset {shown_end} --limit {limit}.",
+            "\n\n> Next: {omitted} more files available. Continue with --offset {shown_end} --limit {limit}.",
             limit = result.limit,
         );
     } else if result.offset > 0 {
-        let _ = write!(out, "\n> Tip: end of results.");
+        let _ = write!(out, "\n> Note: end of results.");
     }
 
     if result.files.is_empty() && !result.available_extensions.is_empty() {

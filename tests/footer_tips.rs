@@ -30,7 +30,7 @@ fn caller_c() { needle(); }
 }
 
 #[test]
-fn search_pagination_tip_is_footer_and_survives_budget() {
+fn search_pagination_next_step_is_footer_and_survives_budget() {
     let dir = fixture_dir("many_matches");
     let out = srcwalk()
         .args(["needle", "--limit", "1", "--budget", "10", "--scope"])
@@ -44,8 +44,8 @@ fn search_pagination_tip_is_footer_and_survives_budget() {
         "expected budget truncation:\n{stdout}"
     );
     assert!(
-        stdout.contains("> Tip:") && stdout.contains("--offset 1 --limit 1"),
-        "expected actionable footer pagination tip:\n{stdout}"
+        stdout.contains("> Next:") && stdout.contains("--offset 1 --limit 1"),
+        "expected actionable footer pagination next-step:\n{stdout}"
     );
     assert!(
         !stdout.contains("--files"),
@@ -54,7 +54,7 @@ fn search_pagination_tip_is_footer_and_survives_budget() {
 }
 
 #[test]
-fn glob_pagination_tip_is_footer() {
+fn glob_pagination_next_step_is_footer() {
     let dir = fixture_dir("glob");
     let out = srcwalk()
         .args(["*.rs", "--limit", "1", "--scope"])
@@ -64,13 +64,13 @@ fn glob_pagination_tip_is_footer() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
-        stdout.contains("> Tip:") && stdout.contains("--offset 1 --limit 1"),
-        "expected actionable glob pagination tip:\n{stdout}"
+        stdout.contains("> Next:") && stdout.contains("--offset 1 --limit 1"),
+        "expected actionable glob pagination next-step:\n{stdout}"
     );
 }
 
 #[test]
-fn callers_pagination_tip_is_footer() {
+fn callers_pagination_next_step_is_footer() {
     let dir = fixture_dir("many_matches");
     let out = srcwalk()
         .args(["needle", "--callers", "--limit", "1", "--scope"])
@@ -80,13 +80,13 @@ fn callers_pagination_tip_is_footer() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
-        stdout.contains("> Tip:") && stdout.contains("--offset 1 --limit 1"),
-        "expected actionable callers pagination tip:\n{stdout}"
+        stdout.contains("> Next:") && stdout.contains("--offset 1 --limit 1"),
+        "expected actionable callers pagination next-step:\n{stdout}"
     );
 }
 
 #[test]
-fn bfs_cap_prints_actionable_tip() {
+fn bfs_cap_prints_caveat_footer() {
     let dir = fixture_dir("many_matches");
     let out = srcwalk()
         .args([
@@ -104,13 +104,13 @@ fn bfs_cap_prints_actionable_tip() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
-        stdout.contains("edges capped") && stdout.contains("> Tip: graph was capped"),
-        "expected BFS cap tip:\n{stdout}"
+        stdout.contains("edges capped") && stdout.contains("> Caveat: graph was capped"),
+        "expected BFS cap caveat:\n{stdout}"
     );
 }
 
 #[test]
-fn deps_budget_compaction_tip_is_footer() {
+fn deps_budget_compaction_caveat_is_footer() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let mut target = String::new();
@@ -129,8 +129,8 @@ fn deps_budget_compaction_tip_is_footer() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
-        stdout.contains("> Tip: deps output was compacted for budget"),
-        "expected deps budget footer tip:\n{stdout}"
+        stdout.contains("> Caveat: deps output was compacted for budget"),
+        "expected deps budget footer caveat:\n{stdout}"
     );
 }
 
@@ -149,7 +149,7 @@ fn deps_pagination_fixture() -> tempfile::TempDir {
 }
 
 #[test]
-fn deps_dependents_default_page_has_continuation_tip() {
+fn deps_dependents_default_page_has_continuation_next_step() {
     let dir = deps_pagination_fixture();
     let root = dir.path();
     let out = srcwalk()
@@ -163,14 +163,14 @@ fn deps_dependents_default_page_has_continuation_tip() {
     assert!(
         stdout.contains("... and 5 more dependents")
             && stdout.contains(
-                "> Tip: 5 more dependents available. Continue with --offset 15 --limit 15."
+                "> Next: 5 more dependents available. Continue with --offset 15 --limit 15."
             ),
-        "expected dependent pagination footer tip:\n{stdout}"
+        "expected dependent pagination footer next-step:\n{stdout}"
     );
 }
 
 #[test]
-fn deps_dependents_limit_offset_page_and_end_tip() {
+fn deps_dependents_limit_offset_page_and_end_note() {
     let dir = deps_pagination_fixture();
     let root = dir.path();
     let page = srcwalk()
@@ -183,9 +183,9 @@ fn deps_dependents_limit_offset_page_and_end_tip() {
     assert!(
         page_stdout.contains("... and 6 more dependents")
             && page_stdout.contains(
-                "> Tip: 6 more dependents available. Continue with --offset 14 --limit 7."
+                "> Next: 6 more dependents available. Continue with --offset 14 --limit 7."
             ),
-        "expected second deps page continuation tip:\n{page_stdout}"
+        "expected second deps page continuation next-step:\n{page_stdout}"
     );
 
     let end = srcwalk()
@@ -196,13 +196,13 @@ fn deps_dependents_limit_offset_page_and_end_tip() {
         .unwrap();
     let end_stdout = String::from_utf8_lossy(&end.stdout);
     assert!(
-        end_stdout.contains("> Tip: end of dependent results at offset 21."),
-        "expected deps end-of-results footer tip:\n{end_stdout}"
+        end_stdout.contains("> Note: end of dependent results at offset 21."),
+        "expected deps end-of-results footer note:\n{end_stdout}"
     );
 }
 
 #[test]
-fn full_file_cap_tip_is_footer() {
+fn full_file_cap_next_step_is_footer() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("large.txt");
     std::fs::write(
@@ -221,14 +221,14 @@ fn full_file_cap_tip_is_footer() {
 
     assert!(
         stdout.contains("full=true capped")
-            && stdout.contains("> Tip: continue with --section")
+            && stdout.contains("> Next: continue with --section")
             && stdout.contains("--section 201-<end>"),
-        "expected full-file cap footer tip:\n{stdout}"
+        "expected full-file cap footer next-step:\n{stdout}"
     );
 }
 
 #[test]
-fn expanded_smart_truncate_tip_is_footer() {
+fn expanded_smart_truncate_caveat_is_footer() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("long.rs");
     let mut body = String::from("fn huge() {\n");
@@ -250,7 +250,7 @@ fn expanded_smart_truncate_tip_is_footer() {
 
     assert!(
         stdout.contains("lines omitted")
-            && stdout.contains("> Tip: expanded source was smart-truncated"),
-        "expected smart-truncate footer tip:\n{stdout}"
+            && stdout.contains("> Caveat: expanded source was smart-truncated"),
+        "expected smart-truncate footer caveat:\n{stdout}"
     );
 }

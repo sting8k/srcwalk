@@ -15,7 +15,7 @@ For plain text grep or path listing, prefer `rg`/`fd`. For known files, use srcw
 - **Target-first for reading:** `srcwalk <path>`, `srcwalk <path>:<line>`, `srcwalk <path> --section <symbol|range>`.
 - **Action-first for analysis:** `srcwalk find|callers|callees|deps|map ...`.
 - Start compact. Drill in when you need source evidence, exact context, or a narrower answer.
-- Follow `> Tip:` footers first; they are contextual next-step hints.
+- Follow footers by prefix: `> Next:` suggests a useful next command, `> Note:` adds context/status, and `> Caveat:` marks limitations to verify before making claims.
 
 ## Choose the command by intent
 
@@ -106,7 +106,53 @@ Use before editing a file to see imports and dependents.
 ## Shortcuts and caveats
 
 - `srcwalk flow <symbol>`: compact orientation slice combining ordered calls, local resolves, and direct callers. Good for quick understanding; not a full graph.
+
+  Example shape:
+
+  ```text
+  $ srcwalk flow read_file_with_budget --scope src
+  # Slice: read_file_with_budget — flow
+
+  [symbol] read_file_with_budget read/mod.rs:208-257
+  -> calls (ordered)
+    [call] L217 ->ret read_file(path, section, full, cache)
+    [call] L232 outline_out = render_outline_view(path, cache, ViewMode::OutlineCascade)
+
+  -> resolves (local helpers first)
+    [fn] read_file read/mod.rs:69-188
+    [fn] render_outline_view read/mod.rs:259-281
+
+  <- callers
+    [fn] run_path_exact lib.rs:242
+    [fn] run_inner lib.rs:1145
+
+  > Caveat: flow is capped for readability. Use `srcwalk callees <symbol> --detailed` for all ordered calls, or `srcwalk callers <symbol>` for upstream sites.
+  ```
+
 - `srcwalk impact <symbol>`: heuristic name-matched blast-radius triage. Good for broad “what might be affected?” checks; not proof. Common names like `run`, `init`, `close` need follow-up with receiver/file groups or callers.
+
+  Example shape:
+
+  ```text
+  $ srcwalk impact read_file_with_budget --scope src
+  # Slice: read_file_with_budget — impact
+
+  [symbol] read_file_with_budget
+  = definitions
+    [def] read/mod.rs:208-257 pub fn read_file_with_budget(
+
+  <- name-matched calls from
+    [fn] run_path_exact lib.rs:242 recv=read args=5
+    [fn] run_inner lib.rs:1145 recv=read args=5
+
+  ~ groups
+    [group] receiver=<bare> count=4
+    [group] receiver=read count=3
+    [group] file=lib.rs count=3
+
+  > Caveat: direct name-matched call sites only. Use `srcwalk callers <symbol> --depth 2` for transitive upstream impact.
+  ```
+
 - `srcwalk find <query>` can handle symbol names, text, regex-like queries, and globs through smart classification.
 - Bare filename + `--section` may auto-pick the primary non-ignored shallow match. If duplicates matter, pass an explicit path.
 

@@ -5,24 +5,24 @@
 [![Discord](https://img.shields.io/discord/1401062214831575060?label=discord)](https://discord.gg/p7gj6BPb)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Agent's code navigator CLI** — instantly outline, search, and trace call graphs across any language. One binary, one skill, zero config.
+**Agent's code navigator CLI** — target-first file reading, action-first code analysis, one binary, zero config.
 
-> Tree-sitter outlines · symbol search · caller/callee graphs · blast-radius deps · token-aware maps
+> Tree-sitter outlines · symbol search · caller/callee graphs · deps · maps · token-aware footers
 
-File reads default to structural views, not raw full-file dumps. Your agent reaches for `srcwalk` instead of `cat` and `grep` — cheap outlines first, explicit `--section`/`--full` pages on demand, never blow the token budget.
+File reads default to structural views, not raw full-file dumps. Use target-first reads for files (`srcwalk <path>`, `<path>:<line>`, `--section`) and action-first commands for analysis (`find`, `callers`, `callees`, `deps`, `map`).
 
 > Originally forked from [jahala/tilth](https://github.com/jahala/tilth), now developed independently.
 
 ## What it does
 
-- **Read** — structural outline by default; `--section` or capped `--full` for explicit raw pages
-- **Symbol search** — tree-sitter definitions first, then usages, with resolved callees
+- **Read** — structural outline by default; `--section` and capped `--full` for explicit raw pages
+- **Find** — tree-sitter definitions first, then usages, with optional inline source
 - **Callers** — single-hop or multi-hop BFS (up to 5 hops), hub guard, collision warnings
 - **Callees** — forward call graph, resolved + unresolved, with depth support
 - **Deps** — blast-radius: imports and dependents of a file
 - **Map** — token-annotated directory skeleton, respects `.gitignore`
 
-15 languages: Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir.
+Structural support for Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir, and Kotlin. Unsupported files still get smart text/outline reads.
 
 ## Install
 
@@ -112,6 +112,7 @@ srcwalk deps src/auth.ts
 srcwalk map --scope src/
 ```
 
+
 ## Output examples
 
 <details>
@@ -135,7 +136,7 @@ $ srcwalk src/auth.ts
 <summary><b>Symbol search — definitions first, with callees</b></summary>
 
 ```
-$ srcwalk handleAuth --scope src/ --expand
+$ srcwalk find handleAuth --scope src/ --expand
 # Search: "handleAuth" in src/ — 6 matches (2 definitions, 4 usages)
 
 ## src/auth.ts:44-89 [definition]
@@ -178,7 +179,7 @@ $ srcwalk callers NewClient --depth 3 --json
 <summary><b>Did-you-mean — cross-convention + typo tolerance</b></summary>
 
 ```
-$ srcwalk searchSymbol --scope src/
+$ srcwalk find searchSymbol --scope src/
 no matches for "searchSymbol" in src/
 > Did you mean: search_symbol (src/lib.rs:186)
 ```
@@ -189,10 +190,14 @@ no matches for "searchSymbol" in src/
 
 ```
 $ srcwalk map --scope .
-src/       (~14.9k tokens)
-  read/    (~10.2k tokens)
-    outline/  (~3.7k tokens)
-  search/  (~8.1k tokens)
+# Map: . (depth 3, sizes ~= tokens)
+
+src/       ~14.9k
+  read/    ~10.2k
+    outline/  ~3.7k
+  search/  ~8.1k
+
+> Next: add --symbols, or narrow with --scope <dir>.
 ```
 </details>
 
@@ -201,22 +206,19 @@ src/       (~14.9k tokens)
 | Operation | ~30 files | ~1000 files |
 |-----------|-----------|-------------|
 | File read + outline | ~18ms | ~18ms |
-| Symbol search | ~27ms | — |
+| Find definitions/usages | ~27ms | — |
 | Map | ~21ms | ~240ms |
 
 Bloom-filter pruning + length-sorted memchr + tree-sitter parse cache.
 
 ## Key features
 
-- **Multi-hop caller BFS** (up to 5 hops, hub guard, collision detection)
-- **`--callees` flag** — forward call graph as standalone query
-- **File-grouped usages** with function annotations
-- **`--section` degradation** — auto-outline when section too large
-- **Search ergonomics** — cross-naming-convention Did-you-mean, bare-filename auto-pick, typo tolerance
-- **Budget cascade** — `--full` over `--budget` degrades gracefully with explicit labels
-- **Leaner CLI** — removed MCP server, edit mode, diff subcommand, `--files` dispatch
-- **Performance** — mmap walkers, Aho-Corasick, rayon-parallel search, mimalloc
-- **Elixir support**
+- **Command-first analysis** — `find`, `callers`, `callees`, `flow`, `impact`, `deps`, `map`.
+- **Target-first reading** — `srcwalk <path>`, `<path>:<line>`, and `--section <symbol|range>`.
+- **Multi-hop caller BFS** — up to 5 hops, hub guard, collision detection.
+- **Forward callees** — resolved/unresolved calls, detailed ordered call sites, and depth support.
+- **Search ergonomics** — cross-naming-convention Did-you-mean, bare-filename auto-pick, typo tolerance.
+- **Performance** — mmap walkers, Aho-Corasick, rayon-parallel search, mimalloc.
 
 ## License
 

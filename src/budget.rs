@@ -94,7 +94,7 @@ pub fn apply(output: &str, budget: u64) -> String {
 
 /// Apply token budget to generated content while keeping trailing footer hints visible.
 ///
-/// Footer lines (`> Tip:`, `> Related:`, etc.) are guidance/metadata rather than
+/// Footer lines (`> Next:`, `> Note:`, `> Caveat:`, `> Related:`, etc.) are guidance/metadata rather than
 /// primary content, so they are split off before truncating and appended after the
 /// budgeted body. This intentionally allows the final rendered output to exceed the
 /// body budget by the small footer size.
@@ -149,17 +149,20 @@ mod tests {
     use super::apply_preserving_footer;
 
     #[test]
-    fn preserving_footer_keeps_tip_after_truncation() {
+    fn preserving_footer_keeps_footer_after_truncation() {
         let body = (0..200)
             .map(|i| format!("line {i}: lots of generated content"))
             .collect::<Vec<_>>()
             .join("\n");
-        let output = format!("# Header\n{body}\n\n> Tip: use --expand next");
+        let output = format!("# Header\n{body}\n\n> Next: use --expand next");
 
         let rendered = apply_preserving_footer(&output, 80);
 
         assert!(rendered.contains("... truncated"), "{rendered}");
-        assert!(rendered.ends_with("> Tip: use --expand next"), "{rendered}");
+        assert!(
+            rendered.ends_with("> Next: use --expand next"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -169,14 +172,14 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let output = format!(
-            "# Header\n{body}\n\n> Related: src/a.rs, src/b.rs\n> Tip: use `srcwalk deps <file>`"
+            "# Header\n{body}\n\n> Related: src/a.rs, src/b.rs\n> Next: use `srcwalk deps <file>`"
         );
 
         let rendered = apply_preserving_footer(&output, 80);
 
         assert!(rendered.contains("... truncated"), "{rendered}");
         assert!(
-            rendered.ends_with("> Related: src/a.rs, src/b.rs\n> Tip: use `srcwalk deps <file>`"),
+            rendered.ends_with("> Related: src/a.rs, src/b.rs\n> Next: use `srcwalk deps <file>`"),
             "{rendered}"
         );
     }

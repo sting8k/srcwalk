@@ -20,7 +20,7 @@ fn temp_repo(name: &str) -> PathBuf {
 }
 
 #[test]
-fn path_like_missing_query_warns_before_fallback_search() {
+fn path_like_missing_query_fails_fast_without_fallback_search() {
     let dir = temp_repo("path_note");
     fs::write(
         dir.join("notes.txt"),
@@ -35,41 +35,51 @@ fn path_like_missing_query_warns_before_fallback_search() {
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected fallback search to succeed");
+    assert!(!out.status.success(), "expected missing path to fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not found")
+            && stderr.contains("looks like a file path")
+            && stderr.contains("fd 'missing.go$'")
+            && !stderr.contains("interpreting as search"),
+        "expected path-like not-found guidance, got:\n{stderr}"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("query looks like a path")
-            && stdout.contains("interpreting as search")
-            && stdout.contains("--path-exact"),
-        "expected path-like fallback note, got:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("notes.txt"),
-        "expected fallback search output, got:\n{stdout}"
+        stdout.is_empty(),
+        "missing path should not emit fallback search output, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn path_like_missing_query_warns_even_when_no_matches() {
-    let dir = temp_repo("path_note_nomatch");
-    fs::write(dir.join("notes.txt"), "unrelated text\n").unwrap();
+fn path_like_missing_nested_package_suggests_basename_lookup() {
+    let dir = temp_repo("path_note_nested");
+    fs::create_dir_all(dir.join("node_modules/pkg/dist/modes/interactive")).unwrap();
+    fs::write(
+        dir.join("node_modules/pkg/dist/modes/interactive/interactive-mode.js"),
+        "export function interactive() {}\n",
+    )
+    .unwrap();
 
     let out = srcwalk()
-        .arg("internal/missing.go")
+        .arg("node_modules/pkg/dist/interactive/interactive-mode.js")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(!out.status.success(), "expected no matches to fail");
+    assert!(
+        !out.status.success(),
+        "expected missing nested path to fail"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("query looks like a path")
-            && stderr.contains("interpreting as search")
-            && stderr.contains("no matches"),
-        "expected path-like fallback note before no matches, got:\n{stderr}"
+        stderr.contains("not found")
+            && stderr.contains("node_modules/pkg/dist/interactive/interactive-mode.js")
+            && stderr.contains("fd 'interactive-mode.js$'"),
+        "expected basename locate hint, got:\n{stderr}"
     );
 
     let _ = fs::remove_dir_all(&dir);

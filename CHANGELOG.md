@@ -2,15 +2,19 @@
 
 All notable changes to srcwalk are documented here.
 
-## [Unreleased]
+## [0.2.6] - 2026-05-04
 
 ### Added
 - Action-first analysis subcommands: `find`, `callers`, `callees`, `flow`, `impact`, `deps`, and `map`. Legacy flag syntax remains supported.
+- The srcwalk skill now includes example output shapes for `flow` and `impact` so agents understand their orientation/triage roles.
 
 ### Changed
-- CLI help and the srcwalk skill now present the mental model as target-first file reading plus action-first analysis commands.
+- CLI help, README, and the srcwalk skill now present the mental model as target-first file reading plus action-first analysis commands.
+- Footer hints now use semantic prefixes: `Next:` for suggested commands, `Note:` for context/status, and `Caveat:` for limitations.
 
 ### Fixed
+- `--section <symbol>` no longer degrades to an outline solely because the section exceeds 200 lines; explicit sections now return source when within the effective token budget.
+- Path-like queries with separators now fail fast with an `fd` candidate hint when the file does not exist, instead of falling back to search and implying nested paths are unsupported.
 
 ## [0.2.5] - 2026-04-26
 

@@ -336,16 +336,16 @@ pub fn format_deps(
     if omitted > 0 {
         let _ = write!(
             rendered,
-            "\n\n> Tip: {omitted} more dependents available. Continue with --offset {page_end} --limit {page_limit}."
+            "\n\n> Next: {omitted} more dependents available. Continue with --offset {page_end} --limit {page_limit}."
         );
     } else if offset > 0 {
         let _ = write!(
             rendered,
-            "\n\n> Tip: end of dependent results at offset {offset}."
+            "\n\n> Note: end of dependent results at offset {offset}."
         );
     }
     if degraded_for_budget {
-        rendered.push_str("\n\n> Tip: deps output was compacted for budget. Retry with --budget <N>, narrow with --scope <dir>, or inspect specific files with srcwalk <path>.");
+        rendered.push_str("\n\n> Caveat: deps output was compacted for budget. Retry with --budget <N>, narrow with --scope <dir>, or inspect specific files with srcwalk <path>.");
     }
     rendered
 }

@@ -1763,7 +1763,97 @@ mod tests {
         }
     }
 
+    #[test]
+    fn walker_respects_gitignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = tmp.path();
+        std::fs::create_dir(scope.join(".git")).unwrap();
+        std::fs::write(scope.join(".gitignore"), "ignored.rs\n").unwrap();
+        std::fs::write(scope.join("visible.rs"), "fn visible_symbol() {}\n").unwrap();
+        std::fs::write(scope.join("ignored.rs"), "fn ignored_symbol() {}\n").unwrap();
+
+        let paths = walk_paths(scope, None);
+
+        assert!(
+            paths.iter().any(|p| p.ends_with("visible.rs")),
+            "visible file should be walked: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with("ignored.rs")),
+            "gitignored file leaked into walker: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn walker_respects_dotignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = tmp.path();
+        std::fs::write(scope.join(".ignore"), "ignored.rs\n").unwrap();
+        std::fs::write(scope.join("visible.rs"), "fn visible_symbol() {}\n").unwrap();
+        std::fs::write(scope.join("ignored.rs"), "fn ignored_symbol() {}\n").unwrap();
+
+        let paths = walk_paths(scope, None);
+
+        assert!(
+            paths.iter().any(|p| p.ends_with("visible.rs")),
+            "visible file should be walked: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with("ignored.rs")),
+            ".ignore file leaked into walker: {paths:?}"
+        );
+    }
+
     // ── end-to-end through search functions ──
+
+    #[test]
+    fn discovery_searches_respect_gitignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = tmp.path();
+        std::fs::create_dir(scope.join(".git")).unwrap();
+        std::fs::write(scope.join(".gitignore"), "ignored.rs\n").unwrap();
+        std::fs::write(scope.join("visible.rs"), "fn visible_symbol() {}\n").unwrap();
+        std::fs::write(scope.join("ignored.rs"), "fn ignored_symbol() {}\n").unwrap();
+
+        let symbols = symbol::search("ignored_symbol", scope, None, None, None)
+            .expect("symbol search failed");
+        let globs = glob::search("*.rs", scope, None, 0).expect("glob search failed");
+
+        assert_eq!(
+            symbols.total_found, 0,
+            "symbol search should not return ignored files"
+        );
+        assert!(
+            globs.files.iter().any(|f| f.path.ends_with("visible.rs")),
+            "glob should include visible file"
+        );
+        let leaked_ignored = globs.files.iter().any(|f| f.path.ends_with("ignored.rs"));
+        assert!(!leaked_ignored, "glob search leaked ignored file");
+    }
+
+    #[test]
+    fn discovery_searches_respect_dotignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = tmp.path();
+        std::fs::write(scope.join(".ignore"), "ignored.rs\n").unwrap();
+        std::fs::write(scope.join("visible.rs"), "fn visible_symbol() {}\n").unwrap();
+        std::fs::write(scope.join("ignored.rs"), "fn ignored_symbol() {}\n").unwrap();
+
+        let symbols = symbol::search("ignored_symbol", scope, None, None, None)
+            .expect("symbol search failed");
+        let globs = glob::search("*.rs", scope, None, 0).expect("glob search failed");
+
+        assert_eq!(
+            symbols.total_found, 0,
+            "symbol search should not return .ignore files"
+        );
+        assert!(
+            globs.files.iter().any(|f| f.path.ends_with("visible.rs")),
+            "glob should include visible file"
+        );
+        let leaked_ignored = globs.files.iter().any(|f| f.path.ends_with("ignored.rs"));
+        assert!(!leaked_ignored, "glob search leaked .ignore file");
+    }
 
     #[test]
     fn content_search_glob_restricts_results() {

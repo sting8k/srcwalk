@@ -126,9 +126,12 @@ pub(crate) fn read_file_bytes(path: &Path, size: u64) -> Option<FileBytes> {
     }
 }
 
-/// Build a parallel directory walker that searches ALL files except known junk directories.
-/// Does NOT respect .gitignore — ensures gitignored but locally-relevant files are found.
-/// When `glob` is Some, applies a file-pattern override (whitelist or negation).
+/// Build a parallel directory walker for discovery/search modes.
+///
+/// Respects project ignore files so search results match the scaffold shown by
+/// `--map`. Explicit path reads bypass this walker and can still inspect ignored
+/// files when the user names them directly. When `glob` is Some, applies a
+/// file-pattern override (whitelist or negation).
 pub(crate) fn walker(
     scope: &Path,
     glob: Option<&str>,
@@ -157,11 +160,11 @@ pub(crate) fn walker(
     builder
         .follow_links(true)
         .hidden(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .ignore(false)
-        .parents(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .ignore(true)
+        .parents(true)
         .threads(threads)
         .filter_entry(|entry| {
             if entry.file_type().is_some_and(|ft| ft.is_dir()) {

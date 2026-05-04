@@ -20,7 +20,7 @@ File reads default to structural views, not raw full-file dumps. Use target-firs
 - **Callers** — single-hop or multi-hop BFS (up to 5 hops), hub guard, collision warnings
 - **Callees** — forward call graph, resolved + unresolved, with depth support
 - **Deps** — blast-radius: imports and dependents of a file
-- **Map** — token-annotated directory skeleton, respects `.gitignore`
+- **Map** — token-annotated directory skeleton, respects `.gitignore`, `.ignore`, git excludes, and parent ignores
 
 Structural support for Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir, and Kotlin. Unsupported files still get smart text/outline reads.
 
@@ -112,6 +112,7 @@ srcwalk deps src/auth.ts
 srcwalk map --scope src/
 ```
 
+Discovery commands respect ignore files; explicit file reads can still inspect ignored paths.
 
 ## Output examples
 

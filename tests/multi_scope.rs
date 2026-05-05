@@ -68,6 +68,51 @@ fn find_accepts_repeated_scopes_and_outputs_pwd_relative_hits() {
 }
 
 #[test]
+fn find_accepts_repeated_scopes_with_multi_symbol_query() {
+    let dir = temp_repo("multi_scope_multi_symbol_find");
+    write_file(
+        &dir.join("classes/cart.php"),
+        "<?php function alpha_symbol() {} customized_data();\n",
+    );
+    write_file(
+        &dir.join("controllers/upload.php"),
+        "<?php function beta_symbol() {} customized_data();\n",
+    );
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "find",
+            "alpha_symbol, beta_symbol, customized_data",
+            "--scope",
+            "classes",
+            "--scope",
+            "controllers",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "expected multi-scope multi-symbol find to succeed, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("# Search: \"alpha_symbol\" in 2 scopes")
+            && stdout.contains("# Search: \"beta_symbol\" in 2 scopes")
+            && stdout.contains("# Search: \"customized_data\" in 2 scopes"),
+        "expected one section per query, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("classes/cart.php") && stdout.contains("controllers/upload.php"),
+        "expected hits from both scopes, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn find_repeated_scopes_fail_fast_when_any_scope_is_invalid() {
     let dir = temp_repo("multi_scope_invalid");
     write_file(&dir.join("src/lib.rs"), "pub fn shared_target() {}\n");

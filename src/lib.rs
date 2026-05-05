@@ -282,11 +282,18 @@ pub fn run_multi_scope_find_filtered(
                 .to_string(),
         });
     }
-    if query.contains(',') {
-        return Err(SrcwalkError::InvalidQuery {
-            query: query.to_string(),
-            reason: "multi-scope multi-symbol search is not supported yet".to_string(),
-        });
+    if let Some(parts) = parse_multi_symbol_query(query)? {
+        return run_multi_scope_multi_symbol_find(
+            query,
+            &parts,
+            scopes,
+            budget_tokens,
+            limit,
+            offset,
+            glob,
+            filter,
+            cache,
+        );
     }
 
     let mut result = multi_scope_search_result(query, &query_type, scopes, cache, glob, filter)?;
@@ -312,6 +319,70 @@ pub fn run_multi_scope_find_filtered(
         None => output,
     };
     Ok(final_out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_multi_scope_multi_symbol_find(
+    original_query: &str,
+    parts: &[&str],
+    scopes: &[PathBuf],
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    let first_scope = scopes.first().expect("caller ensures at least one scope");
+    let mut sections = Vec::with_capacity(parts.len());
+    let mut total_found = 0;
+
+    for part in parts {
+        let query_type = classify(part, first_scope);
+        if matches!(query_type, QueryType::Glob(_)) && classify::has_glob_chars(part) {
+            return Err(use_files_error(part));
+        }
+        if matches!(
+            query_type,
+            QueryType::FilePath(_) | QueryType::FilePathLine(_, _)
+        ) {
+            return Err(SrcwalkError::InvalidQuery {
+                query: (*part).to_string(),
+                reason: "multi-scope find supports symbol/text/name-glob queries, not file reads"
+                    .to_string(),
+            });
+        }
+
+        let mut result = multi_scope_search_result(part, &query_type, scopes, cache, glob, filter)?;
+        total_found += result.total_found;
+        search::rank::sort(&mut result.matches, part, &result.scope, None);
+        search::pagination::paginate(&mut result, limit, offset);
+        let header = multi_scope_search_header(&result, scopes);
+        sections.push(search::format_raw_result_with_header(
+            &result, cache, header,
+        )?);
+    }
+
+    if total_found == 0 {
+        return Err(SrcwalkError::NoMatches {
+            query: original_query.to_string(),
+            scope: common_scope(scopes),
+            suggestion: parts.iter().find_map(|part| {
+                scopes
+                    .iter()
+                    .find_map(|scope| symbol_or_file_suggestion(scope, part, glob))
+            }),
+        });
+    }
+
+    let mut output = sections.join("\n\n---\n");
+    if scopes_overlap(scopes) {
+        output.push_str("\n\n> Note: overlapping scopes were deduplicated.");
+    }
+    Ok(match budget_tokens {
+        Some(b) => budget::apply_preserving_footer(&output, b),
+        None => output,
+    })
 }
 
 fn multi_scope_search_result(
@@ -404,6 +475,29 @@ fn use_files_error(query: &str) -> SrcwalkError {
         query: query.to_string(),
         reason: "use `srcwalk files '<glob>'`".to_string(),
     }
+}
+
+fn parse_multi_symbol_query(query: &str) -> Result<Option<Vec<&str>>, SrcwalkError> {
+    if !query.contains(',') {
+        return Ok(None);
+    }
+
+    let parts: Vec<&str> = query
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let all_identifiers = parts.iter().all(|p| classify::is_identifier(p));
+    if parts.len() > 5 && all_identifiers {
+        return Err(SrcwalkError::InvalidQuery {
+            query: query.to_string(),
+            reason: "multi-symbol search supports 2-5 symbols".to_string(),
+        });
+    }
+    if parts.len() >= 2 && parts.len() <= 5 && all_identifiers {
+        return Ok(Some(parts));
+    }
+    Ok(None)
 }
 
 fn search_result_symbol(
@@ -1463,31 +1557,17 @@ fn run_inner(
             QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_)
         );
 
-    // Multi-symbol: comma-separated identifiers, 2..=5 items
+    // Multi-symbol: comma-separated identifiers, 2..=5 items.
     // Check before main dispatch. Only activate when all parts look like identifiers
     // to avoid hijacking regex (/foo,bar/) or glob (*.{rs,ts}) queries.
-    if query.contains(',')
-        && !matches!(
-            query_type,
-            QueryType::Glob(_)
-                | QueryType::SymbolGlob(_)
-                | QueryType::FilePath(_)
-                | QueryType::FilePathLine(_, _)
-        )
-    {
-        let parts: Vec<&str> = query
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-        let all_identifiers = parts.iter().all(|p| classify::is_identifier(p));
-        if parts.len() > 5 && all_identifiers {
-            return Err(SrcwalkError::InvalidQuery {
-                query: query.to_string(),
-                reason: "multi-symbol search supports 2-5 symbols".to_string(),
-            });
-        }
-        if parts.len() >= 2 && parts.len() <= 5 && all_identifiers {
+    if !matches!(
+        query_type,
+        QueryType::Glob(_)
+            | QueryType::SymbolGlob(_)
+            | QueryType::FilePath(_)
+            | QueryType::FilePathLine(_, _)
+    ) {
+        if let Some(parts) = parse_multi_symbol_query(query)? {
             let session = session::Session::new();
             let sym_index = index::SymbolIndex::new();
             let bloom = index::bloom::BloomFilterCache::new();

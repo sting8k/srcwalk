@@ -1,6 +1,6 @@
 ---
 name: srcwalk
-compatible_srcwalk: ">=0.2.8"
+compatible_srcwalk: ">=0.3.0"
 description: "Srcwalk is the agent's code navigator: one tree-sitter CLI for repo maps, token-aware large-file reads, symbol search, callers/callees, deps, impact checks, and precise drill-ins. Use it before raw reads or grep for code-structure work. Run `srcwalk guide` first; it is the installed binary's source of truth."
 ---
 

@@ -49,14 +49,13 @@ pub(crate) fn extract_definition_name(node: tree_sitter::Node, lines: &[&str]) -
     // Try standard field names
     for field in &["name", "identifier", "declarator"] {
         if let Some(child) = node.child_by_field_name(field) {
+            if child.kind().contains("declarator") {
+                if let Some(name) = extract_declarator_name(child, lines) {
+                    return Some(name);
+                }
+            }
             let text = node_text_simple(child, lines);
             if !text.is_empty() {
-                // For variable_declarator, get the identifier inside
-                if child.kind().contains("declarator") {
-                    if let Some(id) = child.child_by_field_name("name") {
-                        return Some(node_text_simple(id, lines));
-                    }
-                }
                 return Some(text);
             }
         }
@@ -68,6 +67,56 @@ pub(crate) fn extract_definition_name(node: tree_sitter::Node, lines: &[&str]) -
         for child in node.children(&mut cursor) {
             if DEFINITION_KINDS.contains(&child.kind()) {
                 return extract_definition_name(child, lines);
+            }
+        }
+    }
+
+    None
+}
+
+pub(crate) fn extract_declarator_name(node: tree_sitter::Node, lines: &[&str]) -> Option<String> {
+    let kind = node.kind();
+    if matches!(
+        kind,
+        "identifier" | "field_identifier" | "type_identifier" | "operator_name"
+    ) || kind.ends_with("identifier")
+    {
+        let text = node_text_simple(node, lines);
+        return (!text.is_empty()).then_some(text);
+    }
+
+    for field in ["declarator", "name", "identifier"] {
+        if let Some(child) = node.child_by_field_name(field) {
+            if let Some(name) = extract_declarator_name(child, lines) {
+                return Some(name);
+            }
+            let text = node_text_simple(child, lines);
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let child_kind = child.kind();
+        if matches!(
+            child_kind,
+            "parameter_list"
+                | "parameter_declaration"
+                | "compound_statement"
+                | "declaration_list"
+                | "type"
+                | "primitive_type"
+        ) {
+            continue;
+        }
+        if child_kind.contains("declarator")
+            || child_kind.contains("identifier")
+            || matches!(child_kind, "qualified_identifier" | "scoped_identifier")
+        {
+            if let Some(name) = extract_declarator_name(child, lines) {
+                return Some(name);
             }
         }
     }

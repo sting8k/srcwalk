@@ -68,6 +68,45 @@ fn find_accepts_repeated_scopes_and_outputs_pwd_relative_hits() {
 }
 
 #[test]
+fn paginated_multi_scope_find_labels_scope_counts_as_page_counts() {
+    let dir = temp_repo("multi_scope_find_page_counts");
+    write_file(&dir.join("src/lib.rs"), "pub fn shared_target() {}\n");
+    write_file(&dir.join("tests/lib.rs"), "pub fn shared_target() {}\n");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "find",
+            "shared_target",
+            "--scope",
+            "src",
+            "--scope",
+            "tests",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "expected paginated multi-scope find to succeed, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Scopes on this page:"),
+        "paginated scope counts should be labeled as page counts, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("\nScopes: src"),
+        "paginated output should not label page counts as total scope counts, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn find_accepts_repeated_scopes_with_multi_symbol_query() {
     let dir = temp_repo("multi_scope_multi_symbol_find");
     write_file(

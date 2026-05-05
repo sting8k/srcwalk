@@ -4,11 +4,26 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [0.3.0] - 2026-05-05
+
 ### Added
-- Added `srcwalk guide` to print the full embedded, version-matched agent guide from the binary.
-- Added `srcwalk version --check` to check the latest release and print update commands.
-- Converted the installable `skills/srcwalk/SKILL.md` into a minimal bootstrap entry that points agents to `srcwalk guide`.
-- Updated root help to surface `srcwalk guide` as the canonical agent guide entry point.
+- Added `srcwalk guide` to print the full embedded, version-matched agent guide from the binary, making the installed binary the source of truth for agent routing policy.
+- Added `srcwalk version --check` to check the latest release and print update commands for npm, cargo, and Git installs.
+- Added multi-symbol + multi-scope `find` support, so commands like `srcwalk find "A, B, C" --scope src --scope tests` now search each query across all scopes and render one section per query.
+- Added compact multi-section fallback output when `--section A,B --budget N` exceeds the section budget; output now keeps section labels, useful code snippets, omitted-line metrics, and concise follow-up hints instead of returning only a caveat.
+- Added C/C++ declarator-based function-name extraction for structural search and sections, including K&R-style definitions such as `rust_demangle_callback`.
+
+### Changed
+- Converted the installable `skills/srcwalk/SKILL.md` into a minimal bootstrap entry that points agents to `srcwalk guide`; `compatible_srcwalk` now requires a binary with the embedded guide contract.
+- Updated root `--help` and README examples to surface `srcwalk guide`, action-first analysis, multi-scope/multi-symbol `find`, compact section reads, and current footer shapes.
+- Clarified paginated multi-scope `find` output by labeling page-local scope counts as `Scopes on this page:` instead of implying totals.
+- Shortened section-budget footers to keep enough metrics for agents without verbose prose.
+
+### Fixed
+- Fixed repeated `--scope` combined with comma-separated `find` queries; each query now correctly searches all scopes instead of silently losing multi-scope behavior.
+- Fixed paginated search count summaries so definition/usage/comment counts reflect the rendered page while continuation hints still use total matches.
+- Fixed multi-section over-budget reads returning no body for large selections; they now degrade to compact snippets with anchor lines for requested ranges inside merged symbol sections.
+- Fixed C structural outlines and symbol searches that previously surfaced some function definitions as `<anonymous>`, enabling name-glob `find` and `--section <symbol>` on affected C files.
 
 ## [0.2.7] - 2026-05-05
 

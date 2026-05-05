@@ -1,3 +1,4 @@
+use crate::lang::treesitter::extract_definition_name;
 use crate::types::{Lang, OutlineEntry, OutlineKind};
 
 /// Get the tree-sitter Language for a given Lang variant.
@@ -78,7 +79,8 @@ fn node_to_entry(
         | "init_declaration"
         | "deinit_declaration"
         | "protocol_function_declaration" => {
-            let name = find_child_text(node, "name", lines)
+            let name = extract_definition_name(node, lines)
+                .or_else(|| find_child_text(node, "name", lines))
                 .or_else(|| find_child_text(node, "identifier", lines))
                 .unwrap_or_else(|| {
                     // Swift deinit has no name field — use the node kind as name
@@ -786,4 +788,36 @@ pub fn get_outline_entries(content: &str, lang: Lang) -> Vec<OutlineEntry> {
 
     let lines: Vec<&str> = content.lines().collect();
     walk_top_level(tree.root_node(), &lines, lang)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn c_declarator_function_names_are_not_anonymous() {
+        let code = r#"
+static int normal_func(int x) { return x; }
+char *make_name(void) { return 0; }
+static int rust_demangle_callback(data, len)
+  const char *data;
+  int len;
+{
+  return 0;
+}
+"#;
+
+        let entries = get_outline_entries(code, Lang::C);
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert!(
+            names.contains(&"normal_func")
+                && names.contains(&"make_name")
+                && names.contains(&"rust_demangle_callback"),
+            "expected C function names in outline, got: {names:?}"
+        );
+        assert!(
+            !names.contains(&"<anonymous>"),
+            "C declarator functions should not be anonymous: {names:?}"
+        );
+    }
 }

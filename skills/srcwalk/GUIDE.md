@@ -19,7 +19,7 @@ This is the version-matched command guide from the installed binary. The bootstr
 | Read exact body/range | `srcwalk <path> --section <symbol|start-end[,symbol|start-end]>` |
 | Find definition/usages/text/name-glob | `srcwalk find <query> --scope <dir>`; repeat `--scope` for multi-scope find |
 | Find files by glob | `srcwalk files '<glob>' --scope <dir>` |
-| Find several symbols in one pass | `srcwalk find "A, B, C" --scope <dir>` |
+| Find several symbols/scopes in one pass | `srcwalk find "A, B, C" --scope src --scope tests` |
 | Who directly calls this? | `srcwalk callers <symbol> --scope <dir>` |
 | Who reaches this transitively? | `srcwalk callers <symbol> --depth 2 --scope <dir>` |
 | What does this function call? | `srcwalk callees <symbol> --scope <dir>` |
@@ -52,12 +52,13 @@ srcwalk <path>:123
 srcwalk <path> --section <symbol|start-end[,symbol|start-end]>
 ```
 
-Prefer outline/section reads before `--full` for large files. `--full` is capped; raise with `--budget <N>` only when raw text is needed.
+Prefer outline/section reads before `--full`. If sections compact, narrow `--section` or raise `--budget`.
 
 ### Find and drill into symbols
 
 ```bash
 srcwalk find <symbol> --scope <dir>
+srcwalk find "A, B, C" --scope classes --scope controllers
 srcwalk find 'displayAjax{Update,Refresh}*' --scope <dir> --filter kind:fn
 srcwalk find '*Controller' --scope <dir>
 srcwalk find <symbol> --expand --scope <dir>
@@ -154,7 +155,7 @@ Use before editing a file to see imports and dependents.
   > Next: use `srcwalk callers <symbol> --depth 2` or `srcwalk callers <symbol> --count-by receiver|file`.
   ```
 
-- `srcwalk find <query>` handles exact symbols, text, comma-separated symbols, and symbol-name globs like `displayAjax*` or `*Controller`; use `srcwalk files '<glob>'` for file globs.
+- `srcwalk find <query>` is broad code search: exact symbols, text fallback, comma-separated symbols, repeated scopes, and symbol-name globs like `displayAjax*` or `*Controller`; use `srcwalk files '<glob>'` for file globs.
 - Bare filename + `--section` may auto-pick the primary non-ignored shallow match. If duplicates matter, pass an explicit path.
 
 ## Escalation rules

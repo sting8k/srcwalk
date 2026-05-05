@@ -806,8 +806,10 @@ fn read_multi_section(
         merged_blocks.push((start, end, focus, label));
     }
 
+    let limit = section_token_limit(budget);
+    let compact_line_cap = compact_section_line_cap(limit, merged_blocks.len());
     let mut parts: Vec<String> = Vec::new();
-    let mut rendered_labels: Vec<String> = Vec::new();
+    let mut compact_parts: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut total_lines: u32 = 0;
 
@@ -829,7 +831,6 @@ fn read_multi_section(
         let selected = String::from_utf8_lossy(&buf[start_byte..end_byte]);
         total_bytes += selected.len() as u64;
         total_lines += (e - s) as u32;
-        rendered_labels.push(label.clone());
         let formatted = if let Some(focus) = focus {
             format_focused_lines(&selected, *start as u32, *focus)
         } else {
@@ -837,6 +838,14 @@ fn read_multi_section(
         };
         parts.push(format!(
             "## section: {label} [{start}-{end}]\n\n{formatted}"
+        ));
+        compact_parts.push(format_compact_section(
+            &selected,
+            *start,
+            *end,
+            *focus,
+            label,
+            compact_line_cap,
         ));
     }
 
@@ -853,21 +862,40 @@ fn read_multi_section(
     }
 
     let tok_est = estimate_tokens(total_bytes);
-    let limit = section_token_limit(budget);
 
     if tok_est > limit {
-        let header = format::file_header(path, total_bytes, total_lines, ViewMode::SectionOutline);
+        let section_count = compact_parts.len();
         let noun = if all_symbol_names {
-            "symbols"
+            "symbol"
         } else {
-            "sections"
+            "section"
         };
-        return Ok(format!(
-            "{header}\n\n\
-             > Caveat: section cap ~{tok_est}/{limit} tokens; {noun} {count}.\n\
-             > Next: use narrower --section list or --budget <N>.",
-            count = rendered_labels.len(),
-        ));
+        let plural = if section_count == 1 {
+            noun.to_string()
+        } else {
+            format!("{noun}s")
+        };
+        let header = format::file_header(path, total_bytes, total_lines, ViewMode::SectionOutline)
+            .replace(
+                "[section, outline (over limit)]",
+                &format!("[{section_count} {plural}, compact (over limit)]"),
+            );
+        let body = compact_parts.join("\n\n---\n\n");
+        let mut output = format!(
+            "{header}\n\n{body}\n\n\
+             > Caveat: compacted ~{tok_est}/{limit} tokens; shown {section_count} {plural}.\n\
+             > Next: narrow --section or raise --budget."
+        );
+        if !errors.is_empty() {
+            let missing = errors.join("\n  ");
+            let missing_label = if all_symbol_names {
+                "Missing symbols"
+            } else {
+                "Missing sections"
+            };
+            let _ = write!(output, "\n> {missing_label}:\n>   {missing}");
+        }
+        return Ok(output);
     }
 
     let section_count = parts.len();
@@ -922,6 +950,94 @@ fn filter_entries_in_range(
         }
     }
     out
+}
+
+fn compact_section_line_cap(limit: u64, section_count: usize) -> usize {
+    let usable = limit.saturating_sub(160);
+    let per_section = usable / section_count.max(1) as u64;
+    ((per_section / 12) as usize).clamp(3, 12)
+}
+
+fn format_compact_section(
+    selected: &str,
+    start: usize,
+    end: usize,
+    focus: Option<usize>,
+    label: &str,
+    line_cap: usize,
+) -> String {
+    let lines: Vec<&str> = selected.lines().collect();
+    let total = lines.len();
+    let anchor = focus
+        .filter(|line| (*line >= start) && (*line <= end))
+        .or_else(|| first_range_start_in_label(label, start, end));
+    let shown = compact_line_indices(total, start, anchor, line_cap);
+    let width = (start + total.saturating_sub(1)).max(1).ilog10() as usize + 1;
+    let mut formatted = String::new();
+    let mut previous_idx = None;
+    for idx in &shown {
+        if let Some(prev) = previous_idx {
+            if *idx > prev + 1 {
+                let _ = writeln!(formatted, "  ...");
+            }
+        }
+        let num = start + idx;
+        let prefix = if anchor == Some(num) { "► " } else { "  " };
+        let _ = writeln!(formatted, "{prefix}{num:>width$} │ {}", lines[*idx]);
+        previous_idx = Some(*idx);
+    }
+    if total > shown.len() {
+        let omitted = total - shown.len();
+        let _ = writeln!(
+            formatted,
+            "  ... {omitted} lines omitted; narrow --section or raise --budget."
+        );
+    }
+
+    format!(
+        "## section: {label} [{start}-{end}] (compact)\n\n{}",
+        formatted.trim_end()
+    )
+}
+
+fn first_range_start_in_label(label: &str, start: usize, end: usize) -> Option<usize> {
+    label
+        .split(',')
+        .filter_map(|part| parse_range(part.trim()))
+        .map(|(range_start, _, focus)| focus.unwrap_or(range_start))
+        .find(|line| (*line >= start) && (*line <= end))
+}
+
+fn compact_line_indices(
+    total: usize,
+    section_start: usize,
+    anchor: Option<usize>,
+    line_cap: usize,
+) -> Vec<usize> {
+    if total <= line_cap {
+        return (0..total).collect();
+    }
+    let Some(anchor_line) = anchor else {
+        return (0..line_cap).collect();
+    };
+    let anchor_idx = anchor_line.saturating_sub(section_start).min(total - 1);
+    if anchor_idx < line_cap {
+        return (0..line_cap).collect();
+    }
+
+    let head_count = (line_cap / 3).clamp(1, 3);
+    let anchor_count = line_cap.saturating_sub(head_count).max(1);
+    let before = anchor_count / 2;
+    let anchor_start = anchor_idx
+        .saturating_sub(before)
+        .min(total.saturating_sub(anchor_count));
+
+    let mut indices: Vec<usize> = (0..head_count).collect();
+    indices.extend(anchor_start..anchor_start + anchor_count);
+    indices.sort_unstable();
+    indices.dedup();
+    indices.truncate(line_cap);
+    indices
 }
 
 /// Format filtered outline entries for section degrade output.
@@ -1529,6 +1645,28 @@ mod tests {
     // --- multi-symbol section tests ---
 
     #[test]
+    fn c_kr_function_section_resolves_by_name() {
+        let code = r#"static int rust_demangle_callback(data, len)
+  const char *data;
+  int len;
+{
+  return 0;
+}
+"#;
+        let path = std::env::temp_dir().join("srcwalk_kr_section.c");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_section(&path, "rust_demangle_callback", None, &cache).unwrap();
+        assert!(
+            out.contains("rust_demangle_callback(data, len)") && out.contains("return 0;"),
+            "K&R C function should resolve as a named section: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn multi_symbol_section_returns_all_bodies() {
         let code = "fn aaa() {\n    1\n}\nfn bbb() {\n    2\n}\nfn ccc() {\n    3\n}\n";
         let path = std::env::temp_dir().join("srcwalk_multi_sym.rs");
@@ -1651,6 +1789,78 @@ mod tests {
         assert!(
             !out.contains("first()"),
             "unrequested symbol should be omitted: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn over_budget_multi_section_returns_compact_bodies_and_missing_notes() {
+        let mut code = String::from("fn first() {\n");
+        for i in 0..40 {
+            code.push_str(&format!(
+                "    let a_{i} = \"padding padding padding padding\";\n"
+            ));
+        }
+        code.push_str("}\nfn second() {\n");
+        for i in 0..40 {
+            code.push_str(&format!(
+                "    let b_{i} = \"padding padding padding padding\";\n"
+            ));
+        }
+        code.push_str("}\n");
+        let path = std::env::temp_dir().join("srcwalk_multi_section_budget.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_file_with_budget(
+            &path,
+            Some("first,missing_fn,second"),
+            false,
+            Some(100),
+            &cache,
+        )
+        .unwrap();
+        assert!(
+            out.contains("compact (over limit)"),
+            "expected compact over-budget mode: {out}"
+        );
+        assert!(
+            out.contains("## section: first") && out.contains("## section: second"),
+            "compact output should keep requested section labels: {out}"
+        );
+        assert!(
+            out.contains("let a_0") && out.contains("let b_0"),
+            "compact output should include useful code from each section: {out}"
+        );
+        assert!(
+            out.contains("lines omitted") && out.contains("compacted ~"),
+            "compact output should include concise budget/omission metrics: {out}"
+        );
+        assert!(
+            out.contains("Missing symbols") && out.contains("missing_fn"),
+            "compact output should preserve missing symbol notes: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn compact_merged_symbol_and_range_keeps_range_anchor() {
+        let mut code = String::from("fn big() {\n");
+        for i in 0..80 {
+            code.push_str(&format!("    let value_{i} = {i};\n"));
+        }
+        code.push_str("}\n");
+        let path = std::env::temp_dir().join("srcwalk_compact_range_anchor.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let out =
+            read_file_with_budget(&path, Some("big,40-42"), false, Some(100), &cache).unwrap();
+        assert!(
+            out.contains("fn big()") && out.contains("► 40") && out.contains("value_38"),
+            "compact merged output should keep signature and requested range anchor: {out}"
         );
 
         let _ = std::fs::remove_file(&path);

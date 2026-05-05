@@ -614,8 +614,13 @@ fn multi_scope_search_header(result: &types::SearchResult, scopes: &[PathBuf]) -
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let scope_label = if result.offset > 0 || result.matches.len() != result.total_found {
+        "Scopes on this page"
+    } else {
+        "Scopes"
+    };
     format!(
-        "# Search: \"{}\" in {} scopes — {parts}\nScopes: {scope_list}",
+        "# Search: \"{}\" in {} scopes — {parts}\n{scope_label}: {scope_list}",
         result.query,
         scopes.len()
     )

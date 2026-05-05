@@ -78,11 +78,12 @@ srcwalk src/auth.ts --section handleAuth     # drill into symbol
 srcwalk src/auth.ts --section 72             # focused line context
 srcwalk src/auth.ts --section 44-89          # line range
 
-# Symbol search
-srcwalk find handleAuth --scope src/              # definitions + usages
-srcwalk find Depends --filter 'path:param_functions' --scope .
-srcwalk find "foo, bar" --scope src/              # multi-symbol
-srcwalk find handleAuth --scope src/ --expand     # inline source + callees
+# Find definitions/usages/text/name globs
+srcwalk find handleAuth --scope src/                  # definitions + usages
+srcwalk find "foo, bar" --scope src/ --scope tests/   # multi-symbol + multi-scope
+srcwalk find '*Controller' --scope src/ --filter kind:class
+srcwalk find handleAuth --scope src/ --expand         # inline source context
+srcwalk files '*.ts' --scope src/                     # file globs live under files
 
 # Callers (reverse call graph)
 srcwalk callers handleAuth --scope src/
@@ -118,31 +119,66 @@ Discovery commands respect ignore files; explicit file reads can still inspect i
 $ srcwalk src/auth.ts
 # src/auth.ts (258 lines, ~3.4k tokens) [outline]
 
-[1-12]   imports: express(2), jsonwebtoken, @/config
-[14-22]  interface AuthConfig
-[24-42]  fn validateToken(token: string): Claims | null
-[44-89]  export fn handleAuth(req, res, next)
-[91-258] export class AuthManager
-  [99-130]  fn authenticate(credentials)
-  [132-180] fn authorize(user, resource)
+[1-12]       imports: express(2), jsonwebtoken, @/config
+[14-22]      interface AuthConfig
+[24-42]      fn validateToken
+             function validateToken(token: string): Claims | null
+[44-89]      fn handleAuth
+             export function handleAuth(req, res, next)
+[91-258]     class AuthManager
+  [99-130]     fn authenticate
+  [132-180]    fn authorize
+
+> Next: drill into a symbol with --section <name> or a line range
 ```
 </details>
 
 <details>
-<summary><b>Symbol search — definitions first, with callees</b></summary>
+<summary><b>Compact multi-section read</b></summary>
 
 ```
-$ srcwalk find handleAuth --scope src/ --expand
-# Search: "handleAuth" in src/ — 6 matches (2 definitions, 4 usages)
+$ srcwalk src/auth.ts --section "handleAuth,120-140,authorize" --budget 900
+# src/auth.ts (86 lines, ~1.1k tokens) [2 sections, compact (over limit)]
 
-## src/auth.ts:44-89 [definition]
-  44 │ export function handleAuth(req, res, next) {
-  45 │   const token = req.headers.authorization?.split(' ')[1];
+## section: handleAuth, 120-140 [44-140] (compact)
+
+   44 │ export function handleAuth(req, res, next) {
+   45 │   const token = req.headers.authorization?.split(' ')[1];
   ...
+► 120 │   audit.log({ user, route: req.path });
+  ... 82 lines omitted; narrow --section or raise --budget.
 
-── calls ──
-  validateToken    src/auth.ts:24-42
-  refreshSession   src/auth.ts:91-120
+---
+
+## section: authorize [132-180] (compact)
+
+  132 │ authorize(user, resource) {
+  133 │   return this.policy.can(user, resource);
+  ... 46 lines omitted; narrow --section or raise --budget.
+
+> Caveat: compacted ~1100/900 tokens; shown 2 sections.
+> Next: narrow --section or raise --budget.
+```
+</details>
+
+<details>
+<summary><b>Find — multi-symbol and multi-scope</b></summary>
+
+```
+$ srcwalk find "handleAuth, validateToken" --scope src --scope tests --limit 2
+# Search: "handleAuth" in 2 scopes — 2 matches (1 definitions, 1 usages)
+Scopes on this page: src (1), tests (1)
+  [fn] handleAuth src/auth.ts:44-89
+  [usage] tests/auth.test.ts:18 handleAuth(req, res, next)
+
+> Next: 3 more matches available. Continue with --offset 2 --limit 2.
+> Next: drill into any hit with `srcwalk <path>:<line>`.
+
+---
+# Search: "validateToken" in 2 scopes — 2 matches (1 definitions, 1 usages)
+Scopes on this page: src (1), tests (1)
+  [fn] validateToken src/auth.ts:24-42
+  [usage] tests/auth.test.ts:9 validateToken(token)
 ```
 </details>
 
@@ -175,9 +211,12 @@ $ srcwalk callers NewClient --depth 3 --json
 <summary><b>Did-you-mean — cross-convention + typo tolerance</b></summary>
 
 ```
-$ srcwalk find searchSymbol --scope src/
-no matches for "searchSymbol" in src/
-> Did you mean: search_symbol (src/lib.rs:186)
+$ srcwalk find read_file_with_budgt --scope src
+# Search: "read_file_with_budgt" in src — 0 matches
+
+(~14 tokens)
+
+> Did you mean: read_file_with_budget (src/lib.rs:686)?
 ```
 </details>
 
@@ -187,11 +226,11 @@ no matches for "searchSymbol" in src/
 ```
 $ srcwalk map --scope .
 # Map: . (depth 3, sizes ~= tokens)
+# Note: respects .gitignore, .ignore, and parent ignores; explicit file reads can still inspect ignored paths.
 
-src/       ~14.9k
-  read/    ~10.2k
-    outline/  ~3.7k
-  search/  ~8.1k
+src/       ~180k
+  search/  ~87k
+  read/    ~26k
 
 > Next: add --symbols, or narrow with --scope <dir>.
 ```

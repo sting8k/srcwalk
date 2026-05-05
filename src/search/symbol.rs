@@ -1237,6 +1237,36 @@ pub(crate) fn dispatch_tool(tool: &str) -> Result<String, String> {
         assert!(!defs.is_empty(), "should find 'dispatch_tool' definition");
     }
 
+    #[test]
+    fn c_declarator_definitions_detected() {
+        let code = r#"
+static int normal_func(int x) { return x; }
+char *make_name(void) { return 0; }
+static int rust_demangle_callback(data, len)
+  const char *data;
+  int len;
+{
+  return 0;
+}
+"#;
+        let ts_lang = crate::lang::outline::outline_language(crate::types::Lang::C).unwrap();
+
+        for name in ["normal_func", "make_name", "rust_demangle_callback"] {
+            let defs = find_defs_treesitter(
+                std::path::Path::new("test.c"),
+                name,
+                &ts_lang,
+                Some(crate::types::Lang::C),
+                code,
+                code.lines().count() as u32,
+                SystemTime::now(),
+                None,
+            );
+            assert!(!defs.is_empty(), "should find C definition {name}");
+            assert_eq!(defs[0].def_name.as_deref(), Some(name));
+        }
+    }
+
     /// Helper: search for an Elixir definition by name in a code snippet.
     fn elixir_find(code: &str, name: &str) -> Vec<Match> {
         let ts_lang = crate::lang::outline::outline_language(crate::types::Lang::Elixir).unwrap();

@@ -51,9 +51,41 @@ fn root_help_surfaces_guide_entry_point() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Start here:"));
     assert!(stdout.contains("srcwalk guide"));
     assert!(stdout.contains("Full embedded, version-matched agent guide"));
+    assert!(stdout.contains("srcwalk version"));
+    assert!(stdout.contains("Show version; add --check for latest"));
     assert!(!stdout.contains("overview"));
+}
+
+#[test]
+fn version_subcommand_is_canonical_version_surface() {
+    let output = srcwalk().arg("version").output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "version failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("srcwalk {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn version_help_exposes_check_flag() {
+    let output = srcwalk().args(["version", "--help"]).output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "version help failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--check"));
+    assert!(stdout.contains("latest release"));
 }
 
 #[test]
@@ -67,7 +99,7 @@ fn guide_subcommand_prints_full_embedded_skill() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("# srcwalk — agent routing policy"));
-    assert!(stdout.contains("Use srcwalk for structural code questions"));
+    assert!(stdout.contains("version-matched command guide"));
     assert!(stdout.contains("## Choose the command by intent"));
 }
 

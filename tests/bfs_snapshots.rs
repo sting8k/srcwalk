@@ -278,14 +278,14 @@ fn bfs_deterministic_under_edge_cap() {
 // "Class.method" into next_frontier, but find_callers_batch matches bare
 // names. Without rsplit on '.'/'::' hop 2+ would always be empty.
 //
-// Uses `search_callers_expanded` as target because its single caller
-// (`run_callers`) has a qualified name in hop 1. If hop 2 has zero edges,
-// the bare-name extraction regressed.
+// Uses `find_callers_batch` as target because hop 1 feeds several callers into
+// the next frontier, and hop 2 must find callers of those hop-1 functions. If
+// hop 2 has zero edges, frontier propagation regressed.
 
 #[test]
-fn bfs_hop2_finds_edges_after_qualified_frontier() {
+fn bfs_hop2_finds_edges_after_frontier_propagation() {
     let scope = fixture_scope();
-    let json = run_callers("search_callers_expanded", &scope, Some(3), true);
+    let json = run_callers("find_callers_batch", &scope, Some(3), true);
     let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
     let per_hop = v["stats"]["per_hop"].as_array().expect("per_hop array");
 
@@ -299,6 +299,6 @@ fn bfs_hop2_finds_edges_after_qualified_frontier() {
     let hop2_edges = per_hop[1]["edges"].as_u64().unwrap_or(0);
     assert!(
         hop2_edges > 0,
-        "hop 2 must have >0 edges (frontier bare-name extraction); got 0"
+        "hop 2 must have >0 edges (frontier propagation); got 0"
     );
 }

@@ -1,24 +1,22 @@
 ---
 name: srcwalk
 compatible_srcwalk: ">=0.2.8"
-description: "Bootstrap entry for srcwalk: a tree-sitter code-intelligence CLI for token-aware code reading, repo maps, symbol search, callers/callees, dependencies, and precise drill-ins. Run `srcwalk guide` immediately and treat the embedded guide from the installed binary as the source of truth."
+description: "Srcwalk is the agent's code navigator: one tree-sitter CLI for repo maps, token-aware large-file reads, symbol search, callers/callees, deps, impact checks, and precise drill-ins. Use it before raw reads or grep for code-structure work. Run `srcwalk guide` first; it is the installed binary's source of truth."
 ---
 
 # srcwalk — bootstrap entry
 
-srcwalk is a tree-sitter-backed code-intelligence CLI for agents. It helps you inspect large or unfamiliar codebases with token-aware file reads, structural outlines, repo maps, symbol definitions/usages, caller/callee graphs, dependency views, and precise line/section drill-ins.
+Default to srcwalk for code navigation, large-file reading, repo maps, symbols, callers/callees, deps, and impact checks. Use raw reads or broad grep first only for pure text/path matching.
 
-Use it when the user asks where code lives, what calls what, how a file/module fits together, what a large file contains, or how to navigate an unfamiliar repository.
-
-Before using srcwalk beyond a trivial command, run this immediately:
+Before non-trivial use, run:
 
 ```bash
 srcwalk guide
 ```
 
-Follow the embedded guide it prints. It is version-matched with the installed binary and contains the full routing policy, workflows, examples, caveats, and current command behavior.
+Do not pipe, truncate, summarize, or sample `srcwalk guide`; later sections contain important routing rules and caveats.
 
-For root help and command-specific flags, use:
+Use root/command help only for flags:
 
 ```bash
 srcwalk --help

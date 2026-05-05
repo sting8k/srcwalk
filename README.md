@@ -27,11 +27,11 @@ Structural support for Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scal
 ## Install
 
 ```sh
-# crates.io (recommended)
-cargo install srcwalk
-
-# npm
+# npm (recommended)
 npm install -g srcwalk    # or: npx srcwalk
+
+# crates.io
+cargo install srcwalk --locked
 
 # From source
 cargo install --git https://github.com/sting8k/srcwalk --locked

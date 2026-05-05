@@ -1,14 +1,6 @@
----
-name: srcwalk
-compatible_srcwalk: ">=0.2.8"
-description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'srcwalk' or 'outline'. Prefer this for code-structure questions and token-aware file reading. For pure text grep or path listing, use ripgrep / fd directly."
----
-
 # srcwalk — agent routing policy
 
-Use srcwalk for structural code questions: repo maps, large-file outlines, symbol definitions/usages, callers, callees, file dependencies, and precise drill-in reads.
-
-For plain text grep or path listing, prefer `rg`/`fd`. For known files, use srcwalk when structural outline, token-aware reading, sections, or line-focused drill-in will help; otherwise a normal file read is fine.
+This is the version-matched command guide from the installed binary. The bootstrap skill decides when to use srcwalk; this guide decides which srcwalk command to run next.
 
 ## Mental model
 

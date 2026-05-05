@@ -181,7 +181,7 @@ pub fn generate(
 
     let mut out = format!(
         "# Map: {} (depth {}, sizes ~= tokens)\n",
-        scope.display(),
+        crate::format::display_path(scope),
         depth
     );
     out.push_str(&format_walk_note(&cfg));

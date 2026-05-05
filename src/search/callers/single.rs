@@ -739,7 +739,7 @@ pub fn search_callers_expanded(
              > Next: try `srcwalk(\"{}\")` (symbol search) to find the declaring interface/trait, \
              then run `callers` on that name, or search for implementors.",
             target,
-            scope.display(),
+            crate::format::display_path(scope),
             target,
         ));
     }

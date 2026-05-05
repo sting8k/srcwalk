@@ -1571,7 +1571,7 @@ fn format_glob_result(result: &glob::GlobResult, scope: &Path) -> Result<String,
     let header = format!(
         "# Glob: \"{}\" in {} — {} of {} files (offset {})",
         result.pattern,
-        scope.display(),
+        crate::format::display_path(scope),
         result.files.len(),
         result.total_found,
         result.offset,

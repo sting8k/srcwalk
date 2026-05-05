@@ -14,7 +14,7 @@ pub fn file_header(path: &Path, byte_len: u64, line_count: u32, mode: ViewMode) 
     };
     format!(
         "# {} ({line_count} lines, {token_str}) [{mode}]",
-        path.display()
+        display_path(path)
     )
 }
 
@@ -23,7 +23,7 @@ pub fn binary_header(path: &Path, byte_len: u64, mime: &str) -> String {
     let size_str = format_size(byte_len);
     format!(
         "# {} (binary, {size_str}, {mime}) [skipped]",
-        path.display()
+        display_path(path)
     )
 }
 
@@ -42,7 +42,7 @@ pub fn search_header(
         (d, u, 0) => format!("{total} matches ({d} definitions, {u} usages)"),
         (d, u, c) => format!("{total} matches ({d} definitions, {u} usages, {c} in comments)"),
     };
-    format!("# Search: \"{query}\" in {} — {parts}", scope.display())
+    format!("# Search: \"{query}\" in {} — {parts}", display_path(scope))
 }
 
 /// Human-readable file size. Integer math only — no floats.
@@ -71,18 +71,35 @@ pub fn number_lines(content: &str, start: u32) -> String {
     out
 }
 
-/// Path relative to scope for cleaner output. Falls back to full path.
-pub(crate) fn rel(path: &Path, scope: &Path) -> String {
-    path.strip_prefix(scope)
-        .unwrap_or(path)
-        .display()
-        .to_string()
+/// Human display path. Prefer cwd-relative paths so output can be copied back
+/// into `srcwalk <path>:<line>` from the user's current directory.
+pub(crate) fn display_path(path: &Path) -> String {
+    cwd_relative(path).unwrap_or_else(|| path.display().to_string())
 }
 
-/// Non-empty display path for headers.
-///
-/// If `rel(path, scope)` is empty (e.g. `--scope` points to the file itself),
-/// fall back to `dir/file` (or just `file` when parent dir is unavailable).
+/// Path for human result rows. Prefer cwd-relative copy-pasteable paths, then
+/// fall back to scope-relative legacy display when the scope lives elsewhere.
+pub(crate) fn rel(path: &Path, scope: &Path) -> String {
+    cwd_relative(path).unwrap_or_else(|| {
+        path.strip_prefix(scope)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    })
+}
+
+fn cwd_relative(path: &Path) -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
+    let rel = path.strip_prefix(&cwd).ok()?;
+    if rel.as_os_str().is_empty() {
+        Some(".".to_string())
+    } else {
+        Some(rel.display().to_string())
+    }
+}
+
+/// Non-empty display path for headers/result rows.
 pub(crate) fn rel_nonempty(path: &Path, scope: &Path) -> String {
     let rel_path = rel(path, scope);
     if !rel_path.is_empty() && rel_path != "." {

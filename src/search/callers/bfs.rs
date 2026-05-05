@@ -339,7 +339,7 @@ fn format_bfs(
         out,
         "# BFS callers of \"{}\" in {} — depth={}/{}, {} edge{}, {} ms",
         target,
-        scope.display(),
+        crate::format::display_path(scope),
         stats.depth_reached,
         max_depth,
         stats.edges_total,
@@ -380,7 +380,7 @@ fn format_bfs(
             if list.len() == 1 { "" } else { "s" }
         );
         for e in list {
-            let rel = e.from_file.strip_prefix(scope).unwrap_or(&e.from_file);
+            let rel = crate::format::rel_nonempty(&e.from_file, scope);
             // Match legacy `--callers` convention: payload is the call-site
             // source text, not the bare callee symbol. Fall back to the
             // symbol only when call_text is unavailable.
@@ -392,10 +392,7 @@ fn format_bfs(
             let _ = writeln!(
                 out,
                 "  {:<28} {}:{}  → {}",
-                e.from,
-                rel.display(),
-                e.from_line,
-                payload
+                e.from, rel, e.from_line, payload
             );
         }
     }

@@ -1015,7 +1015,7 @@ fn disambiguate_glob_for_section(
             .map(|e| &e.path)
             .filter(|p| **p != picked)
             .take(3)
-            .map(|p| p.strip_prefix(scope).unwrap_or(p).display().to_string())
+            .map(|p| format::rel_nonempty(p, scope))
             .collect();
         let skipped_str = if skipped_preview.is_empty() {
             String::new()
@@ -1030,7 +1030,7 @@ fn disambiguate_glob_for_section(
         };
         let note = format!(
             "Resolved '{original_query}' → {} (skipped {skipped_count} non-primary {}{skipped_str}). Pass full path to override.",
-            picked.strip_prefix(scope).unwrap_or(&picked).display(),
+            format::rel_nonempty(&picked, scope),
             if skipped_count == 1 { "copy" } else { "copies" },
         );
         return Ok(Some((picked, Some(note))));
@@ -1045,7 +1045,7 @@ fn disambiguate_glob_for_section(
     let listing = candidates
         .iter()
         .take(5)
-        .map(|p| format!("  - {}", p.strip_prefix(scope).unwrap_or(p).display()))
+        .map(|p| format!("  - {}", format::rel_nonempty(p, scope)))
         .collect::<Vec<_>>()
         .join("\n");
     let more = if candidates.len() > 5 {
@@ -1177,8 +1177,7 @@ fn run_inner(
                 if !related.is_empty() {
                     let hints: Vec<String> = related
                         .iter()
-                        .filter_map(|p| p.strip_prefix(scope).ok().or(Some(p.as_path())))
-                        .map(|p| p.display().to_string())
+                        .map(|p| format::rel_nonempty(p, scope))
                         .collect();
                     out.push_str("\n\n> Related: ");
                     out.push_str(&hints.join(", "));
@@ -1454,7 +1453,7 @@ fn symbol_or_file_suggestion(scope: &Path, query: &str, glob: Option<&str>) -> O
         if q_low == n_low {
             return None;
         }
-        let rel = path.strip_prefix(scope).unwrap_or(&path).display();
+        let rel = format::rel_nonempty(&path, scope);
         return Some(format!("{name} ({rel}:{line})"));
     }
     read::suggest_similar_file(scope, query)

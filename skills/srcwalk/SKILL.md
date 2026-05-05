@@ -24,8 +24,8 @@ For plain text grep or path listing, prefer `rg`/`fd`. For known files, use srcw
 | Understand repo shape / entry points | `srcwalk map --scope .` |
 | Read or inspect a large known file | `srcwalk <path>` |
 | Jump around a hit line | `srcwalk <path>:<line>` |
-| Read exact body/range | `srcwalk <path> --section <symbol|start-end>` |
-| Find definition/usages/text/glob | `srcwalk find <query> --scope <dir>` |
+| Read exact body/range | `srcwalk <path> --section <symbol|start-end[,symbol|start-end]>` |
+| Find definition/usages/text/glob | `srcwalk find <query> --scope <dir>`; repeat `--scope` for multi-scope find |
 | Find several symbols in one pass | `srcwalk find "A, B, C" --scope <dir>` |
 | Who directly calls this? | `srcwalk callers <symbol> --scope <dir>` |
 | Who reaches this transitively? | `srcwalk callers <symbol> --depth 2 --scope <dir>` |
@@ -56,8 +56,7 @@ srcwalk <path>:<line>
 ```bash
 srcwalk <path>
 srcwalk <path>:123
-srcwalk <path> --section 45-89
-srcwalk <path> --section SomeFunction
+srcwalk <path> --section <symbol|start-end[,symbol|start-end]>
 ```
 
 Prefer outline/section reads before `--full` for large files. Use `--full` when raw text is useful; output is capped.

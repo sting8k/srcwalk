@@ -245,7 +245,7 @@ pub fn run_multi_scope_find_filtered(
     if expand > 0 {
         return Err(SrcwalkError::InvalidQuery {
             query: query.to_string(),
-            reason: "multi-scope find does not support --expand yet; narrow to one --scope or drill into returned paths".to_string(),
+            reason: "multi-scope find does not support --expand yet; try one --scope".to_string(),
         });
     }
 
@@ -463,11 +463,26 @@ fn multi_scope_search_header(result: &types::SearchResult, scopes: &[PathBuf]) -
         (d, u, 0) => format!("{total} matches ({d} definitions, {u} usages)"),
         (d, u, c) => format!("{total} matches ({d} definitions, {u} usages, {c} in comments)"),
     };
-    let scope_list = scopes
-        .iter()
-        .map(|scope| format::display_path(scope))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let scope_list = if scopes_overlap(scopes) {
+        scopes
+            .iter()
+            .map(|scope| format::display_path(scope))
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        scopes
+            .iter()
+            .map(|scope| {
+                let count = result
+                    .matches
+                    .iter()
+                    .filter(|m| m.path.starts_with(scope))
+                    .count();
+                format!("{} ({count})", format::display_path(scope))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     format!(
         "# Search: \"{}\" in {} scopes — {parts}\nScopes: {scope_list}",
         result.query,

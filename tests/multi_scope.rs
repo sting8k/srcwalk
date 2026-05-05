@@ -54,10 +54,10 @@ fn find_accepts_repeated_scopes_and_outputs_pwd_relative_hits() {
         "expected multi-scope header, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("Scopes: src, tests")
+        stdout.contains("Scopes: src (1), tests (1)")
             && stdout.contains("src/lib.rs:1-1")
             && stdout.contains("tests/lib.rs:1-1"),
-        "expected pwd-relative hits from both scopes, got:\n{stdout}"
+        "expected pwd-relative hits and per-scope counts, got:\n{stdout}"
     );
     assert!(
         !stdout.contains(dir.to_string_lossy().as_ref()),
@@ -90,6 +90,36 @@ fn find_repeated_scopes_fail_fast_when_any_scope_is_invalid() {
     assert!(
         stderr.contains("invalid scope") && stderr.contains("missing"),
         "expected invalid scope error, got:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn find_repeated_scopes_rejects_expand_with_minimal_hint() {
+    let dir = temp_repo("multi_scope_expand");
+    write_file(&dir.join("src/lib.rs"), "pub fn shared_target() {}\n");
+    write_file(&dir.join("tests/lib.rs"), "pub fn shared_target() {}\n");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "find",
+            "shared_target",
+            "--scope",
+            "src",
+            "--scope",
+            "tests",
+            "--expand",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "multi-scope expand should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("does not support --expand yet") && stderr.contains("try one --scope"),
+        "expected short expand hint, got:\n{stderr}"
     );
 
     let _ = fs::remove_dir_all(&dir);

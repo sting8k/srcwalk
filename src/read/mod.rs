@@ -683,14 +683,41 @@ fn read_multi_section(
     }
     let total = line_offsets.len();
 
+    let mut valid_blocks: Vec<(usize, usize, Option<usize>, String)> = Vec::new();
+    for (start, end, focus, label) in blocks {
+        let s = start.saturating_sub(1);
+        if s >= total {
+            errors.push(format!(
+                "{label}: range out of bounds (file has {total} lines)"
+            ));
+            continue;
+        }
+        valid_blocks.push((start, end.min(total), focus, label));
+    }
+
+    let mut merged_blocks: Vec<(usize, usize, Option<usize>, String)> = Vec::new();
+    for (start, end, focus, label) in valid_blocks {
+        if let Some((_, last_end, last_focus, last_label)) = merged_blocks.last_mut() {
+            if start <= *last_end {
+                *last_end = (*last_end).max(end);
+                if *last_focus != focus {
+                    *last_focus = None;
+                }
+                *last_label = format!("{last_label}, {label}");
+                continue;
+            }
+        }
+        merged_blocks.push((start, end, focus, label));
+    }
+
     let mut parts: Vec<String> = Vec::new();
     let mut rendered_labels: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut total_lines: u32 = 0;
 
-    for (start, end, focus, label) in &blocks {
-        let s = (start.saturating_sub(1)).min(total);
-        let e = (*end).min(total);
+    for (start, end, focus, label) in &merged_blocks {
+        let s = start.saturating_sub(1);
+        let e = *end;
         if s >= e {
             errors.push(format!(
                 "{label}: range out of bounds (file has {total} lines)"
@@ -712,7 +739,9 @@ fn read_multi_section(
         } else {
             format::number_lines(&selected, *start as u32)
         };
-        parts.push(formatted);
+        parts.push(format!(
+            "## section: {label} [{start}-{end}]\n\n{formatted}"
+        ));
     }
 
     if parts.is_empty() {
@@ -1552,6 +1581,31 @@ mod tests {
         assert!(
             out.contains("nope_fn"),
             "should name missing section: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multi_section_labels_and_merges_overlapping_ranges() {
+        let code = "l1\nl2\nl3\nl4\nl5\n";
+        let path = std::env::temp_dir().join("srcwalk_multi_section_overlap.txt");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_section(&path, "2-4,3-5", None, &cache).unwrap();
+        assert!(
+            out.contains("1 section, section"),
+            "overlap should merge into one rendered block: {out}"
+        );
+        assert!(
+            out.contains("## section: 2-4, 3-5 [2-5]"),
+            "merged block should keep requested labels and final range: {out}"
+        );
+        assert_eq!(
+            out.matches("l3").count(),
+            1,
+            "overlap should not duplicate lines: {out}"
         );
 
         let _ = std::fs::remove_file(&path);

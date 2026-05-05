@@ -2,6 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+const SKILL_ENTRY: &str = include_str!("../skills/srcwalk/SKILL.md");
+
 fn srcwalk() -> Command {
     Command::new(env!("CARGO_BIN_EXE_srcwalk"))
 }
@@ -37,6 +39,43 @@ fn assert_same_stdout(mut left: Command, mut right: Command) {
         String::from_utf8_lossy(&left.stdout),
         String::from_utf8_lossy(&right.stdout)
     );
+}
+
+#[test]
+fn root_help_surfaces_guide_entry_point() {
+    let output = srcwalk().arg("--help").output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "help command failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("srcwalk guide"));
+    assert!(stdout.contains("Full embedded, version-matched agent guide"));
+    assert!(!stdout.contains("overview"));
+}
+
+#[test]
+fn guide_subcommand_prints_full_embedded_skill() {
+    let output = srcwalk().arg("guide").output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "guide command failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("# srcwalk — agent routing policy"));
+    assert!(stdout.contains("Use srcwalk for structural code questions"));
+    assert!(stdout.contains("## Choose the command by intent"));
+}
+
+#[test]
+fn skill_entry_points_to_embedded_guide() {
+    assert!(SKILL_ENTRY.contains("# srcwalk — bootstrap entry"));
+    assert!(SKILL_ENTRY.contains("srcwalk guide"));
+    assert!(SKILL_ENTRY.contains("source of truth"));
 }
 
 #[test]

@@ -2,6 +2,13 @@
 
 All notable changes to srcwalk are documented here.
 
+## Unreleased
+
+### Added
+- Added `srcwalk guide` to print the full embedded, version-matched agent guide from the binary.
+- Converted the installable `skills/srcwalk/SKILL.md` into a minimal bootstrap entry that points agents to `srcwalk guide`.
+- Updated root help to surface `srcwalk guide` as the canonical agent guide entry point.
+
 ## [0.2.7] - 2026-05-05
 
 ### Added

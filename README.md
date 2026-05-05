@@ -56,18 +56,13 @@ curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarc
 
 </details>
 
-**Agent skill** — teaches your coding agent the command vocabulary:
+**Agent skill** — `srcwalk guide` prints the full embedded, version-matched agent guide.
 
 ```sh
-npx skills add sting8k/srcwalk
-
-# or install the skill file directly
-mkdir -p ~/.pi/agent/skills/srcwalk && \
-  curl -fsSL https://raw.githubusercontent.com/sting8k/srcwalk/main/skills/srcwalk/SKILL.md \
-  -o ~/.pi/agent/skills/srcwalk/SKILL.md
+srcwalk guide
 ```
 
-Full skill at [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md).
+The installable skill entry is [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md); it bootstraps agents to the embedded guide in the installed binary.
 
 ## Release notes
 

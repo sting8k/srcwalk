@@ -11,14 +11,14 @@ use clap_complete::Shell;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// srcwalk — Tree-sitter indexed lookups, smart code reading for AI agents.
-/// One tool replaces `read_file`, grep, glob, `ast_grep`, and find.
+/// Run `srcwalk guide` for the embedded, version-matched agent guide.
 #[derive(Parser)]
 #[command(name = "srcwalk", version, about, after_help = ROOT_HELP)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// File path, path:line, symbol name, glob pattern, or text to search.
+    /// File path, path:line, symbol name, or text to search.
     query: Option<String>,
 
     /// Directory to search within or resolve relative paths against.
@@ -132,7 +132,9 @@ struct Cli {
 }
 
 const ROOT_HELP: &str = "\
-Common:\n  srcwalk <path>              Read a file smartly\n  srcwalk <path>:<line>       Read around a line\n  srcwalk find <query>        Find definitions/usages/text\n  srcwalk files <glob>        Find files by glob\n  srcwalk callers <symbol>    Show who calls a symbol\n  srcwalk callees <symbol>    Show what a symbol calls\n  srcwalk deps <file>         Show imports and dependents\n  srcwalk map                 Show a structural repo map\n\nShortcuts:\n  srcwalk flow <symbol>       Compact caller/callee slice\n  srcwalk impact <symbol>     Heuristic blast-radius triage\n\nCompatibility:\n  Legacy flag syntax still works, e.g. `srcwalk Foo --callers`.";
+Guide:\n  srcwalk guide               Full embedded, version-matched agent guide\n\nCommon:\n  srcwalk <path>              Read a file smartly\n  srcwalk <path>:<line>       Read around a line\n  srcwalk find <query>        Find definitions/usages/text\n  srcwalk files <glob>        Find files by glob\n  srcwalk callers <symbol>    Show who calls a symbol\n  srcwalk callees <symbol>    Show what a symbol calls\n  srcwalk deps <file>         Show imports and dependents\n  srcwalk map                 Show a structural repo map\n\nShortcuts:\n  srcwalk flow <symbol>       Compact caller/callee slice\n  srcwalk impact <symbol>     Heuristic blast-radius triage\n\nCompatibility:\n  Legacy flag syntax still works, e.g. `srcwalk Foo --callers`.";
+
+const GUIDE: &str = include_str!("../skills/srcwalk/GUIDE.md");
 
 #[derive(clap::Subcommand)]
 enum Command {
@@ -152,8 +154,8 @@ enum Command {
     Deps(DepsCmd),
     /// Generate a structural codebase map.
     Map(MapCmd),
-    /// Show the project fingerprint (languages, scale, structural overview).
-    Overview,
+    /// Show the full embedded, version-matched agent guide.
+    Guide,
 }
 
 #[derive(Args)]
@@ -301,7 +303,7 @@ struct MapCmd {
 
 #[derive(Args)]
 struct CommonArgs {
-    /// Directory to search within or resolve relative paths against; repeatable for find.
+    /// Directory to search within or resolve relative paths against.
     #[arg(long, default_value = ".", action = ArgAction::Append)]
     scope: Vec<PathBuf>,
     /// Max tokens in response. Reduces detail to fit.
@@ -411,7 +413,7 @@ impl RunConfig {
 
     fn from_command(command: Command) -> Option<Self> {
         match command {
-            Command::Overview => None,
+            Command::Guide => None,
             Command::Find(cmd) => Some(
                 Self::from_common(Mode::Search, cmd.query, cmd.common)
                     .with_find(cmd.expand, cmd.glob, cmd.filter, cmd.limit, cmd.offset),
@@ -566,19 +568,13 @@ fn main() {
         return;
     }
 
-    if matches!(cli.command, Some(Command::Overview)) {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let output = srcwalk::overview::fingerprint(&cwd);
-        if output.is_empty() {
-            eprintln!("No project fingerprint could be generated.");
-            process::exit(1);
-        }
-        println!("{output}");
+    if let Some(Command::Guide) = cli.command {
+        print!("{GUIDE}");
         return;
     }
 
     let config = match cli.command {
-        Some(command) => RunConfig::from_command(command).expect("overview handled above"),
+        Some(command) => RunConfig::from_command(command).expect("guide handled above"),
         None => RunConfig::from_legacy(cli),
     };
     run(config);

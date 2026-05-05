@@ -45,7 +45,7 @@ src/
     symbol.rs          In-memory symbol index.
     bloom.rs           Bloom filter for fast pre-check.
 npm/                   npm distribution wrapper (postinstall downloads binary).
-skills/srcwalk/        Agent skill — full command reference.
+skills/srcwalk/        Agent guide sources: GUIDE.md embeds into binary; SKILL.md bootstraps agents to `srcwalk guide`.
 benchmark/             Evaluation harness (26 tasks, 4 repos).
 ```
 
@@ -68,10 +68,11 @@ cargo install --path .       # → ~/.cargo/bin/srcwalk
 Update all release metadata, then tag:
 1. `Cargo.toml` — `version = "X.Y.Z"` and package name must be `srcwalk`.
 2. `npm/package.json` — `"version": "X.Y.Z"` and package name must be `srcwalk`.
-3. `skills/srcwalk/SKILL.md` — update `compatible_srcwalk` when CLI behavior changes.
-4. `CHANGELOG.md` — add a curated `## [X.Y.Z] - YYYY-MM-DD` section. GitHub Release body is extracted from this section.
-5. `cargo update -p srcwalk` — refreshes `Cargo.lock`.
-6. Tag `vX.Y.Z` → CI builds binaries, creates GitHub Release, publishes crates.io/npm.
+3. `skills/srcwalk/GUIDE.md` — full embedded agent guide printed by `srcwalk guide`; update it when command routing, workflows, examples, caveats, or agent-facing UX changes.
+4. `skills/srcwalk/SKILL.md` — small bootstrap entry; update `compatible_srcwalk` only when the bootstrap contract changes (for example, first release requiring `srcwalk guide`). Do not duplicate the full guide here.
+5. `CHANGELOG.md` — add a curated `## [X.Y.Z] - YYYY-MM-DD` section. GitHub Release body is extracted from this section.
+6. `cargo update -p srcwalk` — refreshes `Cargo.lock`.
+7. Tag `vX.Y.Z` → CI builds binaries, creates GitHub Release, publishes crates.io/npm.
 
 ## Release flow
 
@@ -83,10 +84,11 @@ cargo clippy -- -D warnings
 cargo test
 
 # 2. Bump version + changelog
-# Cargo.toml, npm/package.json, skills/srcwalk/SKILL.md, CHANGELOG.md, then:
+# Cargo.toml, npm/package.json, GUIDE.md if agent-facing behavior changed,
+# SKILL.md only if bootstrap compatibility changed, CHANGELOG.md, then:
 cargo update -p srcwalk   # refreshes Cargo.lock
-rg -n 'name = "srcwalk"|"name": "srcwalk"|version = "X.Y.Z"|"version": "X.Y.Z"|## \[X.Y.Z\]' \
-  Cargo.toml npm/package.json Cargo.lock CHANGELOG.md skills/srcwalk/SKILL.md
+rg -n 'name = "srcwalk"|"name": "srcwalk"|version = "X.Y.Z"|"version": "X.Y.Z"|compatible_srcwalk: ">=X.Y.Z"|## \[X.Y.Z\]' \
+  Cargo.toml npm/package.json Cargo.lock CHANGELOG.md skills/srcwalk/GUIDE.md skills/srcwalk/SKILL.md
 
 # 3. Commit & push, wait for CI green
 git add -A && git commit -m "chore: bump vX.Y.Z"

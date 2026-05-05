@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use clap::{Args, CommandFactory, Parser};
+use clap::{ArgAction, Args, CommandFactory, Parser};
 use clap_complete::Shell;
 
 // mimalloc: faster than system allocator for parallel walker workloads
@@ -22,8 +22,8 @@ struct Cli {
     query: Option<String>,
 
     /// Directory to search within or resolve relative paths against.
-    #[arg(long, default_value = ".")]
-    scope: PathBuf,
+    #[arg(long, default_value = ".", action = ArgAction::Append)]
+    scope: Vec<PathBuf>,
 
     /// Focus line, line range, markdown heading, or symbol (e.g. "45", "45-89", "## Architecture").
     #[arg(long, hide = true)]
@@ -285,9 +285,9 @@ struct MapCmd {
 
 #[derive(Args)]
 struct CommonArgs {
-    /// Directory to search within or resolve relative paths against.
-    #[arg(long, default_value = ".")]
-    scope: PathBuf,
+    /// Directory to search within or resolve relative paths against; repeatable for find.
+    #[arg(long, default_value = ".", action = ArgAction::Append)]
+    scope: Vec<PathBuf>,
     /// Max tokens in response. Reduces detail to fit.
     #[arg(long)]
     budget: Option<u64>,
@@ -302,8 +302,8 @@ struct CommonArgs {
 #[derive(Args)]
 struct MapCommonArgs {
     /// Directory to map.
-    #[arg(long, default_value = ".")]
-    scope: PathBuf,
+    #[arg(long, default_value = ".", action = ArgAction::Append)]
+    scope: Vec<PathBuf>,
     /// Max tokens in response. Reduces detail to fit.
     #[arg(long)]
     budget: Option<u64>,
@@ -327,7 +327,8 @@ enum Mode {
 struct RunConfig {
     mode: Mode,
     query: Option<String>,
-    scope: PathBuf,
+    scopes: Vec<PathBuf>,
+    allow_multi_scope: bool,
     section: Option<String>,
     budget: Option<u64>,
     no_budget: bool,
@@ -369,7 +370,8 @@ impl RunConfig {
         Self {
             mode,
             query: cli.query,
-            scope: cli.scope,
+            scopes: cli.scope,
+            allow_multi_scope: false,
             section: cli.section,
             budget: cli.budget,
             no_budget: cli.no_budget,
@@ -413,7 +415,8 @@ impl RunConfig {
         Self {
             mode,
             query: Some(query),
-            scope: common.scope,
+            scopes: common.scope,
+            allow_multi_scope: matches!(mode, Mode::Search),
             section: None,
             budget: common.budget,
             no_budget: common.no_budget,
@@ -438,7 +441,8 @@ impl RunConfig {
         Self {
             mode: Mode::Map,
             query: None,
-            scope: cmd.common.scope,
+            scopes: cmd.common.scope,
+            allow_multi_scope: false,
             section: None,
             budget: cmd.common.budget,
             no_budget: cmd.common.no_budget,
@@ -559,6 +563,29 @@ fn main() {
     run(config);
 }
 
+fn canonicalize_scopes_or_exit(scopes: Vec<PathBuf>) -> Vec<PathBuf> {
+    scopes
+        .into_iter()
+        .map(|scope| {
+            let meta = match std::fs::metadata(&scope) {
+                Ok(meta) => meta,
+                Err(e) => {
+                    eprintln!("error: invalid scope: {} [{e}]", scope.display());
+                    process::exit(2);
+                }
+            };
+            if !meta.is_dir() {
+                eprintln!(
+                    "error: invalid scope: {} [not a directory]",
+                    scope.display()
+                );
+                process::exit(2);
+            }
+            scope.canonicalize().unwrap_or(scope)
+        })
+        .collect()
+}
+
 fn run(config: RunConfig) {
     let is_tty = io::stdout().is_terminal();
 
@@ -575,7 +602,15 @@ fn run(config: RunConfig) {
     };
 
     let cache = srcwalk::cache::OutlineCache::new();
-    let scope = config.scope.canonicalize().unwrap_or(config.scope);
+    let scopes = canonicalize_scopes_or_exit(config.scopes);
+    if scopes.len() > 1 && !config.allow_multi_scope {
+        eprintln!("error: repeated --scope is currently supported only by `srcwalk find`");
+        process::exit(2);
+    }
+    let scope = scopes
+        .first()
+        .expect("at least one scope from clap default")
+        .clone();
 
     if matches!(config.mode, Mode::Map) {
         let depth = config.depth.unwrap_or(3);
@@ -730,7 +765,19 @@ fn run(config: RunConfig) {
         return;
     }
 
-    let result = if config.expand > 0 {
+    let result = if scopes.len() > 1 {
+        srcwalk::run_multi_scope_find_filtered(
+            &query,
+            &scopes,
+            effective_budget,
+            config.expand,
+            effective_limit,
+            config.offset,
+            config.glob.as_deref(),
+            config.filter.as_deref(),
+            &cache,
+        )
+    } else if config.expand > 0 {
         srcwalk::run_expanded_filtered(
             &query,
             &scope,

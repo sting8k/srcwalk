@@ -378,6 +378,15 @@ pub fn format_raw_result(
     format_search_result(result, cache, None, &bloom, 0)
 }
 
+pub fn format_raw_result_with_header(
+    result: &SearchResult,
+    cache: &OutlineCache,
+    header: String,
+) -> Result<String, SrcwalkError> {
+    let bloom = crate::index::bloom::BloomFilterCache::new();
+    format_search_result_with_header(result, cache, None, &bloom, 0, header)
+}
+
 pub fn search_glob(
     pattern: &str,
     scope: &Path,
@@ -1136,6 +1145,17 @@ fn format_search_result(
         result.usages,
         result.comments,
     );
+    format_search_result_with_header(result, cache, session, bloom, expand, header)
+}
+
+fn format_search_result_with_header(
+    result: &SearchResult,
+    cache: &OutlineCache,
+    session: Option<&Session>,
+    bloom: &crate::index::bloom::BloomFilterCache,
+    expand: usize,
+    header: String,
+) -> Result<String, SrcwalkError> {
     let mut out = header;
     let mut expand_remaining = expand;
     let mut expanded_files = HashSet::new();

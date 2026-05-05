@@ -474,25 +474,33 @@ fn read_section(
     })?;
     let buf = &mmap[..];
 
-    // Resolve section address: line range, focused line, heading, or symbol name
+    // Resolve section address: line range, focused line, heading, symbol name,
+    // or a comma-separated list of those addresses.
     let mut focus_line = None;
     let (start, end) = if range.starts_with('#') {
-        // Markdown heading
-        resolve_heading(buf, range).ok_or_else(|| {
-            let suggestions = suggest_headings(buf, range, 5);
-            let reason = if suggestions.is_empty() {
-                "heading not found in file".to_string()
-            } else {
-                format!(
-                    "heading not found in file. Closest matches:\n  {}",
-                    suggestions.join("\n  ")
-                )
-            };
-            SrcwalkError::InvalidQuery {
-                query: range.to_string(),
-                reason,
+        // Markdown heading. Try the full heading first so headings containing
+        // commas still work; if that fails, fall through to comma-list parsing.
+        match resolve_heading(buf, range) {
+            Some(r) => r,
+            None if range.contains(',') => return read_multi_section(path, buf, range, budget),
+            None => {
+                let suggestions = suggest_headings(buf, range, 5);
+                let reason = if suggestions.is_empty() {
+                    "heading not found in file".to_string()
+                } else {
+                    format!(
+                        "heading not found in file. Closest matches:\n  {}",
+                        suggestions.join("\n  ")
+                    )
+                };
+                return Err(SrcwalkError::InvalidQuery {
+                    query: range.to_string(),
+                    reason,
+                });
             }
-        })?
+        }
+    } else if range.contains(',') {
+        return read_multi_section(path, buf, range, budget);
     } else if let Some((start, end, focus)) = parse_range(range) {
         // Line range like "45-89" or focused line like "45"
         focus_line = focus;
@@ -501,10 +509,6 @@ fn read_section(
         // Symbol name like "isCustomization" or "handleRequest"
         r
     } else {
-        // Check for comma-separated multi-symbol request
-        if range.contains(',') {
-            return read_multi_symbol_section(path, buf, range, budget);
-        }
         let suggestions = suggest_symbols(buf, path, range, 3);
         let reason = if suggestions.is_empty() {
             "not a valid line number (e.g. \"45\"), line range (e.g. \"45-89\"), heading (e.g. \"## Foo\"), or symbol name in this file"
@@ -600,38 +604,57 @@ fn format_focused_lines(content: &str, start: u32, focus_line: usize) -> String 
     out
 }
 
-/// Resolve multiple comma-separated symbol names and return their bodies concatenated.
-fn read_multi_symbol_section(
+/// Resolve multiple comma-separated section addresses and return their bodies concatenated.
+fn read_multi_section(
     path: &Path,
     buf: &[u8],
     range: &str,
     budget: Option<u64>,
 ) -> Result<String, SrcwalkError> {
-    let symbols: Vec<&str> = range
+    let requested: Vec<&str> = range
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
-    if symbols.is_empty() {
+    if requested.is_empty() {
         return Err(SrcwalkError::InvalidQuery {
             query: range.to_string(),
-            reason: "empty symbol list".to_string(),
+            reason: "empty section list".to_string(),
         });
     }
 
-    let mut blocks: Vec<(usize, usize, String)> = Vec::new(); // (start, end, name)
+    let all_symbol_names = requested
+        .iter()
+        .all(|section| parse_range(section).is_none() && !section.starts_with('#'));
+    let mut blocks: Vec<(usize, usize, Option<usize>, String)> = Vec::new(); // start, end, focus, label
     let mut errors: Vec<String> = Vec::new();
 
-    for sym in &symbols {
-        if let Some((start, end)) = resolve_symbol(buf, path, sym) {
-            blocks.push((start, end, sym.to_string()));
+    for section in &requested {
+        if let Some((start, end, focus)) = parse_range(section) {
+            blocks.push((start, end, focus, (*section).to_string()));
+        } else if section.starts_with('#') {
+            if let Some((start, end)) = resolve_heading(buf, section) {
+                blocks.push((start, end, None, (*section).to_string()));
+            } else {
+                let suggestions = suggest_headings(buf, section, 3);
+                if suggestions.is_empty() {
+                    errors.push(format!("{section}: not found"));
+                } else {
+                    errors.push(format!(
+                        "{section}: not found. Closest:\n    {}",
+                        suggestions.join("\n    ")
+                    ));
+                }
+            }
+        } else if let Some((start, end)) = resolve_symbol(buf, path, section) {
+            blocks.push((start, end, None, (*section).to_string()));
         } else {
-            let suggestions = suggest_symbols(buf, path, sym, 3);
+            let suggestions = suggest_symbols(buf, path, section, 3);
             if suggestions.is_empty() {
-                errors.push(format!("{sym}: not found"));
+                errors.push(format!("{section}: not found"));
             } else {
                 errors.push(format!(
-                    "{sym}: not found. Closest:\n    {}",
+                    "{section}: not found. Closest:\n    {}",
                     suggestions.join("\n    ")
                 ));
             }
@@ -639,17 +662,21 @@ fn read_multi_symbol_section(
     }
 
     if !errors.is_empty() && blocks.is_empty() {
-        // All symbols missed — hard error
+        let noun = if all_symbol_names {
+            "symbols"
+        } else {
+            "sections"
+        };
         return Err(SrcwalkError::InvalidQuery {
             query: range.to_string(),
-            reason: format!("symbols not found:\n  {}", errors.join("\n  ")),
+            reason: format!("{noun} not found:\n  {}", errors.join("\n  ")),
         });
     }
 
-    // Sort blocks by start line for natural reading order
-    blocks.sort_by_key(|(start, _, _)| *start);
+    // Sort blocks by start line for natural reading order.
+    blocks.sort_by_key(|(start, _, _, _)| *start);
 
-    // Build line offsets
+    // Build line offsets.
     let mut line_offsets: Vec<usize> = vec![0];
     for pos in memchr::memchr_iter(b'\n', buf) {
         line_offsets.push(pos + 1);
@@ -657,13 +684,17 @@ fn read_multi_symbol_section(
     let total = line_offsets.len();
 
     let mut parts: Vec<String> = Vec::new();
+    let mut rendered_labels: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut total_lines: u32 = 0;
 
-    for (start, end, _name) in &blocks {
+    for (start, end, focus, label) in &blocks {
         let s = (start.saturating_sub(1)).min(total);
         let e = (*end).min(total);
         if s >= e {
+            errors.push(format!(
+                "{label}: range out of bounds (file has {total} lines)"
+            ));
             continue;
         }
         let start_byte = line_offsets[s];
@@ -675,36 +706,72 @@ fn read_multi_symbol_section(
         let selected = String::from_utf8_lossy(&buf[start_byte..end_byte]);
         total_bytes += selected.len() as u64;
         total_lines += (e - s) as u32;
-        parts.push(format::number_lines(&selected, *start as u32));
+        rendered_labels.push(label.clone());
+        let formatted = if let Some(focus) = focus {
+            format_focused_lines(&selected, *start as u32, *focus)
+        } else {
+            format::number_lines(&selected, *start as u32)
+        };
+        parts.push(formatted);
+    }
+
+    if parts.is_empty() {
+        let noun = if all_symbol_names {
+            "symbols"
+        } else {
+            "sections"
+        };
+        return Err(SrcwalkError::InvalidQuery {
+            query: range.to_string(),
+            reason: format!("{noun} not found:\n  {}", errors.join("\n  ")),
+        });
     }
 
     let tok_est = estimate_tokens(total_bytes);
     let limit = section_token_limit(budget);
 
     if tok_est > limit {
-        // Over budget — show outline-style summary instead
         let header = format::file_header(path, total_bytes, total_lines, ViewMode::SectionOutline);
-        let names: Vec<&str> = blocks.iter().map(|(_, _, n)| n.as_str()).collect();
+        let noun = if all_symbol_names {
+            "symbols"
+        } else {
+            "sections"
+        };
         return Ok(format!(
             "{header}\n\n\
-             > Caveat: {count} symbols ({names}) span ~{tok_est} tokens (limit {limit}).\n\
+             > Caveat: {count} {noun} ({names}) span ~{tok_est} tokens (limit {limit}).\n\
              > Next: use a narrower --section list, or retry with --budget <N>.",
-            count = blocks.len(),
-            names = names.join(", "),
+            count = rendered_labels.len(),
+            names = rendered_labels.join(", "),
         ));
     }
 
-    let sym_count = blocks.len();
+    let section_count = parts.len();
+    let noun = if all_symbol_names {
+        "symbol"
+    } else {
+        "section"
+    };
+    let plural = if section_count == 1 {
+        noun.to_string()
+    } else {
+        format!("{noun}s")
+    };
     let header = format::file_header(path, total_bytes, total_lines, ViewMode::Section);
-    let header = header.replace("[section]", &format!("[{sym_count} symbols, section]"));
-    let body = parts.join("\n\n");
+    let header = header.replace("[section]", &format!("[{section_count} {plural}, section]"));
+    let body = parts.join("\n\n---\n\n");
 
     if errors.is_empty() {
         Ok(format!("{header}\n\n{body}"))
     } else {
         let missing = errors.join("\n  ");
+        let missing_label = if all_symbol_names {
+            "Missing symbols"
+        } else {
+            "Missing sections"
+        };
         Ok(format!(
-            "{header}\n\n{body}\n\n> Missing symbols:\n>   {missing}"
+            "{header}\n\n{body}\n\n> {missing_label}:\n>   {missing}"
         ))
     }
 }
@@ -1405,6 +1472,107 @@ mod tests {
         assert!(
             msg.contains("symbols not found"),
             "all-miss should error: {msg}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multi_section_line_ranges_return_all_blocks() {
+        let code = "l1\nl2\nl3\nl4\nl5\nl6\n";
+        let path = std::env::temp_dir().join("srcwalk_multi_ranges.txt");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_section(&path, "5-6,2-3", None, &cache).unwrap();
+        assert!(
+            out.contains("2 sections, section"),
+            "header should show section count: {out}"
+        );
+        let pos_l2 = out.find("l2").unwrap();
+        let pos_l5 = out.find("l5").unwrap();
+        assert!(
+            pos_l2 < pos_l5,
+            "blocks should be sorted by line order: {out}"
+        );
+        assert!(out.contains("---"), "blocks should be separated: {out}");
+        assert!(
+            !out.contains("l4"),
+            "unrequested line should be omitted: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multi_section_mixes_symbol_and_line_range() {
+        let code = "fn first() {\n    1\n}\nlet outside = 9;\nfn second() {\n    2\n}\n";
+        let path = std::env::temp_dir().join("srcwalk_multi_mixed.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_section(&path, "second,4-4", None, &cache).unwrap();
+        assert!(
+            out.contains("2 sections, section"),
+            "mixed list should use sections wording: {out}"
+        );
+        assert!(out.contains("outside = 9"), "should contain range: {out}");
+        assert!(
+            out.contains("second()"),
+            "should contain symbol body: {out}"
+        );
+        assert!(
+            !out.contains("first()"),
+            "unrequested symbol should be omitted: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multi_section_partial_miss_returns_found() {
+        let code = "fn real_fn() {}\nlet kept = true;\n";
+        let path = std::env::temp_dir().join("srcwalk_multi_section_miss.rs");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let out = read_section(&path, "real_fn,nope_fn,2-2", None, &cache).unwrap();
+        assert!(
+            out.contains("real_fn()"),
+            "should contain found symbol: {out}"
+        );
+        assert!(
+            out.contains("kept = true"),
+            "should contain found range: {out}"
+        );
+        assert!(
+            out.contains("Missing sections"),
+            "should note missing: {out}"
+        );
+        assert!(
+            out.contains("nope_fn"),
+            "should name missing section: {out}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multi_section_all_invalid_ranges_error() {
+        let code = "one\ntwo\n";
+        let path = std::env::temp_dir().join("srcwalk_multi_section_oob.txt");
+        std::fs::write(&path, code).unwrap();
+
+        let cache = OutlineCache::new();
+        let err = read_section(&path, "10-12,20-21", None, &cache).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("sections not found"),
+            "all-invalid should error: {msg}"
+        );
+        assert!(
+            msg.contains("range out of bounds"),
+            "should explain bounds: {msg}"
         );
 
         let _ = std::fs::remove_file(&path);

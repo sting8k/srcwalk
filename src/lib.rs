@@ -232,6 +232,20 @@ pub fn run_expanded_filtered(
     )
 }
 
+pub fn run_files(
+    pattern: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<String, SrcwalkError> {
+    let output = search::search_files_glob(pattern, scope, limit, offset)?;
+    Ok(match budget_tokens {
+        Some(b) => budget::apply_preserving_footer(&output, b),
+        None => output,
+    })
+}
+
 pub fn run_multi_scope_find_filtered(
     query: &str,
     scopes: &[PathBuf],
@@ -255,13 +269,16 @@ pub fn run_multi_scope_find_filtered(
         reason: "at least one --scope is required".to_string(),
     })?;
     let query_type = classify(query, first_scope);
+    if matches!(query_type, QueryType::Glob(_)) && classify::has_glob_chars(query) {
+        return Err(use_files_error(query));
+    }
     if matches!(
         query_type,
-        QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_)
+        QueryType::FilePath(_) | QueryType::FilePathLine(_, _)
     ) {
         return Err(SrcwalkError::InvalidQuery {
             query: query.to_string(),
-            reason: "multi-scope find supports symbol/text/regex queries, not file or glob reads"
+            reason: "multi-scope find supports symbol/text/name-glob queries, not file reads"
                 .to_string(),
         });
     }
@@ -314,12 +331,12 @@ fn multi_scope_search_result(
                 .map(|scope| search_result_symbol(name, scope, cache, glob, filter))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
-        QueryType::Regex(pattern) => merge_scope_results(
+        QueryType::SymbolGlob(pattern) => merge_scope_results(
             query,
             scopes,
             scopes
                 .iter()
-                .map(|scope| search_result_regex(pattern, scope, cache, glob, filter))
+                .map(|scope| search_result_symbol_glob(pattern, scope, cache, glob, filter))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         QueryType::Concept(text) if text.contains(' ') => {
@@ -377,8 +394,15 @@ fn multi_scope_search_result(
             )
         }
         QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_) => {
-            unreachable!("file/glob query rejected before multi-scope search")
+            unreachable!("file query rejected before multi-scope search")
         }
+    }
+}
+
+fn use_files_error(query: &str) -> SrcwalkError {
+    SrcwalkError::InvalidQuery {
+        query: query.to_string(),
+        reason: "use `srcwalk files '<glob>'`".to_string(),
     }
 }
 
@@ -390,6 +414,18 @@ fn search_result_symbol(
     filter: Option<&str>,
 ) -> Result<types::SearchResult, SrcwalkError> {
     let mut result = search::search_symbol_raw(query, scope, glob)?;
+    search::apply_general_filter(&mut result, scope, cache, filter)?;
+    Ok(result)
+}
+
+fn search_result_symbol_glob(
+    pattern: &str,
+    scope: &Path,
+    cache: &OutlineCache,
+    glob: Option<&str>,
+    filter: Option<&str>,
+) -> Result<types::SearchResult, SrcwalkError> {
+    let mut result = search::search_symbol_glob_raw(pattern, scope, glob)?;
     search::apply_general_filter(&mut result, scope, cache, filter)?;
     Ok(result)
 }
@@ -1433,8 +1469,8 @@ fn run_inner(
     if query.contains(',')
         && !matches!(
             query_type,
-            QueryType::Regex(_)
-                | QueryType::Glob(_)
+            QueryType::Glob(_)
+                | QueryType::SymbolGlob(_)
                 | QueryType::FilePath(_)
                 | QueryType::FilePathLine(_, _)
         )
@@ -1511,7 +1547,8 @@ fn run_inner(
             let effective_section = section.unwrap_or(&line_section);
             read::read_file_with_budget(&path, Some(effective_section), full, budget_tokens, cache)
         }
-        QueryType::Glob(pattern) => search::search_glob(&pattern, scope, cache, limit, offset),
+        QueryType::Glob(_) if classify::has_glob_chars(query) => Err(use_files_error(query)),
+        QueryType::Glob(pattern) => search::search_files_glob(&pattern, scope, limit, offset),
         _ if use_expanded => {
             let ctx = ExpandedCtx {
                 session: session::Session::new(),
@@ -1576,6 +1613,20 @@ fn run_query_expanded(
             filter,
             ctx.budget_tokens,
         ),
+        QueryType::SymbolGlob(pattern) => search::search_symbol_glob_expanded(
+            pattern,
+            scope,
+            cache,
+            &ctx.session,
+            &ctx.bloom,
+            ctx.expand,
+            None,
+            limit,
+            offset,
+            glob,
+            filter,
+            ctx.budget_tokens,
+        ),
         QueryType::Concept(text) if text.contains(' ') => search::search_content_expanded(
             text,
             scope,
@@ -1604,20 +1655,7 @@ fn run_query_expanded(
             filter,
             ctx.budget_tokens,
         ),
-        QueryType::Regex(pattern) => search::search_regex_expanded(
-            pattern,
-            scope,
-            cache,
-            &ctx.session,
-            ctx.expand,
-            None,
-            limit,
-            offset,
-            glob,
-            filter,
-            ctx.budget_tokens,
-        ),
-        // FilePath/Glob never reach here (gated by use_expanded)
+        // FilePath/Glob/Glob never reach here (gated by use_expanded)
         QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_) => {
             unreachable!("non-search query type in expanded path")
         }
@@ -1639,14 +1677,14 @@ fn run_query_basic(
         QueryType::Symbol(name) => {
             search::search_symbol(name, scope, cache, limit, offset, glob, filter)
         }
+        QueryType::SymbolGlob(pattern) => {
+            search::search_symbol_glob(pattern, scope, cache, limit, offset, glob, filter)
+        }
         QueryType::Concept(text) if text.contains(' ') => {
             multi_word_concept_search(text, scope, cache, limit, offset, glob, filter)
         }
         QueryType::Concept(text) => {
             single_query_search(text, scope, cache, true, limit, offset, glob, filter)
-        }
-        QueryType::Regex(pattern) => {
-            search::search_regex(pattern, scope, cache, limit, offset, glob, filter)
         }
         QueryType::Fallthrough(text) => {
             single_query_search(text, scope, cache, false, limit, offset, glob, filter)

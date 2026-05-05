@@ -87,6 +87,68 @@ pub fn search_symbol(
     Ok(out)
 }
 
+pub fn search_symbol_glob(
+    pattern: &str,
+    scope: &Path,
+    cache: &OutlineCache,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+) -> Result<String, SrcwalkError> {
+    let mut result = symbol::search_name_glob(pattern, scope, Some(cache), None, glob)?;
+    apply_general_filter(&mut result, scope, cache, filter)?;
+    paginate(&mut result, limit, offset);
+    let header = search_names_header(&result, scope);
+    format_search_result_with_header(
+        &result,
+        cache,
+        None,
+        &crate::index::bloom::BloomFilterCache::new(),
+        0,
+        None,
+        header,
+    )
+}
+
+pub fn search_symbol_glob_expanded(
+    pattern: &str,
+    scope: &Path,
+    cache: &OutlineCache,
+    session: &Session,
+    bloom: &crate::index::bloom::BloomFilterCache,
+    expand: usize,
+    context: Option<&Path>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    budget_tokens: Option<u64>,
+) -> Result<String, SrcwalkError> {
+    let mut result = symbol::search_name_glob(pattern, scope, Some(cache), context, glob)?;
+    apply_general_filter(&mut result, scope, cache, filter)?;
+    paginate(&mut result, limit, offset);
+    let header = search_names_header(&result, scope);
+    format_search_result_with_header(
+        &result,
+        cache,
+        Some(session),
+        bloom,
+        expand,
+        budget_tokens,
+        header,
+    )
+}
+
+fn search_names_header(result: &SearchResult, scope: &Path) -> String {
+    format!(
+        "# Search names: \"{}\" in {} — {} matches",
+        result.query,
+        format::display_path(scope),
+        result.matches.len()
+    )
+}
+
 pub fn search_symbol_expanded(
     query: &str,
     scope: &Path,
@@ -192,22 +254,6 @@ pub fn search_multi_symbol_expanded(
     Ok(out)
 }
 
-pub fn search_regex(
-    pattern: &str,
-    scope: &Path,
-    cache: &OutlineCache,
-    limit: Option<usize>,
-    offset: usize,
-    glob: Option<&str>,
-    filter: Option<&str>,
-) -> Result<String, SrcwalkError> {
-    let mut result = content::search(pattern, scope, true, None, glob)?;
-    apply_general_filter(&mut result, scope, cache, filter)?;
-    paginate(&mut result, limit, offset);
-    let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result(&result, cache, None, &bloom, 0, None)
-}
-
 pub fn search_content_expanded(
     query: &str,
     scope: &Path,
@@ -229,27 +275,6 @@ pub fn search_content_expanded(
     format_search_result(&result, cache, Some(session), &bloom, expand, budget_tokens)
 }
 
-/// Expanded regex search — takes raw pattern, no slash wrapping needed.
-pub fn search_regex_expanded(
-    pattern: &str,
-    scope: &Path,
-    cache: &OutlineCache,
-    session: &Session,
-    expand: usize,
-    context: Option<&Path>,
-    limit: Option<usize>,
-    offset: usize,
-    glob: Option<&str>,
-    filter: Option<&str>,
-    budget_tokens: Option<u64>,
-) -> Result<String, SrcwalkError> {
-    let mut result = content::search(pattern, scope, true, context, glob)?;
-    apply_general_filter(&mut result, scope, cache, filter)?;
-    paginate(&mut result, limit, offset);
-    let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result(&result, cache, Some(session), &bloom, expand, budget_tokens)
-}
-
 /// Raw symbol search — returns structured result for programmatic inspection.
 pub fn search_symbol_raw(
     query: &str,
@@ -257,6 +282,14 @@ pub fn search_symbol_raw(
     glob: Option<&str>,
 ) -> Result<SearchResult, SrcwalkError> {
     symbol::search(query, scope, None, None, glob)
+}
+
+pub fn search_symbol_glob_raw(
+    pattern: &str,
+    scope: &Path,
+    glob: Option<&str>,
+) -> Result<SearchResult, SrcwalkError> {
+    symbol::search_name_glob(pattern, scope, None, None, glob)
 }
 
 /// Raw content search — returns structured result for programmatic inspection.
@@ -397,15 +430,14 @@ pub fn format_raw_result_with_header(
     format_search_result_with_header(result, cache, None, &bloom, 0, None, header)
 }
 
-pub fn search_glob(
+pub fn search_files_glob(
     pattern: &str,
     scope: &Path,
-    _cache: &OutlineCache,
     limit: Option<usize>,
     offset: usize,
 ) -> Result<String, SrcwalkError> {
     let result = glob::search(pattern, scope, limit, offset)?;
-    format_glob_result(&result, scope)
+    format_glob_result(&result, scope, "Files")
 }
 
 /// Format match entries with optional expansion.
@@ -1677,9 +1709,13 @@ fn extract_line_range(line: &str) -> Option<(u32, u32)> {
 }
 
 /// Format glob search results (file list with previews + pagination hint).
-fn format_glob_result(result: &glob::GlobResult, scope: &Path) -> Result<String, SrcwalkError> {
+fn format_glob_result(
+    result: &glob::GlobResult,
+    scope: &Path,
+    label: &str,
+) -> Result<String, SrcwalkError> {
     let header = format!(
-        "# Glob: \"{}\" in {} — {} of {} files (offset {})",
+        "# {label}: \"{}\" in {} — {} of {} files (offset {})",
         result.pattern,
         crate::format::display_path(scope),
         result.files.len(),

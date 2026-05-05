@@ -57,7 +57,7 @@ fn search_pagination_next_step_is_footer_and_survives_budget() {
 fn glob_pagination_next_step_is_footer() {
     let dir = fixture_dir("glob");
     let out = srcwalk()
-        .args(["*.rs", "--limit", "1", "--scope"])
+        .args(["files", "*.rs", "--limit", "1", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();

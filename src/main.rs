@@ -132,12 +132,14 @@ struct Cli {
 }
 
 const ROOT_HELP: &str = "\
-Common:\n  srcwalk <path>              Read a file smartly\n  srcwalk <path>:<line>       Read around a line\n  srcwalk find <query>        Find definitions/usages/text/globs\n  srcwalk callers <symbol>    Show who calls a symbol\n  srcwalk callees <symbol>    Show what a symbol calls\n  srcwalk deps <file>         Show imports and dependents\n  srcwalk map                 Show a structural repo map\n\nShortcuts:\n  srcwalk flow <symbol>       Compact caller/callee slice\n  srcwalk impact <symbol>     Heuristic blast-radius triage\n\nCompatibility:\n  Legacy flag syntax still works, e.g. `srcwalk Foo --callers`.";
+Common:\n  srcwalk <path>              Read a file smartly\n  srcwalk <path>:<line>       Read around a line\n  srcwalk find <query>        Find definitions/usages/text\n  srcwalk files <glob>        Find files by glob\n  srcwalk callers <symbol>    Show who calls a symbol\n  srcwalk callees <symbol>    Show what a symbol calls\n  srcwalk deps <file>         Show imports and dependents\n  srcwalk map                 Show a structural repo map\n\nShortcuts:\n  srcwalk flow <symbol>       Compact caller/callee slice\n  srcwalk impact <symbol>     Heuristic blast-radius triage\n\nCompatibility:\n  Legacy flag syntax still works, e.g. `srcwalk Foo --callers`.";
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Find definitions, usages, text, regex, or glob matches.
+    /// Find definitions, usages, text, or symbol-name glob matches.
     Find(FindCmd),
+    /// Find files by glob pattern.
+    Files(FilesCmd),
     /// Show who calls a symbol.
     Callers(CallersCmd),
     /// Show what a symbol calls.
@@ -156,7 +158,7 @@ enum Command {
 
 #[derive(Args)]
 struct FindCmd {
-    /// Symbol name, glob pattern, regex, or text to search.
+    /// Symbol name, symbol-name glob, or text to search.
     query: String,
     #[command(flatten)]
     common: CommonArgs,
@@ -173,6 +175,20 @@ struct FindCmd {
     #[arg(long, value_name = "N")]
     limit: Option<usize>,
     /// Skip N results.
+    #[arg(long, value_name = "N", default_value = "0")]
+    offset: usize,
+}
+
+#[derive(Args)]
+struct FilesCmd {
+    /// File glob pattern to list.
+    pattern: String,
+    #[command(flatten)]
+    common: CommonArgs,
+    /// Max files.
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
+    /// Skip N files.
     #[arg(long, value_name = "N", default_value = "0")]
     offset: usize,
 }
@@ -317,6 +333,7 @@ enum Mode {
     Search,
     PathExact,
     Map,
+    Files,
     Flow,
     Impact,
     Callers,
@@ -398,6 +415,10 @@ impl RunConfig {
             Command::Find(cmd) => Some(
                 Self::from_common(Mode::Search, cmd.query, cmd.common)
                     .with_find(cmd.expand, cmd.glob, cmd.filter, cmd.limit, cmd.offset),
+            ),
+            Command::Files(cmd) => Some(
+                Self::from_common(Mode::Files, cmd.pattern, cmd.common)
+                    .with_pagination(cmd.limit, cmd.offset),
             ),
             Command::Callers(cmd) => Some(Self::from_callers(cmd)),
             Command::Callees(cmd) => Some(Self::from_callees(cmd)),
@@ -647,6 +668,18 @@ fn run(config: RunConfig) {
             None
         }
     });
+
+    if matches!(config.mode, Mode::Files) {
+        let result = srcwalk::run_files(
+            &query,
+            &scope,
+            effective_budget,
+            effective_limit,
+            config.offset,
+        );
+        emit_result(result, &query, config.json, is_tty);
+        return;
+    }
 
     if matches!(config.mode, Mode::PathExact) {
         let result = srcwalk::run_path_exact(

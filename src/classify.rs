@@ -5,17 +5,6 @@ use crate::types::QueryType;
 /// Classify a query string into a `QueryType` by byte-pattern matching.
 /// No regex engine — `matches!` compiles to a jump table.
 pub fn classify(query: &str, scope: &Path) -> QueryType {
-    // 0. Slash-wrapped regex — /pattern/ → regex content search.
-    //    Must come before glob check: regex metacharacters ([, {, *) overlap with glob syntax.
-    //    Only if the inner pattern contains regex metacharacters — otherwise /src/ would be
-    //    misclassified as regex instead of a path.
-    if query.len() >= 3 && query.starts_with('/') && query.ends_with('/') {
-        let pattern = &query[1..query.len() - 1];
-        if !pattern.is_empty() && has_regex_metachar(pattern) {
-            return QueryType::Regex(pattern.into());
-        }
-    }
-
     // 1. Path with line suffix — e.g. src/lib.rs:123.
     // Parse from the last colon so POSIX filenames containing ':' still work when the
     // prefix resolves to a file. Only activate when the suffix is a positive integer.
@@ -23,14 +12,13 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         return QueryType::FilePathLine(path, line);
     }
 
-    // 2. Glob — check first because globs can contain path separators.
-    //    But only if no spaces: real globs don't have spaces, content like "import { X }" does.
-    if !query.contains(' ')
-        && query
-            .bytes()
-            .any(|b| matches!(b, b'*' | b'?' | b'{' | b'['))
-    {
-        return QueryType::Glob(query.into());
+    // 2. Glob characters in find now mean symbol-name glob unless the pattern
+    //    looks file/path-like. File globs live under `srcwalk files <glob>`.
+    if !query.contains(' ') && has_glob_chars(query) {
+        if looks_like_file_glob(query) {
+            return QueryType::Glob(query.into());
+        }
+        return QueryType::SymbolGlob(query.into());
     }
 
     // 3. File path — contains separator or starts with ./ ../.
@@ -77,16 +65,6 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
             return QueryType::Symbol(query.into());
         }
         return QueryType::Concept(query.into());
-    }
-
-    // 8. OR-pattern — "Foo|Bar|Baz" with no spaces, all parts valid identifiers.
-    //    Common developer intent: multi-symbol grep (rg "A|B|C" equivalent).
-    //    Wrap in word boundaries so "Foo|Bar" doesn't match "Foobar"/"Barbarian".
-    if !query.contains(' ') && query.contains('|') {
-        let parts: Vec<&str> = query.split('|').filter(|s| !s.is_empty()).collect();
-        if parts.len() >= 2 && parts.iter().all(|p| is_identifier(p)) {
-            return QueryType::Regex(format!(r"\b({query})\b"));
-        }
     }
 
     // 9. Multi-word — could be concept phrase ("cli mode", "search flow")
@@ -226,24 +204,24 @@ fn looks_like_filename(query: &str) -> bool {
 
 /// Does the pattern contain regex metacharacters?
 /// Used to distinguish `/pattern/` regex from `/path/` paths.
-fn has_regex_metachar(s: &str) -> bool {
-    s.bytes().any(|b| {
-        matches!(
-            b,
-            b'(' | b')'
-                | b'['
-                | b']'
-                | b'{'
-                | b'}'
-                | b'*'
-                | b'+'
-                | b'?'
-                | b'|'
-                | b'\\'
-                | b'^'
-                | b'$'
-        )
-    })
+pub(crate) fn has_glob_chars(s: &str) -> bool {
+    s.bytes().any(|b| matches!(b, b'*' | b'?' | b'{' | b'['))
+}
+
+pub(crate) fn looks_like_file_glob(s: &str) -> bool {
+    if s.contains('/') || s.contains('\\') {
+        return true;
+    }
+    if s.starts_with("*.") || s.contains("*.{") || s.contains("?.") {
+        return true;
+    }
+    if let Some(ext) = s.rsplit('.').next() {
+        if ext != s {
+            let cleaned = ext.trim_end_matches('}').trim_end_matches(']');
+            return FILE_EXTENSIONS.contains(&cleaned);
+        }
+    }
+    false
 }
 
 /// Known source-file extensions. If `after` matches one of these, treat as filename.
@@ -306,35 +284,6 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn regex_patterns() {
-        let scope = PathBuf::from(".");
-        assert!(matches!(
-            classify("/render(Call|Result)/", &scope),
-            QueryType::Regex(_)
-        ));
-        assert!(matches!(
-            classify("/renderC[a-z]+/", &scope),
-            QueryType::Regex(_)
-        ));
-        assert!(matches!(
-            classify("/renderC[a-z]{3}/", &scope),
-            QueryType::Regex(_)
-        ));
-        assert!(matches!(
-            classify("/renderC.*/", &scope),
-            QueryType::Regex(_)
-        ));
-        // Single slash or empty pattern should not be regex
-        assert!(!matches!(classify("//", &scope), QueryType::Regex(_)));
-        // Inner slashes = path, not regex
-        assert!(!matches!(
-            classify("/src/lib.rs/", &scope),
-            QueryType::Regex(_)
-        ));
-        assert!(!matches!(classify("/src/", &scope), QueryType::Regex(_)));
-    }
-
-    #[test]
     fn glob_patterns() {
         let scope = PathBuf::from(".");
         assert!(matches!(classify("*.test.ts", &scope), QueryType::Glob(_)));
@@ -343,6 +292,14 @@ mod tests {
             QueryType::Glob(_)
         ));
         assert!(matches!(classify("{a,b}.js", &scope), QueryType::Glob(_)));
+        assert!(matches!(
+            classify("displayAjax*", &scope),
+            QueryType::SymbolGlob(_)
+        ));
+        assert!(matches!(
+            classify("*Controller", &scope),
+            QueryType::SymbolGlob(_)
+        ));
     }
 
     #[test]
@@ -456,33 +413,6 @@ mod tests {
         assert!(!is_identifier(""));
         assert!(!is_identifier("has space"));
         assert!(!is_identifier("123start"));
-    }
-
-    #[test]
-    fn or_pattern_queries() {
-        let scope = PathBuf::from(".");
-        // Pipe-separated identifiers → regex
-        assert!(matches!(
-            classify("Config|Security|Auth", &scope),
-            QueryType::Regex(_)
-        ));
-        assert!(matches!(
-            classify("handleAuth|handleLogin", &scope),
-            QueryType::Regex(_)
-        ));
-        assert!(matches!(
-            classify("TODO|FIXME|HACK", &scope),
-            QueryType::Regex(_)
-        ));
-        // Single part with trailing pipe → not regex (only 1 non-empty part)
-        assert!(!matches!(classify("Foo|", &scope), QueryType::Regex(_)));
-        // Non-identifier parts → not regex
-        assert!(!matches!(
-            classify("has space|also space", &scope),
-            QueryType::Regex(_)
-        ));
-        // Already /wrapped/ → regex via step 0, not this check
-        assert!(matches!(classify("/Foo|Bar/", &scope), QueryType::Regex(_)));
     }
 
     #[test]

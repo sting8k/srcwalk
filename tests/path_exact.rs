@@ -40,7 +40,7 @@ fn path_like_missing_query_fails_fast_without_fallback_search() {
     assert!(
         stderr.contains("not found")
             && stderr.contains("looks like a file path")
-            && stderr.contains("fd 'missing.go$'")
+            && stderr.contains("Next: check the path or scope")
             && !stderr.contains("interpreting as search"),
         "expected path-like not-found guidance, got:\n{stderr}"
     );
@@ -78,7 +78,7 @@ fn path_like_missing_nested_package_suggests_basename_lookup() {
     assert!(
         stderr.contains("not found")
             && stderr.contains("node_modules/pkg/dist/interactive/interactive-mode.js")
-            && stderr.contains("fd 'interactive-mode.js$'"),
+            && stderr.contains("Next: check the path or scope"),
         "expected basename locate hint, got:\n{stderr}"
     );
 

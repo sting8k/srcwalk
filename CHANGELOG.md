@@ -2,6 +2,19 @@
 
 All notable changes to srcwalk are documented here.
 
+## [0.2.7] - 2026-05-05
+
+### Added
+- Added `srcwalk files '<glob>'` for ignore-aware, paginated file discovery.
+- Added symbol-name glob search in `find` for patterns like `displayAjax*`, `*Controller`, and `run_{full,expanded}*`.
+- Added comma-separated mixed `--section` reads and repeated `--scope` support for `find`.
+
+### Changed
+- Moved file-glob queries out of `find`; use `srcwalk files '<glob>'` instead.
+- Made `--expand` budget-aware so inline source is capped separately from search hits, with compact omitted-hit metrics.
+- Made explicit `--full --budget <N>` act as the raw-read cap while preserving default safety caps.
+- Shortened agent-facing caveats for capped output, callers, impact, and path-like misses.
+
 ## [0.2.6] - 2026-05-04
 
 ### Added

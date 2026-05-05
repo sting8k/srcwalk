@@ -59,7 +59,7 @@ fn bare_filename_no_section_unchanged() {
 
     // Glob output, not a section view.
     assert!(
-        out.contains("Glob:") || out.contains("files"),
+        out.contains("Glob:") || out.contains("Files:"),
         "expected glob listing, got: {out}"
     );
     assert!(

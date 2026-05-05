@@ -70,19 +70,8 @@ impl std::fmt::Display for SrcwalkError {
                     "> Caveat: this looks like a file path, but no file exists at that path under {}.",
                     scope.display()
                 )?;
-                match basename {
-                    Some(name) if !name.is_empty() => write!(
-                        f,
-                        "> Next: check the path, or locate candidates with `fd '{}$' {}`.",
-                        name,
-                        scope.display()
-                    ),
-                    _ => write!(
-                        f,
-                        "> Next: check the path, or locate candidates with `fd <name> {}`.",
-                        scope.display()
-                    ),
-                }
+                let _ = basename;
+                write!(f, "> Next: check the path or scope.")
             }
             Self::PermissionDenied { path } => {
                 write!(f, "{} [permission denied]", path.display())

@@ -1,6 +1,6 @@
 ---
 name: srcwalk
-compatible_srcwalk: ">=0.2.6"
+compatible_srcwalk: ">=0.2.7"
 description: "Code-intelligence CLI for tree-sitter-backed structural code reading. Use this whenever the user asks where a symbol is defined, who calls it, what a file imports, what a large file contains structurally, or wants a token-aware map of an unfamiliar codebase — even if they don't say 'srcwalk' or 'outline'. Prefer this for code-structure questions and token-aware file reading. For pure text grep or path listing, use ripgrep / fd directly."
 ---
 
@@ -25,7 +25,8 @@ For plain text grep or path listing, prefer `rg`/`fd`. For known files, use srcw
 | Read or inspect a large known file | `srcwalk <path>` |
 | Jump around a hit line | `srcwalk <path>:<line>` |
 | Read exact body/range | `srcwalk <path> --section <symbol|start-end[,symbol|start-end]>` |
-| Find definition/usages/text/glob | `srcwalk find <query> --scope <dir>`; repeat `--scope` for multi-scope find |
+| Find definition/usages/text/name-glob | `srcwalk find <query> --scope <dir>`; repeat `--scope` for multi-scope find |
+| Find files by glob | `srcwalk files '<glob>' --scope <dir>` |
 | Find several symbols in one pass | `srcwalk find "A, B, C" --scope <dir>` |
 | Who directly calls this? | `srcwalk callers <symbol> --scope <dir>` |
 | Who reaches this transitively? | `srcwalk callers <symbol> --depth 2 --scope <dir>` |
@@ -65,8 +66,11 @@ Prefer outline/section reads before `--full` for large files. `--full` is capped
 
 ```bash
 srcwalk find <symbol> --scope <dir>
+srcwalk find 'displayAjax{Update,Refresh}*' --scope <dir> --filter kind:fn
+srcwalk find '*Controller' --scope <dir>
 srcwalk find <symbol> --expand --scope <dir>
 srcwalk find <symbol> --filter 'path:api kind:fn' --scope <dir>
+srcwalk files '*.php' --scope <dir>
 ```
 
 `--expand` is capped; drill omitted hits with `srcwalk <path>:<line>` or `--section`.
@@ -127,7 +131,8 @@ Use before editing a file to see imports and dependents.
     [fn] run_path_exact lib.rs:242
     [fn] run_inner lib.rs:1145
 
-  > Caveat: flow is capped for readability. Use `srcwalk callees <symbol> --detailed` for all ordered calls, or `srcwalk callers <symbol>` for upstream sites.
+  > Caveat: flow output capped.
+  > Next: use `srcwalk callees <symbol> --detailed` or `srcwalk callers <symbol>`.
   ```
 
   Nested/fluent chains and callback bodies may be collapsed to avoid noise; drill into the exact section when inner calls matter.
@@ -153,10 +158,11 @@ Use before editing a file to see imports and dependents.
     [group] receiver=read count=3
     [group] file=lib.rs count=3
 
-  > Caveat: direct name-matched call sites only. Use `srcwalk callers <symbol> --depth 2` for transitive upstream impact.
+  > Caveat: 7 direct name-matched call sites found; impact output capped.
+  > Next: use `srcwalk callers <symbol> --depth 2` or `srcwalk callers <symbol> --count-by receiver|file`.
   ```
 
-- `srcwalk find <query>` can handle symbol names, text, regex-like queries, and globs through smart classification.
+- `srcwalk find <query>` handles exact symbols, text, comma-separated symbols, and symbol-name globs like `displayAjax*` or `*Controller`; use `srcwalk files '<glob>'` for file globs.
 - Bare filename + `--section` may auto-pick the primary non-ignored shallow match. If duplicates matter, pass an explicit path.
 
 ## Escalation rules

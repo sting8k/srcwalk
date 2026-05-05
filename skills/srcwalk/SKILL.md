@@ -92,7 +92,7 @@ srcwalk callees <symbol> --detailed --filter 'callee:NAME' --scope <dir>
 srcwalk callees <symbol> --depth 2 --scope <dir>
 ```
 
-Use `callees` when the question starts from a known function and asks what it calls. Use `--detailed` for ordered call sites with assignment/return context.
+Use `callees` when the question starts from a known function and asks what it calls. Use `--detailed` for ordered call sites with assignment/return context and argument slots (`arg1=...`, `arg2=...`).
 
 ### Check file blast radius
 
@@ -105,7 +105,7 @@ Use before editing a file to see imports and dependents.
 
 ## Shortcuts and caveats
 
-- `srcwalk flow <symbol>`: compact orientation slice combining ordered calls, local resolves, and direct callers. Good for quick understanding; not a full graph.
+- `srcwalk flow <symbol>`: compact orientation slice combining ordered calls with argument slots, selected local resolves, and direct callers. Good for quick understanding; not a full graph.
 
   Example shape:
 
@@ -115,10 +115,10 @@ Use before editing a file to see imports and dependents.
 
   [symbol] read_file_with_budget read/mod.rs:208-257
   -> calls (ordered)
-    [call] L217 ->ret read_file(path, section, full, cache)
-    [call] L232 outline_out = render_outline_view(path, cache, ViewMode::OutlineCascade)
+    [call] L217 ->ret read_file(arg1=path, arg2=section, arg3=full, arg4=cache)
+    [call] L232 outline_out = render_outline_view(arg1=path, arg2=cache, arg3=ViewMode::OutlineCascade)
 
-  -> resolves (local helpers first)
+  -> resolves (selected local helpers)
     [fn] read_file read/mod.rs:69-188
     [fn] render_outline_view read/mod.rs:259-281
 
@@ -128,6 +128,8 @@ Use before editing a file to see imports and dependents.
 
   > Caveat: flow is capped for readability. Use `srcwalk callees <symbol> --detailed` for all ordered calls, or `srcwalk callers <symbol>` for upstream sites.
   ```
+
+  Nested/fluent chains and callback bodies may be collapsed to avoid noise; drill into the exact section when inner calls matter.
 
 - `srcwalk impact <symbol>`: heuristic name-matched blast-radius triage. Good for broad “what might be affected?” checks; not proof. Common names like `run`, `init`, `close` need follow-up with receiver/file groups or callers.
 

@@ -30,10 +30,6 @@ fn section_token_limit(budget: Option<u64>) -> u64 {
     })
 }
 
-fn raw_body_over_cap(tokens: u64, lines: u32) -> bool {
-    tokens > RAW_TOKEN_CAP || lines > RAW_LINE_CAP
-}
-
 fn capped_line_end(buf: &[u8], start_byte: usize, max_lines: u32, max_tokens: u64) -> (usize, u32) {
     let max_bytes = (max_tokens * 4) as usize;
     let mut end = start_byte;
@@ -141,7 +137,6 @@ pub fn read_file(
         ));
     }
 
-    let tokens = estimate_tokens(byte_len);
     let content = String::from_utf8_lossy(buf);
     let line_count = memchr::memchr_iter(b'\n', buf).count() as u32 + 1;
 
@@ -151,24 +146,18 @@ pub fn read_file(
     // Raw body output requires explicit `--full` and is capped by both tokens
     // and lines. Default path reads always return a structural/smart view.
     if full {
-        if !raw_body_over_cap(tokens, line_count) {
-            let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
-            let numbered = format::number_lines(&content, 1);
-            return Ok(format!("{header}\n\n{numbered}"));
-        }
-
-        let (head_end, shown) = capped_line_end(buf, 0, RAW_LINE_CAP, RAW_TOKEN_CAP);
-        let head = String::from_utf8_lossy(&buf[..head_end]);
-        let numbered_head = format::number_lines(&head, 1);
-        let outline = cache.get_or_compute(path, mtime, || {
-            outline::generate(path, file_type, &content, buf, true)
-        });
-
-        let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
-        let next_start = shown + 1;
-        return Ok(format!(
-            "{header}\n\n> Caveat: full=true capped; raw body exceeds {RAW_TOKEN_CAP} tokens or {RAW_LINE_CAP} lines. Showing first {shown} of {line_count} lines.\n\n{numbered_head}\n\n## Outline\n\n{outline}\n\n> Next: continue with --section {next_start}-<end> or use a narrower --section range."
-        ));
+        return render_full_body(
+            path,
+            buf,
+            &content,
+            byte_len,
+            line_count,
+            file_type,
+            mtime,
+            RAW_TOKEN_CAP,
+            Some(RAW_LINE_CAP),
+            cache,
+        );
     }
 
     let capped = byte_len > FILE_SIZE_CAP;
@@ -205,6 +194,47 @@ pub fn would_outline(path: &Path) -> bool {
 ///
 /// For `section`, non-`full`, or no-budget paths, behaves identically to `read_file`
 /// (caller still applies the top-level budget cap if needed).
+fn render_full_body(
+    path: &Path,
+    buf: &[u8],
+    content: &str,
+    byte_len: u64,
+    line_count: u32,
+    file_type: FileType,
+    mtime: std::time::SystemTime,
+    token_cap: u64,
+    line_cap: Option<u32>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    let raw_tokens = estimate_tokens(byte_len);
+    let over_token_cap = raw_tokens > token_cap;
+    let over_line_cap = line_cap.is_some_and(|cap| line_count > cap);
+    if !over_token_cap && !over_line_cap {
+        let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
+        let numbered = format::number_lines(content, 1);
+        return Ok(format!("{header}\n\n{numbered}"));
+    }
+
+    let max_lines = line_cap.unwrap_or(u32::MAX);
+    let (head_end, shown) = capped_line_end(buf, 0, max_lines, token_cap);
+    let head = String::from_utf8_lossy(&buf[..head_end]);
+    let shown_tokens = estimate_tokens(head.len() as u64);
+    let numbered_head = format::number_lines(&head, 1);
+    let outline = cache.get_or_compute(path, mtime, || {
+        outline::generate(path, file_type, content, buf, true)
+    });
+
+    let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
+    let next_start = shown + 1;
+    let cap_text = match line_cap {
+        Some(cap) => format!("{token_cap} tokens or {cap} lines"),
+        None => format!("{token_cap} tokens"),
+    };
+    Ok(format!(
+        "{header}\n\n> Caveat: full capped — tokens ~{shown_tokens}/{raw_tokens} shown (cap {cap_text}); lines {shown}/{line_count}.\n\n{numbered_head}\n\n## Outline\n\n{outline}\n\n> Next: use --section <symbol|range[,symbol|range]> for the needed parts, or retry with --budget <N>. Continue from --section {next_start}-<end>."
+    ))
+}
+
 pub fn read_file_with_budget(
     path: &Path,
     section: Option<&str>,
@@ -223,7 +253,7 @@ pub fn read_file_with_budget(
         return read_file(path, section, full, cache);
     }
 
-    let full_out = read_file(path, section, full, cache)?;
+    let full_out = read_full_file_with_explicit_budget(path, b, cache)?;
     if estimate_tokens(full_out.len() as u64) <= b {
         return Ok(full_out);
     }
@@ -251,9 +281,70 @@ pub fn read_file_with_budget(
         std::fs::read(path).map_or(0, |buf| memchr::memchr_iter(b'\n', &buf).count() as u32 + 1);
     let header = format::file_header(path, meta.len(), line_count, ViewMode::Signatures);
     Ok(format!(
-        "{header}\n\n> Caveat: file too large for budget {b} tokens at any granularity.\
-         > Next: use --section <fn-name> or raise --budget."
+        "{header}\n\n> Caveat: budget {b} tokens too small for file summary.\
+         > Next: use --section <symbol|range> or --budget <N>."
     ))
+}
+
+fn read_full_file_with_explicit_budget(
+    path: &Path,
+    budget: u64,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    let meta = fs::metadata(path).map_err(|e| SrcwalkError::IoError {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    if meta.is_dir() {
+        return list_directory(path);
+    }
+    if meta.len() == 0 {
+        return Ok(format::file_header(path, 0, 0, ViewMode::Empty));
+    }
+
+    let file = fs::File::open(path).map_err(|e| SrcwalkError::IoError {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| SrcwalkError::IoError {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let buf = &mmap[..];
+    if crate::lang::detection::is_binary(buf) {
+        let mime = mime_from_ext(path);
+        return Ok(format::binary_header(path, meta.len(), mime));
+    }
+
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if crate::lang::detection::is_generated_by_name(name)
+        || crate::lang::detection::is_generated_by_content(buf)
+    {
+        let line_count = memchr::memchr_iter(b'\n', buf).count() as u32 + 1;
+        return Ok(format::file_header(
+            path,
+            meta.len(),
+            line_count,
+            ViewMode::Generated,
+        ));
+    }
+
+    let content = String::from_utf8_lossy(buf);
+    let line_count = memchr::memchr_iter(b'\n', buf).count() as u32 + 1;
+    let file_type = detect_file_type(path);
+    let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    render_full_body(
+        path,
+        buf,
+        &content,
+        meta.len(),
+        line_count,
+        file_type,
+        mtime,
+        budget,
+        None,
+        cache,
+    )
 }
 
 fn render_outline_view(
@@ -304,8 +395,13 @@ fn render_signatures_view(path: &Path, cache: &OutlineCache) -> Result<String, S
 
 fn append_cascade_note(body: &str, prev_kind: &str, prev_bytes: usize, budget: u64) -> String {
     let prev_tokens = estimate_tokens(prev_bytes as u64);
+    let action = if prev_kind == "outline" {
+        "compacted outline".to_string()
+    } else {
+        format!("downgraded {prev_kind}->outline")
+    };
     format!(
-        "{body}\n\n> Note: {prev_kind} ({prev_tokens} tokens) exceeded budget ({budget}).\n> Next: use --section <fn-name> for a specific symbol, or raise --budget."
+        "{body}\n\n> Note: budget ~{prev_tokens}/{budget} tokens; {action}.\n> Next: use --section <symbol|range> or --budget <N>."
     )
 }
 
@@ -568,8 +664,8 @@ fn read_section(
                 let body = format_section_outline(&filtered);
                 return Ok(format!(
                     "{header}\n\n{body}\n\n\
-                     > Caveat: section spans ~{tok_est} tokens / {line_count} lines (limit: {limit} tokens). Showing outline of {start}-{end}.\n\
-                     > Next: retry with --budget <N>, or use a narrower --section range."
+                     > Caveat: section cap ~{tok_est}/{limit} tokens; lines {line_count}; outline {start}-{end}.\n\
+                     > Next: use narrower --section or --budget <N>."
                 ));
             }
         }
@@ -577,8 +673,8 @@ fn read_section(
         // Fallback: no structured outline available — return header + advice only
         return Ok(format!(
             "{header}\n\n\
-             > Caveat: section spans ~{tok_est} tokens / {line_count} lines (limit: {limit} tokens).\n\
-             > Next: retry with --budget <N>, or use a narrower --section range."
+             > Caveat: section cap ~{tok_est}/{limit} tokens; lines {line_count}.\n\
+             > Next: use narrower --section or --budget <N>."
         ));
     }
 
@@ -768,10 +864,9 @@ fn read_multi_section(
         };
         return Ok(format!(
             "{header}\n\n\
-             > Caveat: {count} {noun} ({names}) span ~{tok_est} tokens (limit {limit}).\n\
-             > Next: use a narrower --section list, or retry with --budget <N>.",
+             > Caveat: section cap ~{tok_est}/{limit} tokens; {noun} {count}.\n\
+             > Next: use narrower --section list or --budget <N>.",
             count = rendered_labels.len(),
-            names = rendered_labels.join(", "),
         ));
     }
 
@@ -1171,7 +1266,7 @@ mod tests {
             "full body should be numbered: {out}"
         );
         assert!(
-            !out.contains("full=true capped"),
+            !out.contains("full capped"),
             "small full should not cap: {out}"
         );
 
@@ -1193,11 +1288,11 @@ mod tests {
         let out = read_file(&path, None, true, &cache).unwrap();
 
         assert!(
-            out.contains("full=true capped"),
+            out.contains("full capped — tokens ~"),
             "expected cap warning: {out}"
         );
         assert!(
-            out.contains("Showing first 200 of 251 lines"),
+            out.contains("lines 200/251"),
             "expected 200-line page: {out}"
         );
         assert!(
@@ -1261,7 +1356,7 @@ mod tests {
             "expected low budget to outline: {low_budget}"
         );
         assert!(
-            low_budget.contains("limit: 100 tokens"),
+            low_budget.contains("section cap ~") && low_budget.contains("/100 tokens"),
             "expected budget limit in footer: {low_budget}"
         );
 
@@ -1301,7 +1396,10 @@ mod tests {
             &out[..out.len().min(200)]
         );
         // Cascade note present.
-        assert!(out.contains("exceeded budget"), "missing cascade note");
+        assert!(
+            out.contains("budget ~") && out.contains("compacted outline"),
+            "missing cascade note: {out}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1320,7 +1418,7 @@ mod tests {
             "expected [full] label, got header in: {out}"
         );
         assert!(
-            !out.contains("exceeded budget"),
+            !out.contains("downgraded"),
             "no cascade note for fitting file"
         );
 

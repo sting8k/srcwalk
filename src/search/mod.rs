@@ -24,6 +24,7 @@ use crate::error::SrcwalkError;
 use crate::format;
 use crate::format::{rel, rel_nonempty};
 use crate::read;
+use crate::read::RAW_TOKEN_CAP;
 use crate::session::Session;
 use crate::types::{estimate_tokens, FileType, Match, OutlineEntry, OutlineKind, SearchResult};
 
@@ -74,7 +75,7 @@ pub fn search_symbol(
     apply_general_filter(&mut result, scope, cache, filter)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    let mut out = format_search_result(&result, cache, None, &bloom, 0)?;
+    let mut out = format_search_result(&result, cache, None, &bloom, 0, None)?;
     append_did_you_mean(&mut out, &result, scope, glob);
     // Contextual hints
     if result.definitions > 0 {
@@ -99,13 +100,15 @@ pub fn search_symbol_expanded(
     offset: usize,
     glob: Option<&str>,
     filter: Option<&str>,
+    budget_tokens: Option<u64>,
 ) -> Result<String, SrcwalkError> {
     let _ = index;
 
     let mut result = symbol::search(query, scope, Some(cache), context, glob)?;
     apply_general_filter(&mut result, scope, cache, filter)?;
     paginate(&mut result, limit, offset);
-    let mut out = format_search_result(&result, cache, Some(session), bloom, expand)?;
+    let mut out =
+        format_search_result(&result, cache, Some(session), bloom, expand, budget_tokens)?;
     append_did_you_mean(&mut out, &result, scope, glob);
     Ok(out)
 }
@@ -123,6 +126,7 @@ pub fn search_multi_symbol_expanded(
     offset: usize,
     glob: Option<&str>,
     filter: Option<&str>,
+    budget_tokens: Option<u64>,
 ) -> Result<String, SrcwalkError> {
     let _ = index; // Available but not yet used for search fast-path
 
@@ -141,6 +145,7 @@ pub fn search_multi_symbol_expanded(
     // and shared sets — cheap, keep single-threaded).
     let mut expanded_files = HashSet::new();
     let mut context_shown_files = HashSet::new();
+    let mut expand_budget = ExpandBudget::new(expand_per_query * queries.len(), budget_tokens);
     for mut result in results {
         let mut smart_truncated = false;
         apply_general_filter(&mut result, scope, cache, filter)?;
@@ -161,6 +166,7 @@ pub fn search_multi_symbol_expanded(
             Some(session),
             bloom,
             &mut budget,
+            &mut expand_budget,
             &mut expanded_files,
             &mut context_shown_files,
             &mut smart_truncated,
@@ -176,12 +182,14 @@ pub fn search_multi_symbol_expanded(
             );
         }
         if smart_truncated {
-            out.push_str("\n\n> Caveat: expanded source was smart-truncated. Use the shown file line range with --section <start-end> for a capped raw range.");
+            out.push_str("\n\n> Caveat: expanded source truncated.\n> Next: use shown line range with --section <start-end>.");
         }
         append_did_you_mean(&mut out, &result, scope, glob);
         sections.push(out);
     }
-    Ok(sections.join("\n\n---\n"))
+    let mut out = sections.join("\n\n---\n");
+    append_expand_budget_note(&mut out, &expand_budget);
+    Ok(out)
 }
 
 pub fn search_regex(
@@ -197,7 +205,7 @@ pub fn search_regex(
     apply_general_filter(&mut result, scope, cache, filter)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result(&result, cache, None, &bloom, 0)
+    format_search_result(&result, cache, None, &bloom, 0, None)
 }
 
 pub fn search_content_expanded(
@@ -211,13 +219,14 @@ pub fn search_content_expanded(
     offset: usize,
     glob: Option<&str>,
     filter: Option<&str>,
+    budget_tokens: Option<u64>,
 ) -> Result<String, SrcwalkError> {
     let (pattern, is_regex) = parse_pattern(query);
     let mut result = content::search(pattern, scope, is_regex, context, glob)?;
     apply_general_filter(&mut result, scope, cache, filter)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result(&result, cache, Some(session), &bloom, expand)
+    format_search_result(&result, cache, Some(session), &bloom, expand, budget_tokens)
 }
 
 /// Expanded regex search — takes raw pattern, no slash wrapping needed.
@@ -232,12 +241,13 @@ pub fn search_regex_expanded(
     offset: usize,
     glob: Option<&str>,
     filter: Option<&str>,
+    budget_tokens: Option<u64>,
 ) -> Result<String, SrcwalkError> {
     let mut result = content::search(pattern, scope, true, context, glob)?;
     apply_general_filter(&mut result, scope, cache, filter)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result(&result, cache, Some(session), &bloom, expand)
+    format_search_result(&result, cache, Some(session), &bloom, expand, budget_tokens)
 }
 
 /// Raw symbol search — returns structured result for programmatic inspection.
@@ -375,7 +385,7 @@ pub fn format_raw_result(
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result(result, cache, None, &bloom, 0)
+    format_search_result(result, cache, None, &bloom, 0, None)
 }
 
 pub fn format_raw_result_with_header(
@@ -384,7 +394,7 @@ pub fn format_raw_result_with_header(
     header: String,
 ) -> Result<String, SrcwalkError> {
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result_with_header(result, cache, None, &bloom, 0, header)
+    format_search_result_with_header(result, cache, None, &bloom, 0, None, header)
 }
 
 pub fn search_glob(
@@ -423,6 +433,54 @@ fn format_compact_facet_matches(
 
 /// Groups consecutive usage matches in the same enclosing function to reduce token noise.
 /// Shared expand state enables cross-query dedup in multi-symbol search.
+#[derive(Debug, Clone)]
+struct ExpandBudget {
+    cap_tokens: u64,
+    remaining_tokens: u64,
+    expanded: usize,
+    omitted: usize,
+}
+
+impl ExpandBudget {
+    fn new(expand: usize, budget_tokens: Option<u64>) -> Self {
+        let default = RAW_TOKEN_CAP / 2;
+        let remaining_tokens =
+            budget_tokens.map_or(default, |budget| budget.saturating_mul(7) / 10);
+        let cap_tokens = if expand == 0 { 0 } else { remaining_tokens };
+        Self {
+            cap_tokens,
+            remaining_tokens: cap_tokens,
+            expanded: 0,
+            omitted: 0,
+        }
+    }
+
+    fn try_consume(&mut self, text: &str) -> bool {
+        let tokens = estimate_tokens(text.len() as u64).max(1);
+        if tokens > self.remaining_tokens {
+            self.omitted += 1;
+            return false;
+        }
+        self.remaining_tokens -= tokens;
+        self.expanded += 1;
+        true
+    }
+}
+
+fn append_expand_budget_note(out: &mut String, budget: &ExpandBudget) {
+    if budget.omitted == 0 {
+        return;
+    }
+    let expanded = budget.expanded;
+    let omitted = budget.omitted;
+    let used = budget.cap_tokens.saturating_sub(budget.remaining_tokens);
+    let cap = budget.cap_tokens;
+    let _ = write!(
+        out,
+        "\n\n> Note: expand cap ~{used}/{cap} tokens; expanded {expanded}, omitted {omitted}.\n> Next: drill into omitted hits with `srcwalk <path>:<line>` or `srcwalk <path> --section <symbol|range>`."
+    );
+}
+
 fn format_matches(
     matches: &[Match],
     scope: &Path,
@@ -430,6 +488,7 @@ fn format_matches(
     session: Option<&Session>,
     bloom: &crate::index::bloom::BloomFilterCache,
     expand_remaining: &mut usize,
+    expand_budget: &mut ExpandBudget,
     expanded_files: &mut HashSet<PathBuf>,
     context_shown_files: &mut HashSet<PathBuf>,
     smart_truncated: &mut bool,
@@ -453,6 +512,7 @@ fn format_matches(
                     session,
                     bloom,
                     expand_remaining,
+                    expand_budget,
                     expanded_files,
                     context_shown_files,
                     smart_truncated,
@@ -786,6 +846,7 @@ fn format_single_match(
     session: Option<&Session>,
     bloom: &crate::index::bloom::BloomFilterCache,
     expand_remaining: &mut usize,
+    expand_budget: &mut ExpandBudget,
     expanded_files: &mut HashSet<PathBuf>,
     context_shown_files: &mut HashSet<PathBuf>,
     smart_truncated: &mut bool,
@@ -874,6 +935,10 @@ fn format_single_match(
                     } else {
                         filter_code_lines(&code, &skip_lines)
                     };
+
+                    if !expand_budget.try_consume(&stripped_code) {
+                        return;
+                    }
 
                     out.push('\n');
                     out.push_str(&stripped_code);
@@ -1136,6 +1201,7 @@ fn format_search_result(
     session: Option<&Session>,
     bloom: &crate::index::bloom::BloomFilterCache,
     expand: usize,
+    budget_tokens: Option<u64>,
 ) -> Result<String, SrcwalkError> {
     let header = format::search_header(
         &result.query,
@@ -1145,7 +1211,7 @@ fn format_search_result(
         result.usages,
         result.comments,
     );
-    format_search_result_with_header(result, cache, session, bloom, expand, header)
+    format_search_result_with_header(result, cache, session, bloom, expand, budget_tokens, header)
 }
 
 fn format_search_result_with_header(
@@ -1154,10 +1220,12 @@ fn format_search_result_with_header(
     session: Option<&Session>,
     bloom: &crate::index::bloom::BloomFilterCache,
     expand: usize,
+    budget_tokens: Option<u64>,
     header: String,
 ) -> Result<String, SrcwalkError> {
     let mut out = header;
     let mut expand_remaining = expand;
+    let mut expand_budget = ExpandBudget::new(expand, budget_tokens);
     let mut expanded_files = HashSet::new();
     let mut context_shown_files = HashSet::new();
     let mut smart_truncated = false;
@@ -1193,6 +1261,7 @@ fn format_search_result_with_header(
                     session,
                     bloom,
                     &mut expand_remaining,
+                    &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
                     &mut smart_truncated,
@@ -1222,6 +1291,7 @@ fn format_search_result_with_header(
                     session,
                     bloom,
                     &mut expand_remaining,
+                    &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
                     &mut smart_truncated,
@@ -1242,6 +1312,7 @@ fn format_search_result_with_header(
                     session,
                     bloom,
                     &mut expand_remaining,
+                    &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
                     &mut smart_truncated,
@@ -1280,6 +1351,7 @@ fn format_search_result_with_header(
                     session,
                     bloom,
                     &mut expand_remaining,
+                    &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
                     &mut smart_truncated,
@@ -1304,6 +1376,7 @@ fn format_search_result_with_header(
                     session,
                     bloom,
                     &mut expand_remaining,
+                    &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
                     &mut smart_truncated,
@@ -1334,6 +1407,7 @@ fn format_search_result_with_header(
             session,
             bloom,
             &mut expand_remaining,
+            &mut expand_budget,
             &mut expanded_files,
             &mut context_shown_files,
             &mut smart_truncated,
@@ -1375,7 +1449,23 @@ fn format_search_result_with_header(
         if !footer.is_empty() {
             footer.push('\n');
         }
-        footer.push_str("> Caveat: expanded source was smart-truncated. Use the shown file line range with --section <start-end> for a capped raw range.");
+        footer.push_str("> Caveat: expanded source truncated.\n> Next: use shown line range with --section <start-end>.");
+    }
+
+    if expand_budget.omitted > 0 {
+        if !footer.is_empty() {
+            footer.push('\n');
+        }
+        let expanded = expand_budget.expanded;
+        let omitted = expand_budget.omitted;
+        let used = expand_budget
+            .cap_tokens
+            .saturating_sub(expand_budget.remaining_tokens);
+        let cap = expand_budget.cap_tokens;
+        let _ = write!(
+            footer,
+            "> Note: expand cap ~{used}/{cap} tokens; expanded {expanded}, omitted {omitted}.\n> Next: drill into omitted hits with `srcwalk <path>:<line>` or `srcwalk <path> --section <symbol|range>`."
+        );
     }
 
     let tokens = estimate_tokens(out.len() as u64);

@@ -730,14 +730,8 @@ pub fn search_callers_expanded(
     if callers.is_empty() {
         return Ok(format!(
             "# Callers of \"{}\" in {} — no call sites found\n\n\
-             > Caveat: srcwalk detects only direct, by-name call sites. The symbol may still be invoked via:\n\
-             > - Rust trait objects (`dyn Trait`) or generic bounds\n\
-             > - Go interface dispatch or function values stored in structs\n\
-             > - Java/Kotlin interface or abstract methods, reflection\n\
-             > - TypeScript/JS class hierarchies, callbacks, or dynamic property access\n\
-             > - Python duck typing, `getattr`, decorators\n\n\
-             > Next: try `srcwalk(\"{}\")` (symbol search) to find the declaring interface/trait, \
-             then run `callers` on that name, or search for implementors.",
+             > Caveat: direct by-name search only; misses dynamic dispatch, reflection, macros.\n\
+             > Next: use `srcwalk find {}` or search interface/trait/implementor names.",
             target,
             crate::format::display_path(scope),
             target,

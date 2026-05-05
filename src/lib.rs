@@ -42,6 +42,7 @@ struct ExpandedCtx {
     sym_index: index::SymbolIndex,
     bloom: index::bloom::BloomFilterCache,
     expand: usize,
+    budget_tokens: Option<u64>,
 }
 
 fn resolve_exact_path(query: &str, scope: &Path) -> Result<std::path::PathBuf, SrcwalkError> {
@@ -873,7 +874,7 @@ pub fn run_flow(
             total_sites
         );
     }
-    out.push_str("\n> Caveat: flow is capped for readability. Use `srcwalk callees <symbol> --detailed` for all ordered calls, or `srcwalk callers <symbol>` for upstream sites.");
+    out.push_str("\n> Caveat: flow output capped.\n> Next: use `srcwalk callees <symbol> --detailed` or `srcwalk callers <symbol>`.");
     Ok(apply_optional_budget(out, budget_tokens))
 }
 
@@ -1014,13 +1015,13 @@ pub fn run_impact(
 
     let _ = write!(
         out,
-        "\n> Caveat: {total_callers} direct name-matched call site{} found. Impact output is capped for readability. Use `srcwalk callers <symbol> --depth 2` for transitive upstream impact, or `srcwalk callers <symbol> --count-by receiver|file` to page groups.",
+        "\n> Caveat: {total_callers} direct name-matched call site{} found; impact output capped.\n> Next: use `srcwalk callers <symbol> --depth 2` or `srcwalk callers <symbol> --count-by receiver|file`.",
         if total_callers == 1 { "" } else { "s" }
     );
     if total_callers == 0 {
         out.push_str("\n> Note: no direct name-matched calls found in scope; this is not proof of no runtime callers.");
     }
-    out.push_str("\n> Note: impact scans direct name matches within the selected scope; dynamic dispatch, reflection, generated/ignored files, and out-of-scope callers may be missed.");
+    out.push_str("\n> Note: direct-name scope scan; misses dynamic dispatch, reflection, generated/ignored, out-of-scope callers.");
     Ok(apply_optional_budget(out, budget_tokens))
 }
 
@@ -1456,8 +1457,19 @@ fn run_inner(
             let bloom = index::bloom::BloomFilterCache::new();
             let expand = if expand > 0 { expand } else { 2 };
             let output = search::search_multi_symbol_expanded(
-                &parts, scope, cache, &session, &sym_index, &bloom, expand, None, limit, offset,
-                glob, filter,
+                &parts,
+                scope,
+                cache,
+                &session,
+                &sym_index,
+                &bloom,
+                expand,
+                None,
+                limit,
+                offset,
+                glob,
+                filter,
+                budget_tokens,
             )?;
             return match budget_tokens {
                 Some(b) => Ok(budget::apply_preserving_footer(&output, b)),
@@ -1506,6 +1518,7 @@ fn run_inner(
                 sym_index: index::SymbolIndex::new(),
                 bloom: index::bloom::BloomFilterCache::new(),
                 expand,
+                budget_tokens,
             };
             run_query_expanded(&query_type, scope, cache, &ctx, limit, offset, glob, filter)
         }
@@ -1561,6 +1574,7 @@ fn run_query_expanded(
             offset,
             glob,
             filter,
+            ctx.budget_tokens,
         ),
         QueryType::Concept(text) if text.contains(' ') => search::search_content_expanded(
             text,
@@ -1573,6 +1587,7 @@ fn run_query_expanded(
             offset,
             glob,
             filter,
+            ctx.budget_tokens,
         ),
         QueryType::Concept(text) | QueryType::Fallthrough(text) => search::search_symbol_expanded(
             text,
@@ -1587,6 +1602,7 @@ fn run_query_expanded(
             offset,
             glob,
             filter,
+            ctx.budget_tokens,
         ),
         QueryType::Regex(pattern) => search::search_regex_expanded(
             pattern,
@@ -1599,6 +1615,7 @@ fn run_query_expanded(
             offset,
             glob,
             filter,
+            ctx.budget_tokens,
         ),
         // FilePath/Glob never reach here (gated by use_expanded)
         QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_) => {

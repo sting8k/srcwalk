@@ -220,10 +220,77 @@ fn full_file_cap_next_step_is_footer() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
-        stdout.contains("full=true capped")
-            && stdout.contains("> Next: continue with --section")
+        stdout.contains("full capped — tokens ~")
+            && stdout.contains("> Next: use --section <symbol|range[,symbol|range]>")
             && stdout.contains("--section 201-<end>"),
         "expected full-file cap footer next-step:\n{stdout}"
+    );
+}
+
+#[test]
+fn full_file_explicit_budget_overrides_default_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("budgeted.txt");
+    std::fs::write(
+        &path,
+        (0..260).map(|i| format!("line {i}\n")).collect::<String>(),
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .arg(&path)
+        .arg("--full")
+        .arg("--budget")
+        .arg("9000")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("line 259"),
+        "explicit budget should read past default line cap:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("full capped"),
+        "file should fit explicit budget:\n{stdout}"
+    );
+}
+
+#[test]
+fn expanded_output_omits_bodies_to_fit_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("many.rs");
+    let mut body = String::new();
+    for func in 0..6 {
+        body.push_str(&format!("fn target_{func}() {{\n"));
+        for line in 0..80 {
+            body.push_str(&format!("    let value_{func}_{line} = {line};\n"));
+        }
+        body.push_str("}\n\n");
+    }
+    std::fs::write(path, body).unwrap();
+
+    let out = srcwalk()
+        .arg("target_0,target_1,target_2,target_3,target_4")
+        .arg("--expand=5")
+        .arg("--budget")
+        .arg("900")
+        .arg("--scope")
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("[fn] target_"),
+        "hit list should remain visible:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("expand cap ~")
+            && stdout.contains("expanded ")
+            && stdout.contains("omitted ")
+            && stdout.contains("Next: drill into omitted hits"),
+        "expected expand budget note:\n{stdout}"
     );
 }
 
@@ -250,7 +317,8 @@ fn expanded_smart_truncate_caveat_is_footer() {
 
     assert!(
         stdout.contains("lines omitted")
-            && stdout.contains("> Caveat: expanded source was smart-truncated"),
+            && stdout.contains("> Caveat: expanded source truncated")
+            && stdout.contains("> Next: use shown line range with --section <start-end>"),
         "expected smart-truncate footer caveat:\n{stdout}"
     );
 }

@@ -93,11 +93,11 @@ fn impact_warns_for_broad_name_matched_symbols() {
         "expected broad symbol warning, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("Impact output is capped for readability"),
+        stdout.contains("51 direct name-matched call sites found; impact output capped"),
         "expected capped footer, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("impact scans direct name matches within the selected scope"),
+        stdout.contains("direct-name scope scan"),
         "expected scan caveat, got:\n{stdout}"
     );
 }

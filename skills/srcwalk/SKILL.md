@@ -59,7 +59,7 @@ srcwalk <path>:123
 srcwalk <path> --section <symbol|start-end[,symbol|start-end]>
 ```
 
-Prefer outline/section reads before `--full` for large files. Use `--full` when raw text is useful; output is capped.
+Prefer outline/section reads before `--full` for large files. `--full` is capped; raise with `--budget <N>` only when raw text is needed.
 
 ### Find and drill into symbols
 
@@ -68,6 +68,8 @@ srcwalk find <symbol> --scope <dir>
 srcwalk find <symbol> --expand --scope <dir>
 srcwalk find <symbol> --filter 'path:api kind:fn' --scope <dir>
 ```
+
+`--expand` is capped; drill omitted hits with `srcwalk <path>:<line>` or `--section`.
 
 Definition hits are tree-sitter based. Usage hits are text-matched and may include comments/docs. For actual call sites, switch to `srcwalk callers <symbol>`.
 

@@ -57,11 +57,15 @@ fn files_action_lists_file_globs() {
         "bad header:\n{stdout}"
     );
     assert!(
-        stdout.contains("controllers/front/CartController.php"),
+        stdout.contains("controllers/front/ (2)"),
+        "missing grouped directory:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("  CartController.php"),
         "missing cart:\n{stdout}"
     );
     assert!(
-        stdout.contains("controllers/front/ProductController.php"),
+        stdout.contains("  ProductController.php"),
         "missing product:\n{stdout}"
     );
     assert!(

@@ -12,7 +12,7 @@ pub mod strip;
 pub mod symbol;
 pub mod truncate;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1708,6 +1708,42 @@ fn extract_line_range(line: &str) -> Option<(u32, u32)> {
     }
 }
 
+fn append_grouped_files(out: &mut String, files: &[glob::GlobFileEntry], scope: &Path) {
+    if files.is_empty() {
+        return;
+    }
+
+    let mut groups: BTreeMap<String, Vec<(String, Option<&str>)>> = BTreeMap::new();
+    for file in files {
+        let display = rel_nonempty(&file.path, scope);
+        let display_path = Path::new(&display);
+        let dir = display_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| format!("{}/", p.display()))
+            .unwrap_or_else(|| "./".to_string());
+        let name = display_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(display.as_str())
+            .to_string();
+        groups
+            .entry(dir)
+            .or_default()
+            .push((name, file.preview.as_deref()));
+    }
+
+    for (dir, entries) in groups {
+        let _ = write!(out, "\n\n{dir} ({})", entries.len());
+        for (name, preview) in entries {
+            let _ = write!(out, "\n  {name}");
+            if let Some(preview) = preview {
+                let _ = write!(out, "  ({preview})");
+            }
+        }
+    }
+}
+
 /// Format glob search results (file list with previews + pagination hint).
 fn format_glob_result(
     result: &glob::GlobResult,
@@ -1733,12 +1769,7 @@ fn format_glob_result(
         );
     }
 
-    for file in &result.files {
-        let _ = write!(out, "\n  {}", rel_nonempty(&file.path, scope));
-        if let Some(ref preview) = file.preview {
-            let _ = write!(out, "  ({preview})");
-        }
-    }
+    append_grouped_files(&mut out, &result.files, scope);
 
     let shown_end = result.offset + result.files.len();
     if result.total_found > shown_end {

@@ -6,7 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use streaming_iterator::StreamingIterator;
 
-use crate::lang::treesitter::{extract_definition_name, DEFINITION_KINDS};
+use crate::lang::treesitter::{
+    extract_definition_name, is_js_function_expression_kind, js_function_context_name,
+    DEFINITION_KINDS,
+};
 
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
@@ -654,8 +657,25 @@ fn find_enclosing_function(
     while let Some(n) = current {
         let kind = n.kind();
 
-        // Check standard definition kinds, or Elixir call-node definitions
-        let def_name = if DEFINITION_KINDS.contains(&kind) {
+        // Check JS/TS function expressions, standard definition kinds, or Elixir call-node definitions.
+        let js_function_name = || {
+            if matches!(
+                lang,
+                crate::types::Lang::JavaScript
+                    | crate::types::Lang::TypeScript
+                    | crate::types::Lang::Tsx
+            ) && is_js_function_expression_kind(kind)
+            {
+                js_function_context_name(n, lines)
+            } else {
+                None
+            }
+        };
+        let def_name = if let Some(name) = js_function_name() {
+            Some(name)
+        } else if DEFINITION_KINDS.contains(&kind)
+            && !matches!(kind, "lexical_declaration" | "variable_declaration")
+        {
             extract_definition_name(n, lines)
         } else if lang == crate::types::Lang::Elixir
             && crate::lang::treesitter::is_elixir_definition(n, lines)

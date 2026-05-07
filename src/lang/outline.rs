@@ -1,4 +1,6 @@
-use crate::lang::treesitter::extract_definition_name;
+use crate::lang::treesitter::{
+    extract_definition_name, find_iife_function, js_function_context_name,
+};
 use crate::types::{Lang, OutlineEntry, OutlineKind};
 
 /// Get the tree-sitter Language for a given Lang variant.
@@ -56,6 +58,21 @@ fn node_to_entry(
     let kind_str = node.kind();
     let start_line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
+
+    if matches!(lang, Lang::JavaScript | Lang::TypeScript | Lang::Tsx) {
+        if let Some(iife) = find_iife_function(node) {
+            let name = js_function_context_name(iife, lines).unwrap_or_else(|| "<iife>".into());
+            return Some(OutlineEntry {
+                kind: OutlineKind::Function,
+                name,
+                start_line: iife.start_position().row as u32 + 1,
+                end_line: iife.end_position().row as u32 + 1,
+                signature: Some(extract_signature(iife, lines)),
+                children: Vec::new(),
+                doc: extract_doc(node, lines),
+            });
+        }
+    }
 
     if kind_str == "export_statement" {
         let mut cursor = node.walk();
@@ -269,9 +286,10 @@ fn collect_children(
 
 /// Extract the first line as a function signature (name + params + return type).
 fn extract_signature(node: tree_sitter::Node, lines: &[&str]) -> String {
-    let start_row = node.start_position().row;
-    if start_row < lines.len() {
-        let line = lines[start_row].trim();
+    let start = node.start_position();
+    if start.row < lines.len() {
+        let raw_line = lines[start.row];
+        let line = raw_line.get(start.column..).unwrap_or(raw_line).trim();
         // Truncate at opening brace
         if let Some(pos) = line.find('{') {
             return line[..pos].trim().to_string();

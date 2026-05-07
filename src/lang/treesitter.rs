@@ -6,6 +6,8 @@ pub(crate) const DEFINITION_KINDS: &[&str] = &[
     "function_declaration",
     "function_definition",
     "function_item",
+    "function_expression",
+    "generator_function",
     "method_definition",
     "method_declaration",
     // Classes, structs & Kotlin objects
@@ -68,6 +70,126 @@ pub(crate) fn extract_definition_name(node: tree_sitter::Node, lines: &[&str]) -
             if DEFINITION_KINDS.contains(&child.kind()) {
                 return extract_definition_name(child, lines);
             }
+        }
+    }
+
+    if matches!(node.kind(), "lexical_declaration" | "variable_declaration") {
+        return extract_first_variable_declarator_name(node, lines);
+    }
+
+    None
+}
+
+pub(crate) fn extract_variable_declarator_name(
+    node: tree_sitter::Node,
+    lines: &[&str],
+) -> Option<String> {
+    if let Some(name) = node.child_by_field_name("name") {
+        let text = node_text_simple(name, lines);
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind().contains("identifier") {
+            let text = node_text_simple(child, lines);
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_first_variable_declarator_name(
+    node: tree_sitter::Node,
+    lines: &[&str],
+) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "variable_declarator" {
+            return extract_variable_declarator_name(child, lines);
+        }
+    }
+    None
+}
+
+pub(crate) fn is_js_function_expression_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_expression" | "generator_function" | "arrow_function"
+    )
+}
+
+pub(crate) fn is_iife_function(node: tree_sitter::Node) -> bool {
+    if !is_js_function_expression_kind(node.kind()) {
+        return false;
+    }
+
+    if let Some(parent) = node.parent() {
+        if parent.kind() == "call_expression" && call_invokes_node(parent, node) {
+            return true;
+        }
+
+        if parent.kind() == "parenthesized_expression" {
+            if let Some(grandparent) = parent.parent() {
+                return grandparent.kind() == "call_expression"
+                    && call_invokes_node(grandparent, parent);
+            }
+        }
+    }
+
+    false
+}
+
+fn call_invokes_node(call: tree_sitter::Node, function_node: tree_sitter::Node) -> bool {
+    call.child_by_field_name("function")
+        .is_some_and(|function| function.id() == function_node.id())
+}
+
+pub(crate) fn js_function_context_name(node: tree_sitter::Node, lines: &[&str]) -> Option<String> {
+    if let Some(name) = node.child_by_field_name("name") {
+        let text = node_text_simple(name, lines);
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+
+    let mut current = node.parent();
+    for _ in 0..6 {
+        let Some(parent) = current else { break };
+        if parent.kind() == "variable_declarator" {
+            return extract_variable_declarator_name(parent, lines);
+        }
+        current = parent.parent();
+    }
+
+    if is_iife_function(node) {
+        return Some(format!("<iife@{}>", node.start_position().row + 1));
+    }
+
+    None
+}
+
+pub(crate) fn find_iife_function(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    find_iife_function_inner(node, 0)
+}
+
+fn find_iife_function_inner(node: tree_sitter::Node, depth: usize) -> Option<tree_sitter::Node> {
+    if depth > 6 {
+        return None;
+    }
+    if is_iife_function(node) {
+        return Some(node);
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(iife) = find_iife_function_inner(child, depth + 1) {
+            return Some(iife);
         }
     }
 
@@ -357,6 +479,8 @@ pub(crate) fn definition_weight(kind: &str) -> u16 {
         "function_declaration"
         | "function_definition"
         | "function_item"
+        | "function_expression"
+        | "generator_function"
         | "method_definition"
         | "method_declaration"
         | "class_declaration"

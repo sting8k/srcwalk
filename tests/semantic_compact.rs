@@ -842,3 +842,243 @@ class RegexMatcher : IMatcher { public void Find() {} }
         "C# base-list relationship should not be labeled kind:impl, got:\n{imp_stdout}"
     );
 }
+
+#[test]
+fn javascript_iifes_are_outline_definitions_and_call_contexts() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("iife.js");
+    std::fs::write(
+        &file,
+        r#"function init() { return 1; }
+function anonymousWork() { return 2; }
+function arrowWork() { return 3; }
+async function fetchData() { return 4; }
+function step() { return 5; }
+function assignedWork() { return 6; }
+
+(function boot() {
+  init();
+})();
+
+(function () {
+  anonymousWork();
+}());
+
+(() => {
+  arrowWork();
+})();
+
+(async function asyncBoot() {
+  await fetchData();
+})();
+
+(function* genBoot() {
+  yield step();
+})();
+
+const assigned = (function assignedIife() {
+  assignedWork();
+})();
+"#,
+    )
+    .unwrap();
+
+    let outline = srcwalk().arg(&file).output().unwrap();
+    let outline_stdout = String::from_utf8_lossy(&outline.stdout);
+    assert!(
+        outline.status.success(),
+        "outline should succeed, stderr:\n{}\nstdout:\n{outline_stdout}",
+        String::from_utf8_lossy(&outline.stderr)
+    );
+    for expected in [
+        "fn boot",
+        "fn <iife@12>",
+        "fn <iife@16>",
+        "fn asyncBoot",
+        "fn genBoot",
+        "fn assignedIife",
+    ] {
+        assert!(
+            outline_stdout.contains(expected),
+            "expected outline to contain {expected}, got:\n{outline_stdout}"
+        );
+    }
+
+    let find = srcwalk()
+        .args(["assignedIife", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let find_stdout = String::from_utf8_lossy(&find.stdout);
+    assert!(find.status.success(), "find failed:\n{find_stdout}");
+    assert!(
+        find_stdout.contains("1 definitions") && find_stdout.contains("[fn] assignedIife"),
+        "expected assigned named IIFE as function definition, got:\n{find_stdout}"
+    );
+
+    let callees = srcwalk()
+        .args(["boot", "--callees", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let callees_stdout = String::from_utf8_lossy(&callees.stdout);
+    assert!(
+        callees.status.success(),
+        "callees failed:\n{callees_stdout}"
+    );
+    assert!(
+        callees_stdout.contains("init") && callees_stdout.contains("function init()"),
+        "expected named IIFE callees to resolve helper, got:\n{callees_stdout}"
+    );
+
+    for (target, caller) in [
+        ("init", "boot"),
+        ("anonymousWork", "<iife@12>"),
+        ("arrowWork", "<iife@16>"),
+        ("fetchData", "asyncBoot"),
+        ("step", "genBoot"),
+        ("assignedWork", "assignedIife"),
+    ] {
+        let callers = srcwalk()
+            .args([target, "--callers", "--scope"])
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        let callers_stdout = String::from_utf8_lossy(&callers.stdout);
+        assert!(
+            callers.status.success(),
+            "callers for {target} failed:\n{callers_stdout}"
+        );
+        assert!(
+            callers_stdout.contains(&format!("[fn] {caller}")),
+            "expected {target} caller context {caller}, got:\n{callers_stdout}"
+        );
+    }
+}
+
+#[test]
+fn javascript_assigned_arrows_are_definitions_for_callees_and_callers() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("assigned.js"),
+        r#"const helper = () => 1;
+const boot = () => {
+  helper();
+};
+const bootIife = (() => {
+  helper();
+})();
+"#,
+    )
+    .unwrap();
+
+    let find = srcwalk()
+        .args(["boot", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let find_stdout = String::from_utf8_lossy(&find.stdout);
+    assert!(find.status.success(), "find failed:\n{find_stdout}");
+    assert!(
+        find_stdout.contains("1 definitions") && find_stdout.contains("[var] boot"),
+        "expected assigned arrow as variable definition without duplicates, got:\n{find_stdout}"
+    );
+
+    let callees = srcwalk()
+        .args(["bootIife", "--callees", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let callees_stdout = String::from_utf8_lossy(&callees.stdout);
+    assert!(
+        callees.status.success(),
+        "callees failed:\n{callees_stdout}"
+    );
+    assert!(
+        callees_stdout.contains("helper"),
+        "expected assigned arrow IIFE callees to include helper, got:\n{callees_stdout}"
+    );
+
+    let callers = srcwalk()
+        .args(["helper", "--callers", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let callers_stdout = String::from_utf8_lossy(&callers.stdout);
+    assert!(
+        callers.status.success(),
+        "callers failed:\n{callers_stdout}"
+    );
+    assert!(
+        callers_stdout.contains("[fn] boot") && callers_stdout.contains("[fn] bootIife"),
+        "expected assigned arrow contexts for helper callers, got:\n{callers_stdout}"
+    );
+}
+
+#[test]
+fn typescript_iifes_and_assigned_arrows_are_symbol_contexts() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("iife.ts");
+    std::fs::write(
+        &file,
+        r#"function init(): number { return 1; }
+function helper(): number { return 2; }
+
+(function boot(flag: boolean): number {
+  return flag ? init() : 0;
+})(true);
+
+const bootArrow = <T>(value: T): T => {
+  helper();
+  return value;
+};
+
+const bootIife = (<T>(value: T): T => {
+  helper();
+  return value;
+})(123);
+"#,
+    )
+    .unwrap();
+
+    let outline = srcwalk().arg(&file).output().unwrap();
+    let outline_stdout = String::from_utf8_lossy(&outline.stdout);
+    assert!(
+        outline.status.success(),
+        "outline failed:\n{outline_stdout}"
+    );
+    assert!(
+        outline_stdout.contains("fn boot") && outline_stdout.contains("fn bootIife"),
+        "expected TypeScript IIFE contexts in outline, got:\n{outline_stdout}"
+    );
+
+    let callees = srcwalk()
+        .args(["boot", "--callees", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let callees_stdout = String::from_utf8_lossy(&callees.stdout);
+    assert!(
+        callees.status.success(),
+        "callees failed:\n{callees_stdout}"
+    );
+    assert!(
+        callees_stdout.contains("init"),
+        "expected TypeScript named IIFE callees to include init, got:\n{callees_stdout}"
+    );
+
+    let callers = srcwalk()
+        .args(["helper", "--callers", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let callers_stdout = String::from_utf8_lossy(&callers.stdout);
+    assert!(
+        callers.status.success(),
+        "callers failed:\n{callers_stdout}"
+    );
+    assert!(
+        callers_stdout.contains("[fn] bootArrow") && callers_stdout.contains("[fn] bootIife"),
+        "expected TypeScript arrow contexts for helper callers, got:\n{callers_stdout}"
+    );
+}

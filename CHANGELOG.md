@@ -4,6 +4,15 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [0.3.1] - 2026-05-07
+
+### Changed
+- Grouped `srcwalk files` human output by directory by default, making larger file glob result sets easier to scan without adding a new flag.
+
+### Fixed
+- Fixed JavaScript and TypeScript IIFE handling so named, async, generator, anonymous, arrow, and assigned IIFEs surface useful outline/search/caller/callee contexts.
+- Fixed JavaScript and TypeScript assigned arrow functions so `find`, `callees`, and `callers` can use the assigned variable name as the callable context.
+
 ## [0.3.0] - 2026-05-05
 
 ### Added

@@ -1720,8 +1720,7 @@ fn append_grouped_files(out: &mut String, files: &[glob::GlobFileEntry], scope: 
         let dir = display_path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| format!("{}/", p.display()))
-            .unwrap_or_else(|| "./".to_string());
+            .map_or_else(|| "./".to_string(), |p| format!("{}/", p.display()));
         let name = display_path
             .file_name()
             .and_then(|n| n.to_str())

@@ -1082,3 +1082,128 @@ const bootIife = (<T>(value: T): T => {
         "expected TypeScript arrow contexts for helper callers, got:\n{callers_stdout}"
     );
 }
+
+fn position_of(haystack: &str, needle: &str) -> usize {
+    haystack
+        .find(needle)
+        .unwrap_or_else(|| panic!("expected `{needle}` in output:\n{haystack}"))
+}
+
+#[test]
+fn php_callers_rank_explicit_receiver_before_self_and_duplicate_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("cache.php"),
+        r#"<?php
+class A {
+    public function caller() {
+        $this->getCacheDir();
+        $this->getCacheDir();
+    }
+}
+class B {
+    public function build() {
+        $this->environment->getCacheDir();
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["callers", "getCacheDir", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "callers should succeed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        position_of(&stdout, "B.build") < position_of(&stdout, "A.caller"),
+        "explicit receiver should rank before self receiver, got:\n{stdout}"
+    );
+    assert!(
+        stdout.matches("A.caller").count() >= 2,
+        "fixture should keep duplicate callsites visible, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn typescript_callers_rank_named_context_before_top_level() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("factory.ts"),
+        "export function makeClient() { return {}; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("usage.ts"),
+        r#"import { makeClient } from "./factory";
+const bootClient = makeClient();
+export function start() {
+    return makeClient();
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["callers", "makeClient", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "callers should succeed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        position_of(&stdout, "start") < position_of(&stdout, "<top-level>"),
+        "named TS caller should rank before top-level call, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn csharp_callers_rank_explicit_receiver_before_local_bare_call() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Program.cs"),
+        r#"class Kernel {
+    public void Flush() {}
+}
+class Runner {
+    public void Flush() {}
+    public void Local() {
+        Flush();
+    }
+    public void Remote(Kernel kernel) {
+        kernel.Flush();
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["callers", "Flush", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "callers should succeed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        position_of(&stdout, "Runner.Remote") < position_of(&stdout, "Runner.Local"),
+        "explicit C# receiver should rank before bare local call, got:\n{stdout}"
+    );
+}

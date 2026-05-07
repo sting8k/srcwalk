@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1102,8 +1102,39 @@ impl CallsiteFilter {
     }
 }
 
-/// Simple ranking: context file first, then by path length (proximity heuristic).
+/// Simple ranking: context file first, then actionable/context-rich callsites.
+fn receiver_specificity_score(receiver: Option<&str>) -> u8 {
+    let Some(receiver) = receiver.map(str::trim).filter(|r| !r.is_empty()) else {
+        return 2;
+    };
+
+    let normalized = receiver.trim_matches(|c: char| c == '&' || c == '*' || c == '(' || c == ')');
+    match normalized {
+        "this" | "$this" | "self" | "Self" | "static" | "parent" | "super" => 1,
+        _ => 0,
+    }
+}
+
+fn is_duplicate_context_callsite(
+    caller: &CallerMatch,
+    first_line_by_context: &HashMap<(PathBuf, String), u32>,
+) -> bool {
+    let key = (caller.path.clone(), caller.calling_function.clone());
+    first_line_by_context
+        .get(&key)
+        .is_some_and(|first_line| caller.line > *first_line)
+}
+
 fn rank_callers(callers: &mut [CallerMatch], scope: &Path, context: Option<&Path>) {
+    let mut first_line_by_context: HashMap<(PathBuf, String), u32> = HashMap::new();
+    for caller in callers.iter() {
+        let key = (caller.path.clone(), caller.calling_function.clone());
+        first_line_by_context
+            .entry(key)
+            .and_modify(|line| *line = (*line).min(caller.line))
+            .or_insert(caller.line);
+    }
+
     callers.sort_by(|a, b| {
         // Context file wins
         if let Some(ctx) = context {
@@ -1112,6 +1143,34 @@ fn rank_callers(callers: &mut [CallerMatch], scope: &Path, context: Option<&Path
                 (false, true) => return std::cmp::Ordering::Greater,
                 _ => {}
             }
+        }
+
+        // Named caller contexts are usually more actionable than module top-level matches.
+        match (
+            a.calling_function == TOP_LEVEL,
+            b.calling_function == TOP_LEVEL,
+        ) {
+            (false, true) => return std::cmp::Ordering::Less,
+            (true, false) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+
+        // Show the first callsite per caller context before repeated calls in the same function.
+        let a_duplicate = is_duplicate_context_callsite(a, &first_line_by_context);
+        let b_duplicate = is_duplicate_context_callsite(b, &first_line_by_context);
+        match (a_duplicate, b_duplicate) {
+            (false, true) => return std::cmp::Ordering::Less,
+            (true, false) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+
+        // Explicit receivers (e.g. $kernel->getCacheDir()) are often more disambiguating
+        // than self/no receiver for common method names. This only reranks; it never filters.
+        let a_receiver_score = receiver_specificity_score(a.receiver.as_deref());
+        let b_receiver_score = receiver_specificity_score(b.receiver.as_deref());
+        match a_receiver_score.cmp(&b_receiver_score) {
+            std::cmp::Ordering::Equal => {}
+            ordering => return ordering,
         }
 
         // Shorter paths (more similar to scope) rank higher
@@ -1178,5 +1237,74 @@ mod callsite_filter_tests {
         assert_eq!(callsite_field_value(&caller, scope, "receiver"), "client");
         assert_eq!(callsite_field_value(&caller, scope, "path"), "src/main.rs");
         assert_eq!(callsite_field_value(&caller, scope, "file"), "main.rs");
+    }
+
+    #[test]
+    fn rank_callers_prefers_named_contexts_over_top_level() {
+        let scope = Path::new("/repo");
+        let mut top_level = sample_match();
+        top_level.path = PathBuf::from("/repo/a.ts");
+        top_level.calling_function = TOP_LEVEL.to_string();
+        let mut named = sample_match();
+        named.path = PathBuf::from("/repo/deeper/path/b.ts");
+        named.calling_function = "buildNotes".to_string();
+
+        let mut callers = vec![top_level, named];
+        rank_callers(&mut callers, scope, None);
+
+        assert_eq!(callers[0].calling_function, "buildNotes");
+    }
+
+    #[test]
+    fn rank_callers_demotes_duplicate_context_calls() {
+        let scope = Path::new("/repo");
+        let mut duplicate_late = sample_match();
+        duplicate_late.path = PathBuf::from("/repo/src/cache.php");
+        duplicate_late.calling_function = "SmartyCustomCore.check".to_string();
+        duplicate_late.line = 120;
+        duplicate_late.receiver = Some("$this".to_string());
+
+        let mut duplicate_first = sample_match();
+        duplicate_first.path = PathBuf::from("/repo/src/cache.php");
+        duplicate_first.calling_function = "SmartyCustomCore.check".to_string();
+        duplicate_first.receiver = Some("$this".to_string());
+        duplicate_first.line = 118;
+
+        let mut different_context = sample_match();
+        different_context.path = PathBuf::from("/repo/src/container.php");
+        different_context.calling_function = "ContainerBuilder.build".to_string();
+        different_context.line = 112;
+        different_context.receiver = Some("$this->environment".to_string());
+
+        let mut callers = vec![duplicate_late, duplicate_first, different_context];
+        rank_callers(&mut callers, scope, None);
+
+        assert_eq!(callers[0].calling_function, "ContainerBuilder.build");
+        assert_eq!(callers[1].calling_function, "SmartyCustomCore.check");
+        assert_eq!(callers[1].line, 118);
+        assert_eq!(callers[2].line, 120);
+    }
+
+    #[test]
+    fn rank_callers_prefers_explicit_receivers_over_self_and_no_receiver() {
+        let scope = Path::new("/repo");
+        let mut no_receiver = sample_match();
+        no_receiver.path = PathBuf::from("/repo/a.ts");
+        no_receiver.receiver = None;
+
+        let mut self_receiver = sample_match();
+        self_receiver.path = PathBuf::from("/repo/b.ts");
+        self_receiver.receiver = Some("$this".to_string());
+
+        let mut explicit_receiver = sample_match();
+        explicit_receiver.path = PathBuf::from("/repo/c.ts");
+        explicit_receiver.receiver = Some("$kernel".to_string());
+
+        let mut callers = vec![no_receiver, self_receiver, explicit_receiver];
+        rank_callers(&mut callers, scope, None);
+
+        assert_eq!(callers[0].receiver.as_deref(), Some("$kernel"));
+        assert_eq!(callers[1].receiver.as_deref(), Some("$this"));
+        assert_eq!(callers[2].receiver, None);
     }
 }

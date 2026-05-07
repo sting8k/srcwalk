@@ -4,6 +4,14 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [0.3.2] - 2026-05-07
+
+### Changed
+- Removed the legacy `benchmark/` harness from the repository and ignored local benchmark workspaces now that the maintained retrieval benchmark lives outside the published tree.
+
+### Fixed
+- Improved `callers` ranking for common/overloaded method names by showing named contexts before top-level matches, demoting repeated callsites from the same caller context, and ranking explicit receivers ahead of self/no-receiver calls without filtering any candidates.
+
 ## [0.3.1] - 2026-05-07
 
 ### Changed

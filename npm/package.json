@@ -1,6 +1,6 @@
 {
   "name": "srcwalk",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Code-intelligence CLI for AI agents — tree-sitter outlines, symbol search, caller/callee graphs, deps, maps",
   "bin": {
     "srcwalk": "run.js"

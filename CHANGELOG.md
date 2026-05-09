@@ -4,6 +4,8 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [0.4.0] - 2026-05-09
+
 ### Added
 - Added action-first command routing for `find`, `files`, `callers`, `callees`, `deps`, `flow`, `impact`, and path reads, backed by split command services and focused integration coverage.
 - Added dependency-aware `map` output with local relation groups, outbound dependency previews for narrowed scopes, and shallow directory token rollups for deep source trees.

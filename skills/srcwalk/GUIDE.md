@@ -1,172 +1,170 @@
 # srcwalk — agent routing policy
 
-This is the version-matched command guide from the installed binary. The bootstrap skill decides when to use srcwalk; this guide decides which srcwalk command to run next.
+Use srcwalk before shell search for code navigation. Route by task. Keep `--scope` narrow. Use raw `rg` only for last-mile text confirmation.
 
-## Mental model
+## Routes
 
-- **Target-first for reading:** `srcwalk <path>`, `srcwalk <path>:<line>`, `srcwalk <path> --section <symbol|range>`.
-- **Action-first for analysis:** `srcwalk find|files|callers|callees|flow|impact|deps|map ...`.
-- Start compact. Drill in when you need source evidence, exact context, or a narrower answer.
-- Follow footers by prefix: `> Next:` suggests a useful next command, `> Note:` adds context/status, and `> Caveat:` marks limitations to verify before making claims.
-
-## Choose the command by intent
-
-| User intent | Use first |
-|---|---|
-| Understand repo shape / entry points | `srcwalk map --scope .` |
-| Read or inspect a large known file | `srcwalk <path>` |
-| Jump around a hit line | `srcwalk <path>:<line>` |
-| Read exact body/range | `srcwalk <path> --section <symbol|start-end[,symbol|start-end]>` |
-| Find definition/usages/text/name-glob | `srcwalk find <query> --scope <dir>`; repeat `--scope` for multi-scope find |
-| Find files by glob | `srcwalk files '<glob>' --scope <dir>` |
-| Find several symbols/scopes in one pass | `srcwalk find "A, B, C" --scope src --scope tests` |
-| Who directly calls this? | `srcwalk callers <symbol> --scope <dir>` |
-| Who reaches this transitively? | `srcwalk callers <symbol> --depth 2 --scope <dir>` |
-| What does this function call? | `srcwalk callees <symbol> --scope <dir>` |
-| Ordered calls/data flow inside function | `srcwalk callees <symbol> --detailed --scope <dir>` |
-| Transitive downstream calls | `srcwalk callees <symbol> --depth 2 --scope <dir>` |
-| File imports and dependents | `srcwalk deps <file>` |
-| Quick caller+callee orientation slice | `srcwalk flow <symbol> --scope <dir>` |
-| Heuristic blast-radius triage | `srcwalk impact <symbol> --scope <dir>` |
-
-Legacy flag syntax still works (`srcwalk Foo --callers`, `srcwalk --map`), but prefer action-first commands for analysis.
-
-## Default workflows
-
-### Explore unfamiliar code
+Do not start orientation with shell `tree`, shell `find`, repeated `ls`, or repo-wide `rg`.
 
 ```bash
-srcwalk map --scope .
-srcwalk map --scope src --depth 2
-srcwalk find <likely_symbol> --scope src
-srcwalk <path>:<line>
+srcwalk map --scope <dir>
 ```
 
-`map` respects `.gitignore`, `.ignore`, git excludes, and parent ignores. Direct explicit file reads can still inspect ignored files.
-
-### Read a large file
+Use `srcwalk find` for symbols, usages, text, and symbol/name globs.
 
 ```bash
-srcwalk <path>
-srcwalk <path>:123
-srcwalk <path> --section <symbol|start-end[,symbol|start-end]>
-```
-
-Prefer outline/section reads before `--full`. If sections compact, narrow `--section` or raise `--budget`.
-
-### Find and drill into symbols
-
-```bash
-srcwalk find <symbol> --scope <dir>
-srcwalk find "A, B, C" --scope classes --scope controllers
-srcwalk find 'displayAjax{Update,Refresh}*' --scope <dir> --filter kind:fn
+srcwalk find <query> --scope <dir>
+srcwalk find "A, B, C" --scope src --scope tests
 srcwalk find '*Controller' --scope <dir>
-srcwalk find <symbol> --expand --scope <dir>
-srcwalk find <symbol> --filter 'path:api kind:fn' --scope <dir>
-srcwalk files '*.php' --scope <dir>
+srcwalk find 'displayAjax{Update,Refresh}*' --scope <dir> --filter kind:fn
 ```
 
-`--expand` is capped; drill omitted hits with `srcwalk <path>:<line>` or `--section`.
+Use `srcwalk files` for project file discovery by filename/glob. Do not use shell `find`/`fd` for codebase navigation. Do not use `srcwalk find` as filename search.
 
-Definition hits are tree-sitter based. Usage hits are text-matched and may include comments/docs. For actual call sites, switch to `srcwalk callers <symbol>`.
+```bash
+srcwalk files '<filename>' --scope <dir>
+srcwalk files '**/*.<ext>' --scope <dir>
+srcwalk files '*<name>*' --scope <dir>
+```
 
-### Trace upstream callers
+Use shell `find`/`fd` only for filesystem metadata that srcwalk does not model: permissions, mtimes, empty dirs, symlinks, binary assets, generated outputs, or cleanup candidate lists.
+
+```bash
+# filesystem metadata / cleanup inventory
+find <dir> -type f -mtime -1
+find <dir> -empty
+fd -HI -t f -x stat
+```
+
+Do not infer definitions, usages, callers, deps, or code paths from shell path lists. Do not convert identifiers into paths without evidence.
+
+```bash
+srcwalk find '<identifier>' --scope <dir>
+srcwalk files '*<name>*' --scope <dir>
+```
+
+Use `callers` for upstream call sites. Do not grep `foo(`.
 
 ```bash
 srcwalk callers <symbol> --scope <dir>
-srcwalk callers <symbol> --filter 'args:3 receiver:mgr' --scope <dir>
-srcwalk callers <symbol> --count-by receiver --scope <dir>
 srcwalk callers <symbol> --depth 2 --scope <dir>
+srcwalk callers <symbol> --count-by receiver --scope <dir>
 ```
 
-Use direct callers for concrete call-site evidence. Use `--depth` for transitive reachability, capped at 5 hops. For JSON BFS, inspect `edges[]`, `stats.suspicious_hops[]`, and `elided` when making claims from deep hops.
-
-### Trace downstream callees
+Use `callees` for downstream calls.
 
 ```bash
 srcwalk callees <symbol> --scope <dir>
 srcwalk callees <symbol> --detailed --scope <dir>
-srcwalk callees <symbol> --detailed --filter 'callee:NAME' --scope <dir>
 srcwalk callees <symbol> --depth 2 --scope <dir>
 ```
 
-Use `callees` when the question starts from a known function and asks what it calls. Use `--detailed` for ordered call sites with assignment/return context and argument slots (`arg1=...`, `arg2=...`).
-
-### Check file blast radius
+Use `deps` for imports and dependents. Do not grep import/use/require.
 
 ```bash
 srcwalk deps <file>
-srcwalk deps <file> --limit 30 --offset 30
 ```
 
-Use before editing a file to see imports and dependents.
+Use path reads only after srcwalk gives a path/line/range or you already know the target.
 
-## Shortcuts and caveats
+```bash
+srcwalk <path>
+srcwalk <path>:123-150
+srcwalk <path> --section <symbol>
+```
 
-- `srcwalk flow <symbol>`: compact orientation slice combining ordered calls with argument slots, selected local resolves, and direct callers. Good for quick understanding; not a full graph.
+Use `flow` and `impact` only for quick triage; verify claims with callers/callees/deps/path reads.
 
-  Example shape:
+```bash
+srcwalk flow <symbol> --scope <dir>
+srcwalk impact <symbol> --scope <dir>
+```
 
-  ```text
-  $ srcwalk flow read_file_with_budget --scope src
-  # Slice: read_file_with_budget — flow
+## Replace shell chains
 
-  [symbol] read_file_with_budget read/mod.rs:208-257
-  -> calls (ordered)
-    [call] L217 ->ret read_file(arg1=path, arg2=section, arg3=full, arg4=cache)
-    [call] L232 outline_out = render_outline_view(arg1=path, arg2=cache, arg3=ViewMode::OutlineCascade)
+One srcwalk command should replace many navigation commands.
 
-  -> resolves (selected local helpers)
-    [fn] read_file read/mod.rs:69-188
-    [fn] render_outline_view read/mod.rs:259-281
+```bash
+# instead of shell tree/find/fd/ls/rg to understand a dir
+srcwalk map --scope <dir>
 
-  <- callers
-    [fn] run_path_exact lib.rs:242
-    [fn] run_inner lib.rs:1145
+# instead of shell find/fd for project filenames
+srcwalk files '<glob>' --scope <dir>
 
-  > Caveat: flow output capped.
-  > Next: use `srcwalk callees <symbol> --detailed` or `srcwalk callers <symbol>`.
-  ```
+# instead of head/cat/sed for preview
+srcwalk <path>:1-50
 
-  Nested/fluent chains and callback bodies may be collapsed to avoid noise; drill into the exact section when inner calls matter.
+# instead of rg Foo + open many files + guess definition/usages
+srcwalk find Foo --scope <dir>
 
-- `srcwalk impact <symbol>`: heuristic name-matched blast-radius triage. Good for broad “what might be affected?” checks; not proof. Common names like `run`, `init`, `close` need follow-up with receiver/file groups or callers.
+# instead of rg 'Foo(' + manual filtering
+srcwalk callers Foo --scope <dir>
 
-  Example shape:
+# instead of rg import/use/require
+srcwalk deps <file>
+```
 
-  ```text
-  $ srcwalk impact read_file_with_budget --scope src
-  # Slice: read_file_with_budget — impact
+## Map rules
 
-  [symbol] read_file_with_budget
-  = definitions
-    [def] read/mod.rs:208-257 pub fn read_file_with_budget(
+Start with auto depth. Do not pass `--depth` first.
 
-  <- name-matched calls from
-    [fn] run_path_exact lib.rs:242 recv=read args=5
-    [fn] run_inner lib.rs:1145 recv=read args=5
+```bash
+srcwalk map --scope <dir>
+```
 
-  ~ groups
-    [group] receiver=<bare> count=4
-    [group] receiver=read count=3
-    [group] file=lib.rs count=3
+Explicit `--depth N` is strict.
 
-  > Caveat: 7 direct name-matched call sites found; impact output capped.
-  > Next: use `srcwalk callers <symbol> --depth 2` or `srcwalk callers <symbol> --count-by receiver|file`.
-  ```
+`[relations]` are static local dependency groups, not runtime calls.
 
-- `srcwalk find <query>` is broad code search: exact symbols, text fallback, comma-separated symbols, repeated scopes, and symbol-name globs like `displayAjax*` or `*Controller`; use `srcwalk files '<glob>'` for file globs.
-- Bare filename + `--section` may auto-pick the primary non-ignored shallow match. If duplicates matter, pass an explicit path.
+```txt
+[relations] 27 groups
+search deps:38
+  -> (root) deps:30
+```
 
-## Escalation rules
+`[outbound deps]` means the scope imports targets outside `--scope`.
 
-1. If you need orientation, start with `map` or `find`.
-2. If output gives a path/line, drill with `srcwalk <path>:<line>`.
-3. If the question is “who calls/reaches this?”, use `callers`.
-4. If the question is “what happens inside/after this function?”, use `callees --detailed`.
-5. Use `flow`/`impact` as quick orientation/triage, then verify important claims with `callers`, `callees`, or exact file reads.
-6. Prefer narrowing `--scope` over broad repo-wide repeated searches.
+```txt
+[outbound deps] 8 groups (targets outside scope)
+examples/custom-provider deps:8
+  -> sdk/cliproxy deps:3
+```
+
+## Find rules
+
+`srcwalk find` only searches inside `--scope`. A narrow scope can hide definitions.
+
+`--filter kind:<label>` is exact. Common labels: `fn`, `class`, `mod`, `impl`, `base`, `usage`, `text`, `comment`. `kind:fn` matches function definitions; `kind:function` does not match. Zero matches can mean scope miss or wrong exact label.
+
+```bash
+srcwalk find TranslateRequest --scope internal/runtime/executor --filter kind:fn
+# 0 matches can mean the definition is outside this scope.
+
+srcwalk find TranslateRequest --scope .
+```
+
+Use `callers` for call-site evidence. Use `deps` when a symbol may be imported from another file/package.
+
+## Artifact routes
+
+```bash
+# JS/TS bundles
+srcwalk map --artifact --scope <dir>
+srcwalk find <query> --artifact --scope <dir>
+srcwalk <path> --artifact
+```
+
+## Escalation
+
+1. Orientation: `srcwalk map --scope <dir>`.
+2. Symbol/text: `srcwalk find <query> --scope <dir>`.
+3. Filenames: `srcwalk files '<glob>' --scope <dir>`.
+4. Upstream: `srcwalk callers <symbol> --scope <dir>`.
+5. Downstream: `srcwalk callees <symbol> --detailed --scope <dir>`.
+6. Imports/dependents: `srcwalk deps <file>`.
+7. Evidence: `srcwalk <path>:<line|start-end>` or `srcwalk <path> --section <symbol>`.
+8. Raw text confirmation: `rg`.
 
 ## Supported structural languages
 
-Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir. Unsupported languages still work for reading files, but structural facts may be unavailable.
+Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir, and Kotlin. Unsupported languages still work for reading files, but structural facts may be unavailable.

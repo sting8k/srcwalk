@@ -236,6 +236,8 @@ fn callers_semantic_rows_work_across_go_python_and_rust() {
         dir.path().join("caller.go"),
         r#"package main
 
+import sdktranslator "example.com/sdk/translator"
+
 func caller() {
     sdktranslator.TranslateRequest(from, to, model, rawJSON, stream)
 }
@@ -261,7 +263,7 @@ func caller() {
     let go_stdout = String::from_utf8_lossy(&go.stdout);
     assert!(
         go_stdout.contains("[fn] caller")
-            && go_stdout.contains("recv=sdktranslator")
+            && go_stdout.contains("prefix=sdktranslator(pkg)")
             && go_stdout.contains("args=5"),
         "expected Go caller semantic row, got:\n{go_stdout}"
     );
@@ -280,7 +282,7 @@ func caller() {
     let python_stdout = String::from_utf8_lossy(&python.stdout);
     assert!(
         python_stdout.contains("[fn] py_caller")
-            && python_stdout.contains("recv=client")
+            && python_stdout.contains("prefix=client(var)")
             && python_stdout.contains("args=2"),
         "expected Python caller semantic row, got:\n{python_stdout}"
     );
@@ -299,7 +301,7 @@ func caller() {
     let rust_stdout = String::from_utf8_lossy(&rust.stdout);
     assert!(
         rust_stdout.contains("[fn] rust_caller")
-            && rust_stdout.contains("recv=client")
+            && rust_stdout.contains("prefix=client(var)")
             && rust_stdout.contains("args=2"),
         "expected Rust caller semantic row, got:\n{rust_stdout}"
     );
@@ -311,6 +313,8 @@ fn callers_output_preserves_scope_receiver_args_and_omits_call_text_by_default()
     std::fs::write(
         dir.path().join("caller.go"),
         r#"package main
+
+import sdktranslator "example.com/sdk/translator"
 
 func caller() {
     sdktranslator.TranslateRequest(from, to, model, rawJSON, stream)
@@ -340,8 +344,8 @@ func other() {
         "expected caller function scope, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("receiver: sdktranslator") || stdout.contains("recv=sdktranslator"),
-        "expected receiver metadata, got:\n{stdout}"
+        stdout.contains("prefix=sdktranslator(pkg)"),
+        "expected prefix metadata, got:\n{stdout}"
     );
     assert!(
         stdout.contains("args: 5") || stdout.contains("args=5"),
@@ -352,8 +356,8 @@ func other() {
         "default caller output should omit call text; use --expand for source context, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("> Next: use --expand[=N]"),
-        "expected footer next-step to mention --expand, got:\n{stdout}"
+        stdout.contains("--expand[=N]") && stdout.contains("--count-by args|path"),
+        "expected compact footer next-step to mention expand/count-by, got:\n{stdout}"
     );
     assert!(
         stdout.contains("> Next:") && stdout.contains("--offset 1 --limit 1"),
@@ -418,6 +422,8 @@ fn callers_filter_qualifiers_narrow_callsite_rows() {
         dir.path().join("caller.go"),
         r#"package main
 
+import sdktranslator "example.com/sdk/translator"
+
 func wanted() {
     sdktranslator.TranslateRequest(from, to, model, rawJSON, stream)
 }
@@ -434,7 +440,7 @@ func other() {
             "TranslateRequest",
             "--callers",
             "--filter",
-            "args:5 receiver:sdktranslator",
+            "args:5 prefix:sdktranslator",
             "--scope",
         ])
         .arg(dir.path())
@@ -449,7 +455,7 @@ func other() {
     );
     assert!(
         stdout.contains("[fn] wanted")
-            && stdout.contains("recv=sdktranslator")
+            && stdout.contains("prefix=sdktranslator(pkg)")
             && stdout.contains("args=5"),
         "expected filtered caller row, got:\n{stdout}"
     );
@@ -520,7 +526,7 @@ func c() {
     );
     assert!(
         stdout.contains(
-            "> Next: narrow with --filter 'args:N receiver:NAME caller:NAME path:TEXT text:TEXT'"
+            "> Next: narrow with --filter 'args:N prefix:NAME caller:NAME path:TEXT text:TEXT'"
         ),
         "expected filter next-step, got:\n{stdout}"
     );

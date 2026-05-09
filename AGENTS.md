@@ -2,33 +2,69 @@
 
 Code-intelligence CLI built on tree-sitter. Outlines, symbol search, caller/callee graphs, deps, maps — structured, token-efficient output for AI agents.
 
+## Product North Star
+
+srcwalk exists to maximize accurate, evidence-based links between knowledge components in a source/artifact tree, so agents can reduce manual navigation steps.
+
+Priority order:
+1. Accuracy and semantic correctness.
+2. Avoiding confusion, guessing, and false conclusions.
+3. Reducing agent steps through structured navigation.
+4. Token/output efficiency.
+
+Do not trade correctness for prettier or shorter output. When semantic confidence is low, label the output honestly rather than implying source-level truth.
+
+Before implementing artifact/minified/binary-tool language support, you must read `core/project/srcwalk-artifact-language-implementation-playbook-2026-05-08.md`.
+
 ## Project structure
 
 ```
 src/
-  main.rs              CLI entry (clap). Dispatches to map, callees, or single-query.
-  lib.rs               Public API: classify → read/search/glob → formatted output.
+  main.rs              Tiny CLI entrypoint (parse CLI, completions, guide, thread pool).
+  cli.rs               Clap CLI definitions, subcommands, RunConfig normalization.
+  cli_run.rs           CLI dispatch/runtime routing to map/find/read/callers/callees/etc.
+  version.rs           Version command, latest-version fetch/parse helpers.
+  output.rs            stdout/json direct output helpers.
+  lib.rs               Public API facade/wrappers; command implementations live in commands/.
   classify.rs          Query type detection (file path, glob, symbol, content).
   types.rs             Shared types (QueryType, Lang, OutlineEntry, etc.).
   error.rs             Error types with exit codes.
   format.rs            Output formatting helpers.
   budget.rs            Token budget enforcement.
-  map.rs               Codebase map generation.
-  overview.rs          Codebase fingerprinting.
+  map.rs               Source-focused codebase map generation: structure + static local dependency relations with fixed hard cap/degrade.
   cache.rs             OutlineCache — DashMap of path → (mtime, outline).
   session.rs           Session state (expanded definition dedup).
+  commands/
+    find.rs            Core find/read/glob dispatch behind public lib wrappers.
+    multi_scope.rs     Multi-scope find merge/header/query handling.
+    path.rs            Exact path reads.
+    callers.rs         Callers command service.
+    callees.rs         Callees command service.
+    flow.rs            Flow command service and helpers.
+    impact.rs          Impact command service.
+    deps.rs            Deps command service.
+    context.rs         ArtifactMode, expanded context, artifact output helpers.
+    section_disambiguation.rs Bare filename + --section glob disambiguation.
   lang/
     mod.rs             detect_file_type(), package_root().
     outline.rs         Tree-sitter outline extraction.
     treesitter.rs      DEFINITION_KINDS, extract_definition_name().
     detection.rs       Generated/binary file detection.
   read/
-    mod.rs             Smart file reading (full vs outline by token count).
+    mod.rs             Read facade and default smart file reading.
+    full.rs            Full/raw rendering, caps, budget cascade.
+    section.rs         Section/range/heading/symbol/multi-section reads.
+    directory.rs       Directory listing.
+    suggest.rs         Similar-file suggestions and edit distance.
     imports.rs         Import extraction for deps.
     outline/           Code, markdown, structured, tabular, fallback outlines.
   search/
-    mod.rs             Search orchestration.
-    symbol.rs          AST-based symbol search (definitions first).
+    mod.rs             Search public wrappers/orchestration.
+    artifact_snippet.rs Artifact result snippet compaction.
+    filter.rs          General field filters for search results.
+    display/           Search result formatting, expand budget, semantic rows, glob output.
+    symbol.rs          Symbol search facade/wrappers.
+    symbol/            Definitions, usages, batch, glob, suggestions, comments helpers.
     content.rs         Text/regex search.
     callers/           Single-hop + multi-hop BFS (up to 5 hops).
     callees.rs         Forward call graph extraction + resolution.
@@ -51,7 +87,7 @@ benchmark/             Evaluation harness (26 tasks, 4 repos).
 
 ## Languages
 
-Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir.
+Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir, and Kotlin. Unsupported languages still work for reading files, but structural facts may be unavailable.
 
 ## Build & test
 
@@ -62,6 +98,8 @@ cargo clippy -- -D warnings
 cargo fmt --check
 cargo install --path .       # → ~/.cargo/bin/srcwalk
 ```
+
+Formatting workflow: after editing Rust source/tests, run `cargo fmt` before any `cargo fmt --check`/full verify command. Use `cargo fmt --check` first only when no Rust edits were made since the last format.
 
 ## Version bumps
 

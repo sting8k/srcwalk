@@ -149,6 +149,37 @@ fn deps_pagination_fixture() -> tempfile::TempDir {
 }
 
 #[test]
+fn deps_used_by_groups_rows_by_directory_but_keeps_line_anchors() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src/a")).unwrap();
+    std::fs::create_dir_all(root.join("src/b")).unwrap();
+    std::fs::write(root.join("src/target.rs"), "fn exported() {}\n").unwrap();
+    std::fs::write(root.join("src/a/one.rs"), "fn one() { exported(); }\n").unwrap();
+    std::fs::write(root.join("src/a/two.rs"), "fn two() { exported(); }\n").unwrap();
+    std::fs::write(root.join("src/b/three.rs"), "fn three() { exported(); }\n").unwrap();
+
+    let out = srcwalk()
+        .arg(root.join("src/target.rs"))
+        .args(["--deps", "--scope"])
+        .arg(root)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("src/a/\n  one.rs:1")
+            && stdout.contains("\n  two.rs:1")
+            && stdout.contains("src/b/\n  three.rs:1"),
+        "expected grouped dirs with file:line anchors:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("src/a/one.rs:1") && !stdout.contains("src/b/three.rs:1"),
+        "grouped output should avoid repeating directory prefixes per row:\n{stdout}"
+    );
+}
+
+#[test]
 fn deps_dependents_default_page_has_continuation_next_step() {
     let dir = deps_pagination_fixture();
     let root = dir.path();

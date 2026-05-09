@@ -25,7 +25,6 @@ pub fn detect_file_type(path: &Path) -> FileType {
         Some("kt" | "kts") => FileType::Code(Lang::Kotlin),
         Some("cs") => FileType::Code(Lang::CSharp),
         Some("ex" | "exs") => FileType::Code(Lang::Elixir),
-
         Some("md" | "mdx" | "rst") => FileType::Markdown,
         Some("json" | "yaml" | "yml" | "toml" | "xml" | "ini") => FileType::StructuredData,
         Some("csv" | "tsv") => FileType::Tabular,

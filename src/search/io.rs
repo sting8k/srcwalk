@@ -48,6 +48,7 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
     ".metals",
 ];
 
+pub(crate) const ARTIFACT_DIRS: &[&str] = &["dist", "build", "out", ".next", ".nuxt", ".output"];
 /// Threshold below which `read` outperforms `mmap` due to syscall overhead.
 const MMAP_THRESHOLD: u64 = 16_384;
 
@@ -136,6 +137,21 @@ pub(crate) fn walker(
     scope: &Path,
     glob: Option<&str>,
 ) -> Result<ignore::WalkParallel, SrcwalkError> {
+    walker_with_options(scope, glob, false)
+}
+
+pub(crate) fn walker_with_artifact_dirs(
+    scope: &Path,
+    glob: Option<&str>,
+) -> Result<ignore::WalkParallel, SrcwalkError> {
+    walker_with_options(scope, glob, true)
+}
+
+fn walker_with_options(
+    scope: &Path,
+    glob: Option<&str>,
+    include_artifact_dirs: bool,
+) -> Result<ignore::WalkParallel, SrcwalkError> {
     let threads = std::env::var("SRCWALK_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -166,10 +182,12 @@ pub(crate) fn walker(
         .ignore(true)
         .parents(true)
         .threads(threads)
-        .filter_entry(|entry| {
+        .filter_entry(move |entry| {
             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 if let Some(name) = entry.file_name().to_str() {
-                    return !SKIP_DIRS.contains(&name);
+                    if SKIP_DIRS.contains(&name) {
+                        return include_artifact_dirs && ARTIFACT_DIRS.contains(&name);
+                    }
                 }
             }
             true

@@ -41,6 +41,7 @@ pub(crate) const DEFINITION_KINDS: &[&str] = &[
     "type_declaration",
     // Exports
     "export_statement",
+    "label",
 ];
 
 /// Extract the name defined by a tree-sitter definition node.
@@ -69,6 +70,24 @@ pub(crate) fn extract_definition_name(node: tree_sitter::Node, lines: &[&str]) -
         for child in node.children(&mut cursor) {
             if DEFINITION_KINDS.contains(&child.kind()) {
                 return extract_definition_name(child, lines);
+            }
+        }
+    }
+
+    if node.kind() == "label" {
+        if let Some(child) = node.child_by_field_name("name") {
+            let text = node_text_simple(child, lines);
+            if !text.is_empty() {
+                return Some(text.trim_end_matches(':').to_string());
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if matches!(child.kind(), "ident" | "word" | "meta_ident") {
+                let text = node_text_simple(child, lines);
+                if !text.is_empty() {
+                    return Some(text.trim_end_matches(':').to_string());
+                }
             }
         }
     }
@@ -494,7 +513,7 @@ pub(crate) fn definition_weight(kind: &str) -> u16 {
         | "type_item"
         | "type_declaration"
         | "decorated_definition" => 100,
-        "impl_item" | "object_declaration" => 90,
+        "impl_item" | "object_declaration" | "label" => 90,
         "const_item" | "const_declaration" | "static_item" => 80,
         "mod_item" | "namespace_definition" | "property_declaration" => 70,
         "lexical_declaration" | "variable_declaration" => 40,

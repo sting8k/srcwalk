@@ -50,6 +50,36 @@ fn path_line_query_reads_focused_context() {
 }
 
 #[test]
+fn path_line_range_query_reads_exact_section() {
+    let dir = temp_repo("path_line_range_query");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src/main.rs"),
+        "fn main() {\n    let one = 1;\n    let two = 2;\n    let three = 3;\n}\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .arg("src/main.rs:2-4")
+        .arg("--scope")
+        .arg(&dir)
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "expected path:range read to succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("2      let one = 1;")
+            && stdout.contains("3      let two = 2;")
+            && stdout.contains("4      let three = 3;")
+            && !stdout.contains("fn main()"),
+        "expected exact line range, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn numeric_section_reads_focused_context() {
     let dir = temp_repo("numeric_section");
     fs::write(

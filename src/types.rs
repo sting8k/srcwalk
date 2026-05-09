@@ -6,6 +6,7 @@ use std::time::SystemTime;
 pub enum QueryType {
     FilePath(PathBuf),
     FilePathLine(PathBuf, usize),
+    FilePathSection(PathBuf, String),
     Glob(String),
     SymbolGlob(String),
     Symbol(String),

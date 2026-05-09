@@ -20,6 +20,21 @@ pub fn resolve_related_files(file_path: &Path) -> Vec<PathBuf> {
 
 /// Same as `resolve_related_files` but takes pre-read content to avoid a redundant file read.
 pub fn resolve_related_files_with_content(file_path: &Path, content: &str) -> Vec<PathBuf> {
+    resolve_related_files_with_limit(file_path, content, Some(MAX_SUGGESTIONS))
+}
+
+pub(crate) fn resolve_all_related_files_with_content(
+    file_path: &Path,
+    content: &str,
+) -> Vec<PathBuf> {
+    resolve_related_files_with_limit(file_path, content, None)
+}
+
+fn resolve_related_files_with_limit(
+    file_path: &Path,
+    content: &str,
+    limit: Option<usize>,
+) -> Vec<PathBuf> {
     let FileType::Code(lang) = detect_file_type(file_path) else {
         return Vec::new();
     };
@@ -30,7 +45,7 @@ pub fn resolve_related_files_with_content(file_path: &Path, content: &str) -> Ve
 
     let mut results = Vec::new();
     for line in content.lines() {
-        if results.len() >= MAX_SUGGESTIONS {
+        if limit.is_some_and(|cap| results.len() >= cap) {
             break;
         }
         if !is_import_line(line, lang) {

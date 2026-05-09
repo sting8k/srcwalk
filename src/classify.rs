@@ -5,11 +5,14 @@ use crate::types::QueryType;
 /// Classify a query string into a `QueryType` by byte-pattern matching.
 /// No regex engine — `matches!` compiles to a jump table.
 pub fn classify(query: &str, scope: &Path) -> QueryType {
-    // 1. Path with line suffix — e.g. src/lib.rs:123.
+    // 1. Path with section suffix — e.g. src/lib.rs:123 or src/lib.rs:45-89.
     // Parse from the last colon so POSIX filenames containing ':' still work when the
-    // prefix resolves to a file. Only activate when the suffix is a positive integer.
-    if let Some((path, line)) = parse_path_line(query, scope) {
-        return QueryType::FilePathLine(path, line);
+    // prefix resolves to a file.
+    if let Some((path, section)) = parse_path_section(query, scope) {
+        if let Ok(line) = section.parse::<usize>() {
+            return QueryType::FilePathLine(path, line);
+        }
+        return QueryType::FilePathSection(path, section);
     }
 
     // 2. Glob characters in find now mean symbol-name glob unless the pattern
@@ -21,7 +24,7 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         return QueryType::SymbolGlob(query.into());
     }
 
-    // 3. File path — contains separator or starts with ./ ../.
+    // 4. File path — contains separator or starts with ./ ../.
     //    Spaces are valid in real paths; filesystem existence is the tie-breaker
     //    that keeps prose like "TODO: fix this/that" from becoming a path.
     if looks_like_path_with_separator(query) {
@@ -134,19 +137,31 @@ fn looks_like_exact_symbol(query: &str) -> bool {
     false
 }
 
-fn parse_path_line(query: &str, scope: &Path) -> Option<(std::path::PathBuf, usize)> {
-    let (path_part, line_part) = query.rsplit_once(':')?;
-    if path_part.is_empty() || line_part.is_empty() {
-        return None;
-    }
-
-    let line: usize = line_part.parse().ok()?;
-    if line == 0 {
+fn parse_path_section(query: &str, scope: &Path) -> Option<(std::path::PathBuf, String)> {
+    let (path_part, section) = query.rsplit_once(':')?;
+    if path_part.is_empty() || section.is_empty() || !is_path_section_suffix(section) {
         return None;
     }
 
     let resolved = resolve_existing_path(path_part, scope)?;
-    Some((resolved, line))
+    Some((resolved, section.to_string()))
+}
+
+fn is_path_section_suffix(section: &str) -> bool {
+    if let Ok(line) = section.parse::<usize>() {
+        return line > 0;
+    }
+
+    let Some((start, end)) = section.split_once('-') else {
+        return false;
+    };
+    let Ok(start) = start.parse::<usize>() else {
+        return false;
+    };
+    let Ok(end) = end.parse::<usize>() else {
+        return false;
+    };
+    start > 0 && end >= start
 }
 
 fn resolve_existing_path(query: &str, scope: &Path) -> Option<std::path::PathBuf> {

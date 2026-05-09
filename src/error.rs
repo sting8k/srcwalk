@@ -106,4 +106,13 @@ impl SrcwalkError {
             Self::WithNote { source, .. } => source.exit_code(),
         }
     }
+    pub(crate) fn unsupported_syntax(query: &str, action: &str, supported: &[String]) -> Self {
+        Self::InvalidQuery {
+            query: query.to_string(),
+            reason: format!(
+                "unsupported syntax for `{action}`. Supported:\n  {}",
+                supported.join("\n  ")
+            ),
+        }
+    }
 }

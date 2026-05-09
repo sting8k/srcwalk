@@ -16,4 +16,6 @@ pub use bfs::{
 };
 pub(crate) use single::find_callers_batch;
 #[allow(unused_imports)]
-pub use single::{find_callers, search_callers_expanded, CallerMatch};
+pub use single::{
+    find_callers, search_callers_expanded, search_callers_expanded_with_artifact, CallerMatch,
+};

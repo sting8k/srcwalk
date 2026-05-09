@@ -18,6 +18,7 @@ use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
 use crate::session::Session;
 use crate::types::FileType;
+use crate::ArtifactMode;
 
 /// Default display limit when caller does not specify one.
 /// Max unique caller functions to trace for 2nd hop. Above this = wide fan-out, skip.
@@ -26,9 +27,25 @@ const IMPACT_FANOUT_THRESHOLD: usize = 10;
 const IMPACT_MAX_RESULTS: usize = 15;
 /// Early quit for batch caller search.
 const BATCH_EARLY_QUIT: usize = 50;
+const MAX_ARTIFACT_FILE_SIZE: u64 = 25_000_000;
 
 /// Top-level sentinel used when a call site is not inside a function body.
 pub(super) const TOP_LEVEL: &str = "<top-level>";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefixKind {
+    Package,
+    Variable,
+}
+
+impl PrefixKind {
+    const fn suffix(self) -> &'static str {
+        match self {
+            Self::Package => "pkg",
+            Self::Variable => "var",
+        }
+    }
+}
 
 /// A single caller match — a call site of a target symbol.
 #[derive(Debug)]
@@ -39,9 +56,10 @@ pub struct CallerMatch {
     pub call_text: String,
     /// Line range of the calling function (for expand).
     pub caller_range: Option<(u32, u32)>,
-    /// Receiver object before `.method()` (e.g. `decomplib` in `decomplib.foo()`).
+    /// Selector prefix before `.method()`/`.function()` (for example `sdktranslator`).
     /// `None` for bare function calls.
     pub receiver: Option<String>,
+    pub prefix_kind: Option<PrefixKind>,
     /// Number of arguments at the call site.
     pub arg_count: Option<u8>,
     /// File content, already read during `find_callers` — avoids re-reading during expand.
@@ -57,11 +75,26 @@ pub fn find_callers(
     glob: Option<&str>,
     cache: Option<&crate::cache::OutlineCache>,
 ) -> Result<Vec<CallerMatch>, SrcwalkError> {
+    find_callers_with_artifact(target, scope, bloom, glob, cache, ArtifactMode::Source)
+}
+
+pub fn find_callers_with_artifact(
+    target: &str,
+    scope: &Path,
+    bloom: &crate::index::bloom::BloomFilterCache,
+    glob: Option<&str>,
+    cache: Option<&crate::cache::OutlineCache>,
+    artifact: ArtifactMode,
+) -> Result<Vec<CallerMatch>, SrcwalkError> {
     let matches: Mutex<Vec<CallerMatch>> = Mutex::new(Vec::new());
     let found_count = AtomicUsize::new(0);
     let needle = target.as_bytes();
 
-    let walker = crate::search::walker(scope, glob)?;
+    let walker = if artifact.enabled() {
+        crate::search::io::walker_with_artifact_dirs(scope, glob)?
+    } else {
+        crate::search::walker(scope, glob)?
+    };
 
     walker.run(|| {
         let matches = &matches;
@@ -86,10 +119,19 @@ pub fn find_callers(
                 ),
                 Err(_) => return ignore::WalkState::Continue,
             };
-            if file_len > 500_000 {
+            let is_artifact = artifact.enabled() && crate::artifact::is_artifact_js_ts_file(path);
+            if artifact.enabled() && !crate::artifact::is_artifact_search_file(path) {
                 return ignore::WalkState::Continue;
             }
-            if crate::search::io::is_minified_filename(path) {
+            let max_file_size = if is_artifact {
+                MAX_ARTIFACT_FILE_SIZE
+            } else {
+                500_000
+            };
+            if file_len > max_file_size {
+                return ignore::WalkState::Continue;
+            }
+            if crate::search::io::is_minified_filename(path) && !is_artifact {
                 return ignore::WalkState::Continue;
             }
 
@@ -102,24 +144,22 @@ pub fn find_callers(
                 return ignore::WalkState::Continue;
             }
 
-            if file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD
+            if !is_artifact
+                && file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD
                 && crate::search::io::looks_minified(&bytes)
             {
                 return ignore::WalkState::Continue;
             }
-
             // Hit: validate UTF-8 only now.
             let Ok(content) = std::str::from_utf8(&bytes) else {
                 return ignore::WalkState::Continue;
             };
 
-            // Bloom pre-filter: skip if target is definitely not in file
-            if !bloom.contains(path, mtime, content, target) {
+            let file_type = detect_file_type(path);
+            if !is_artifact && !bloom.contains(path, mtime, content, target) {
                 return ignore::WalkState::Continue;
             }
 
-            // Only process files with tree-sitter grammars
-            let file_type = detect_file_type(path);
             let FileType::Code(lang) = file_type else {
                 return ignore::WalkState::Continue;
             };
@@ -226,11 +266,13 @@ fn find_callers_treesitter(
                     text.to_string()
                 };
 
-                // Extract receiver: walk up from callee to find `obj.method()` pattern.
+                // Extract selector prefix: walk up from callee to find `obj.method()` pattern.
                 // The callee node is the method name; its parent may be a field_expression
                 // (Rust), member_expression (JS/TS), or similar with an `object` field.
                 let receiver = extract_receiver(cap.node, content_bytes);
-
+                let prefix_kind = receiver
+                    .as_deref()
+                    .map(|prefix| classify_prefix_kind(prefix, lang, content));
                 // Extract arg count from the call expression's arguments node.
                 let arg_count = extract_arg_count(call_node);
 
@@ -245,6 +287,7 @@ fn find_callers_treesitter(
                     call_text,
                     caller_range,
                     receiver,
+                    prefix_kind,
                     arg_count,
                     content: Arc::clone(&shared_content),
                 });
@@ -268,6 +311,26 @@ pub(crate) fn find_callers_batch(
     glob: Option<&str>,
     cache: Option<&crate::cache::OutlineCache>,
     early_quit: Option<usize>,
+) -> Result<Vec<(String, CallerMatch)>, SrcwalkError> {
+    find_callers_batch_with_artifact(
+        targets,
+        scope,
+        bloom,
+        glob,
+        cache,
+        early_quit,
+        ArtifactMode::Source,
+    )
+}
+
+pub(crate) fn find_callers_batch_with_artifact(
+    targets: &HashSet<String>,
+    scope: &Path,
+    bloom: &crate::index::bloom::BloomFilterCache,
+    glob: Option<&str>,
+    cache: Option<&crate::cache::OutlineCache>,
+    early_quit: Option<usize>,
+    artifact: ArtifactMode,
 ) -> Result<Vec<(String, CallerMatch)>, SrcwalkError> {
     let matches: Mutex<Vec<(String, CallerMatch)>> = Mutex::new(Vec::new());
     let found_count = AtomicUsize::new(0);
@@ -320,10 +383,19 @@ pub(crate) fn find_callers_batch(
                 ),
                 Err(_) => return ignore::WalkState::Continue,
             };
-            if file_len > 500_000 {
+            let is_artifact = artifact.enabled() && crate::artifact::is_artifact_js_ts_file(path);
+            if artifact.enabled() && !crate::artifact::is_artifact_search_file(path) {
                 return ignore::WalkState::Continue;
             }
-            if crate::search::io::is_minified_filename(path) {
+            let max_file_size = if is_artifact {
+                MAX_ARTIFACT_FILE_SIZE
+            } else {
+                500_000
+            };
+            if file_len > max_file_size {
+                return ignore::WalkState::Continue;
+            }
+            if crate::search::io::is_minified_filename(path) && !is_artifact {
                 return ignore::WalkState::Continue;
             }
 
@@ -343,27 +415,26 @@ pub(crate) fn find_callers_batch(
                 return ignore::WalkState::Continue;
             }
 
-            if file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD
+            if !is_artifact
+                && file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD
                 && crate::search::io::looks_minified(&bytes)
             {
                 return ignore::WalkState::Continue;
             }
-
             // Hit: validate UTF-8 only now.
             let Ok(content) = std::str::from_utf8(&bytes) else {
                 return ignore::WalkState::Continue;
             };
 
-            // Bloom pre-filter: skip if none of the targets are definitely in the file
-            if !targets
-                .iter()
-                .any(|t| bloom.contains(path, mtime, content, t))
+            let file_type = detect_file_type(path);
+            if !is_artifact
+                && !targets
+                    .iter()
+                    .any(|t| bloom.contains(path, mtime, content, t))
             {
                 return ignore::WalkState::Continue;
             }
 
-            // Only process files with tree-sitter grammars
-            let file_type = detect_file_type(path);
             let FileType::Code(lang) = file_type else {
                 return ignore::WalkState::Continue;
             };
@@ -478,6 +549,9 @@ fn find_callers_treesitter_batch(
                     find_enclosing_function(cap.node, &lines, lang);
 
                 let receiver = extract_receiver(cap.node, content_bytes);
+                let prefix_kind = receiver
+                    .as_deref()
+                    .map(|prefix| classify_prefix_kind(prefix, lang, content));
                 let arg_count = extract_arg_count(call_node);
 
                 callers.push((
@@ -489,6 +563,7 @@ fn find_callers_treesitter_batch(
                         call_text,
                         caller_range,
                         receiver,
+                        prefix_kind,
                         arg_count,
                         content: Arc::clone(&shared_content),
                     },
@@ -602,6 +677,43 @@ fn extract_receiver(callee_node: tree_sitter::Node, source: &[u8]) -> Option<Str
                 })
         }
         _ => None,
+    }
+}
+fn classify_prefix_kind(prefix: &str, lang: crate::types::Lang, content: &str) -> PrefixKind {
+    if lang == crate::types::Lang::Go && go_import_prefixes(content).contains(prefix) {
+        PrefixKind::Package
+    } else {
+        PrefixKind::Variable
+    }
+}
+
+fn go_import_prefixes(content: &str) -> HashSet<String> {
+    content
+        .lines()
+        .filter_map(go_import_prefix_from_line)
+        .collect()
+}
+
+fn go_import_prefix_from_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let quote_start = trimmed.find('"')?;
+    let quote_end = trimmed[quote_start + 1..].find('"')? + quote_start + 1;
+    let import_path = &trimmed[quote_start + 1..quote_end];
+    let before_quote = trimmed[..quote_start].trim();
+    let alias = before_quote
+        .strip_prefix("import")
+        .unwrap_or(before_quote)
+        .split_whitespace()
+        .next();
+
+    match alias {
+        Some("_" | ".") => None,
+        Some(name) if !name.is_empty() => Some(name.to_string()),
+        _ => import_path
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -724,7 +836,40 @@ fn find_enclosing_function(
 }
 
 /// Format and rank caller search results with optional expand.
+#[allow(dead_code)]
 pub fn search_callers_expanded(
+    target: &str,
+    scope: &Path,
+    cache: &OutlineCache,
+    session: &Session,
+    bloom: &crate::index::bloom::BloomFilterCache,
+    expand: usize,
+    context: Option<&Path>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    count_by: Option<&str>,
+) -> Result<String, SrcwalkError> {
+    search_callers_expanded_with_artifact(
+        target,
+        scope,
+        cache,
+        session,
+        bloom,
+        expand,
+        context,
+        limit,
+        offset,
+        glob,
+        filter,
+        count_by,
+        ArtifactMode::Source,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn search_callers_expanded_with_artifact(
     target: &str,
     scope: &Path,
     cache: &OutlineCache,
@@ -737,10 +882,12 @@ pub fn search_callers_expanded(
     glob: Option<&str>,
     filter: Option<&str>,
     count_by: Option<&str>,
+    artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
     let max_matches = limit.unwrap_or(usize::MAX);
     let group_limit = limit.unwrap_or(50);
-    let mut callers = find_callers(target, scope, bloom, glob, Some(cache))?;
+    let mut callers =
+        find_callers_with_artifact(target, scope, bloom, glob, Some(cache), artifact)?;
     let filters = parse_callsite_filters(filter)?;
     let unfiltered_total = callers.len();
     if !filters.is_empty() {
@@ -790,15 +937,20 @@ pub fn search_callers_expanded(
     );
 
     for (i, caller) in sorted_callers.iter().enumerate() {
+        let caller_kind = "fn";
         let _ = write!(
             output,
-            "  [fn] {} {}:{}",
+            "  [{caller_kind}] {} {}:{}",
             caller.calling_function,
             rel_nonempty(&caller.path, scope),
             caller.line,
         );
-        if let Some(ref recv) = caller.receiver {
-            let _ = write!(output, " recv={recv}");
+        if let Some(ref prefix) = caller.receiver {
+            if let Some(kind) = caller.prefix_kind {
+                let _ = write!(output, " prefix={prefix}({})", kind.suffix());
+            } else {
+                let _ = write!(output, " prefix={prefix}");
+            }
         }
         if let Some(argc) = caller.arg_count {
             let _ = write!(output, " args={argc}");
@@ -852,26 +1004,29 @@ pub fn search_callers_expanded(
     if !footer.is_empty() {
         footer.push('\n');
     }
-    footer.push_str("> Next: drill into any call site with `srcwalk <path>:<line>`.");
-    if sorted_callers
-        .iter()
-        .any(|caller| caller.arg_count.is_some() || caller.receiver.is_some())
-    {
-        footer.push_str(
-            "\n> Next: classify callsites with `--count-by args` or `--filter 'args:N receiver:NAME'`.",
-        );
+    footer.push_str(
+        "> Next: <path>:<line> | --expand[=N] | --count-by args|path | --filter 'args:N prefix:NAME' | --depth N.",
+    );
+    if artifact.enabled() {
+        if let Some(note) = artifact.callers_note() {
+            footer.push_str("\n> ");
+            footer.push_str(note);
+        }
     }
     if !filters.is_empty() {
         let _ = write!(
             footer,
-            "\n> Note: filter matched {total}/{unfiltered_total} call sites. Qualifiers: args:N receiver:NAME caller:NAME path:TEXT text:TEXT."
+            "\n> Note: filter matched {total}/{unfiltered_total} call sites. Qualifiers: args:N prefix:NAME (or receiver:NAME) caller:NAME path:TEXT text:TEXT."
         );
     }
 
     // ── Adaptive 2nd-hop impact analysis ──
     // Use all_caller_names (pre-truncation) for the fan-out threshold check,
     // but search for callers of the full set to capture transitive impact.
-    if !all_caller_names.is_empty() && all_caller_names.len() <= IMPACT_FANOUT_THRESHOLD {
+    if !artifact.enabled()
+        && !all_caller_names.is_empty()
+        && all_caller_names.len() <= IMPACT_FANOUT_THRESHOLD
+    {
         if let Ok(hop2) = find_callers_batch(
             &all_caller_names,
             scope,
@@ -990,7 +1145,7 @@ fn format_callsite_counts(
 
     let shown_end = (effective_offset + page_size).min(total_groups);
     let mut footer = String::from(
-        "> Next: narrow with --filter 'args:N receiver:NAME caller:NAME path:TEXT text:TEXT'; group with --count-by args|caller|receiver|file.",
+        "> Next: narrow with --filter 'args:N prefix:NAME caller:NAME path:TEXT text:TEXT'; group with --count-by args|caller|path|file|prefix.",
     );
     if total_groups > shown_end {
         let omitted = total_groups - shown_end;
@@ -1012,13 +1167,12 @@ fn normalize_count_field(field: &str) -> Result<&'static str, SrcwalkError> {
     match field {
         "args" => Ok("args"),
         "caller" => Ok("caller"),
-        "receiver" | "recv" => Ok("receiver"),
+        "receiver" | "recv" | "prefix" | "qual" => Ok("receiver"),
         "path" => Ok("path"),
         "file" => Ok("file"),
         _ => Err(SrcwalkError::InvalidQuery {
             query: field.to_string(),
-            reason: "unsupported count field; use args, caller, receiver, path, or file"
-                .to_string(),
+            reason: "unsupported count field; use args, caller, path, file, or prefix".to_string(),
         }),
     }
 }
@@ -1071,14 +1225,20 @@ fn parse_callsite_filters(filter: Option<&str>) -> Result<Vec<CallsiteFilter>, S
             });
         }
         match field.as_str() {
-            "args" | "receiver" | "recv" | "caller" | "path" | "file" | "text" => {
+            "args" | "caller" | "path" | "file" | "text" => {
                 filters.push(CallsiteFilter { field, value });
+            }
+            "receiver" | "recv" | "prefix" | "qual" => {
+                filters.push(CallsiteFilter {
+                    field: "receiver".to_string(),
+                    value,
+                });
             }
             _ => {
                 return Err(SrcwalkError::InvalidQuery {
                     query: filter.to_string(),
                     reason: format!(
-                        "unsupported filter field `{field}`; use args, receiver, caller, path, or text"
+                        "unsupported filter field `{field}`; use args, prefix, caller, path, or text"
                     ),
                 });
             }
@@ -1093,7 +1253,7 @@ impl CallsiteFilter {
             "args" => caller
                 .arg_count
                 .is_some_and(|argc| self.value.parse::<u8>().is_ok_and(|wanted| argc == wanted)),
-            "receiver" | "recv" => caller.receiver.as_deref() == Some(self.value.as_str()),
+            "receiver" => caller.receiver.as_deref() == Some(self.value.as_str()),
             "caller" => caller.calling_function == self.value,
             "path" | "file" => rel_nonempty(&caller.path, scope).contains(&self.value),
             "text" => caller.call_text.contains(&self.value),
@@ -1186,125 +1346,4 @@ fn rank_callers(callers: &mut [CallerMatch], scope: &Path, context: Option<&Path
 }
 
 #[cfg(test)]
-mod callsite_filter_tests {
-    use super::*;
-
-    fn sample_match() -> CallerMatch {
-        CallerMatch {
-            path: PathBuf::from("/repo/src/main.rs"),
-            line: 42,
-            calling_function: "main".to_string(),
-            call_text: "client.start(1, monitor)".to_string(),
-            caller_range: Some((40, 50)),
-            receiver: Some("client".to_string()),
-            arg_count: Some(2),
-            content: Arc::new(String::new()),
-        }
-    }
-
-    #[test]
-    fn parse_callsite_filters_accepts_qualifiers() {
-        let filters = parse_callsite_filters(Some("args:2 receiver:client caller:main"))
-            .expect("valid filters");
-        assert_eq!(filters.len(), 3);
-        assert_eq!(filters[0].field, "args");
-        assert_eq!(filters[0].value, "2");
-    }
-
-    #[test]
-    fn parse_callsite_filters_rejects_unknown_fields() {
-        let err = parse_callsite_filters(Some("unknown:x")).expect_err("invalid field");
-        assert!(err.to_string().contains("unsupported filter field"));
-    }
-
-    #[test]
-    fn callsite_filters_match_semantic_fields() {
-        let caller = sample_match();
-        let scope = Path::new("/repo");
-        let filters = parse_callsite_filters(Some(
-            "args:2 receiver:client caller:main path:src text:start",
-        ))
-        .expect("valid filters");
-        assert!(filters.iter().all(|f| f.matches(&caller, scope)));
-    }
-
-    #[test]
-    fn count_field_values_use_display_facts() {
-        let caller = sample_match();
-        let scope = Path::new("/repo");
-        assert_eq!(callsite_field_value(&caller, scope, "args"), "2");
-        assert_eq!(callsite_field_value(&caller, scope, "caller"), "main");
-        assert_eq!(callsite_field_value(&caller, scope, "receiver"), "client");
-        assert_eq!(callsite_field_value(&caller, scope, "path"), "src/main.rs");
-        assert_eq!(callsite_field_value(&caller, scope, "file"), "main.rs");
-    }
-
-    #[test]
-    fn rank_callers_prefers_named_contexts_over_top_level() {
-        let scope = Path::new("/repo");
-        let mut top_level = sample_match();
-        top_level.path = PathBuf::from("/repo/a.ts");
-        top_level.calling_function = TOP_LEVEL.to_string();
-        let mut named = sample_match();
-        named.path = PathBuf::from("/repo/deeper/path/b.ts");
-        named.calling_function = "buildNotes".to_string();
-
-        let mut callers = vec![top_level, named];
-        rank_callers(&mut callers, scope, None);
-
-        assert_eq!(callers[0].calling_function, "buildNotes");
-    }
-
-    #[test]
-    fn rank_callers_demotes_duplicate_context_calls() {
-        let scope = Path::new("/repo");
-        let mut duplicate_late = sample_match();
-        duplicate_late.path = PathBuf::from("/repo/src/cache.php");
-        duplicate_late.calling_function = "SmartyCustomCore.check".to_string();
-        duplicate_late.line = 120;
-        duplicate_late.receiver = Some("$this".to_string());
-
-        let mut duplicate_first = sample_match();
-        duplicate_first.path = PathBuf::from("/repo/src/cache.php");
-        duplicate_first.calling_function = "SmartyCustomCore.check".to_string();
-        duplicate_first.receiver = Some("$this".to_string());
-        duplicate_first.line = 118;
-
-        let mut different_context = sample_match();
-        different_context.path = PathBuf::from("/repo/src/container.php");
-        different_context.calling_function = "ContainerBuilder.build".to_string();
-        different_context.line = 112;
-        different_context.receiver = Some("$this->environment".to_string());
-
-        let mut callers = vec![duplicate_late, duplicate_first, different_context];
-        rank_callers(&mut callers, scope, None);
-
-        assert_eq!(callers[0].calling_function, "ContainerBuilder.build");
-        assert_eq!(callers[1].calling_function, "SmartyCustomCore.check");
-        assert_eq!(callers[1].line, 118);
-        assert_eq!(callers[2].line, 120);
-    }
-
-    #[test]
-    fn rank_callers_prefers_explicit_receivers_over_self_and_no_receiver() {
-        let scope = Path::new("/repo");
-        let mut no_receiver = sample_match();
-        no_receiver.path = PathBuf::from("/repo/a.ts");
-        no_receiver.receiver = None;
-
-        let mut self_receiver = sample_match();
-        self_receiver.path = PathBuf::from("/repo/b.ts");
-        self_receiver.receiver = Some("$this".to_string());
-
-        let mut explicit_receiver = sample_match();
-        explicit_receiver.path = PathBuf::from("/repo/c.ts");
-        explicit_receiver.receiver = Some("$kernel".to_string());
-
-        let mut callers = vec![no_receiver, self_receiver, explicit_receiver];
-        rank_callers(&mut callers, scope, None);
-
-        assert_eq!(callers[0].receiver.as_deref(), Some("$kernel"));
-        assert_eq!(callers[1].receiver.as_deref(), Some("$this"));
-        assert_eq!(callers[2].receiver, None);
-    }
-}
+mod callsite_filter_tests;

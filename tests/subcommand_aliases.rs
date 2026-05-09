@@ -60,6 +60,46 @@ fn root_help_surfaces_guide_entry_point() {
 }
 
 #[test]
+fn artifact_help_is_discoverable_on_root_and_relation_commands() {
+    let root = srcwalk().arg("--help").output().unwrap();
+    assert!(
+        root.status.success(),
+        "root help failed:\n{}",
+        String::from_utf8_lossy(&root.stderr)
+    );
+    let root_stdout = String::from_utf8_lossy(&root.stdout);
+    assert!(root_stdout.contains("--artifact"), "{root_stdout}");
+    assert!(
+        root_stdout.contains("direct file reads supported"),
+        "{root_stdout}"
+    );
+
+    for command in ["find", "callers", "callees"] {
+        let output = srcwalk().args([command, "--help"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{command} help failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("--artifact"), "{stdout}");
+        assert!(
+            stdout.contains("artifact-level evidence"),
+            "{command} help should label artifact evidence:\n{stdout}"
+        );
+    }
+
+    for command in ["callers", "callees"] {
+        let output = srcwalk().args([command, "--help"]).output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("direct-only"),
+            "{command} help should name artifact relation limits:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn version_subcommand_is_canonical_version_surface() {
     let output = srcwalk().arg("version").output().unwrap();
 
@@ -99,8 +139,8 @@ fn guide_subcommand_prints_full_embedded_skill() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("# srcwalk — agent routing policy"));
-    assert!(stdout.contains("version-matched command guide"));
-    assert!(stdout.contains("## Choose the command by intent"));
+    assert!(stdout.contains("Use srcwalk before shell search for code navigation"));
+    assert!(stdout.contains("## Routes"));
 }
 
 #[test]

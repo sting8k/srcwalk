@@ -107,13 +107,14 @@ pub fn analyze_deps(
 
     let exported_count = all_names.len();
 
-    // Cap at MAX_EXPORTED_SYMBOLS, preferring longer (more specific) names
-    let searched_count = if all_names.len() > MAX_EXPORTED_SYMBOLS {
-        all_names.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-        all_names.truncate(MAX_EXPORTED_SYMBOLS);
+    // Cap reverse-dependent searches, preferring longer (more specific) names.
+    let mut searched_names = all_names.clone();
+    let searched_count = if searched_names.len() > MAX_EXPORTED_SYMBOLS {
+        searched_names.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        searched_names.truncate(MAX_EXPORTED_SYMBOLS);
         MAX_EXPORTED_SYMBOLS
     } else {
-        all_names.len()
+        searched_names.len()
     };
 
     // ── Phase 2: Forward dependencies ────────────────────────────────────────
@@ -169,27 +170,30 @@ pub fn analyze_deps(
             external_set.insert(source.clone());
         }
     }
+
     let mut uses_external: Vec<String> = external_set.into_iter().collect();
     uses_external.sort();
 
     // ── Phase 3: Reverse dependencies ────────────────────────────────────────
 
     let used_by = if searched_count > 0 {
-        let symbols_set: HashSet<String> = all_names.iter().cloned().collect();
-        let raw_matches = find_callers_batch(&symbols_set, scope, bloom, None, None, Some(50))?;
-
-        // Group by file path
         let mut by_file: HashMap<PathBuf, Vec<(String, String, u32)>> = HashMap::new();
-        for (matched_symbol, caller_match) in raw_matches {
-            // Exclude calls from within the target file itself (self-references)
-            if caller_match.path == *path {
-                continue;
+
+        if searched_count > 0 {
+            let symbols_set: HashSet<String> = searched_names.iter().cloned().collect();
+            let raw_matches = find_callers_batch(&symbols_set, scope, bloom, None, None, Some(50))?;
+
+            for (matched_symbol, caller_match) in raw_matches {
+                // Exclude calls from within the target file itself (self-references)
+                if caller_match.path == *path {
+                    continue;
+                }
+                by_file.entry(caller_match.path).or_default().push((
+                    caller_match.calling_function,
+                    matched_symbol,
+                    caller_match.line,
+                ));
             }
-            by_file.entry(caller_match.path).or_default().push((
-                caller_match.calling_function,
-                matched_symbol,
-                caller_match.line,
-            ));
         }
 
         // Build Dependent list
@@ -427,8 +431,6 @@ fn is_stdlib(source: &str, lang: crate::types::Lang) -> bool {
     }
 }
 
-/// Returns true if the string looks like a valid module/package path.
-/// Filters out garbage from string literals that pass `is_import_line`.
 fn is_valid_module_path(source: &str) -> bool {
     // Must not contain spaces (real module paths don't)
     if source.contains(' ') {
@@ -472,15 +474,42 @@ fn format_uses_external(externals: &[String]) -> String {
     out
 }
 
+#[derive(Debug)]
+struct UsedByRow {
+    dir: String,
+    file: String,
+    line: u32,
+    caller: String,
+    symbols: Vec<String>,
+}
+
 /// Format a "Used by" section from a slice of dependents.
 fn format_used_by(deps: &[&Dependent], scope: &Path, heading: &str) -> String {
     if deps.is_empty() {
         return String::new();
     }
-    let mut out = String::from(heading);
+
+    let mut rows = Vec::new();
     for dep in deps {
         let rel = rel_nonempty(&dep.path, scope);
-        // Group by (caller, line) for readability — keep the earliest line per caller
+        let rel_path = Path::new(&rel);
+        let dir = rel_path
+            .parent()
+            .and_then(|p| {
+                if p.as_os_str().is_empty() {
+                    None
+                } else {
+                    Some(format!("{}/", p.display()))
+                }
+            })
+            .unwrap_or_else(|| "(root)/".to_string());
+        let file = rel_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(rel.as_str())
+            .to_string();
+
+        // Group by (caller, line) within each dependent for readability — keep the earliest line per caller.
         let mut by_caller: HashMap<&str, (u32, Vec<&str>)> = HashMap::new();
         for (caller, symbol, line) in &dep.symbols {
             let entry = by_caller
@@ -489,16 +518,36 @@ fn format_used_by(deps: &[&Dependent], scope: &Path, heading: &str) -> String {
             entry.0 = entry.0.min(*line);
             entry.1.push(symbol.as_str());
         }
-        let mut callers: Vec<(&str, u32, Vec<&str>)> = by_caller
-            .into_iter()
-            .map(|(caller, (line, syms))| (caller, line, syms))
-            .collect();
-        callers.sort_unstable_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
-        for (caller, line, syms) in callers {
-            let loc = format!("{rel}:{line}");
-            let joined = syms.join(", ");
-            let _ = write!(out, "\n{loc:<30} {caller:<20} \u{2192} {joined}");
+
+        for (caller, (line, syms)) in by_caller {
+            rows.push(UsedByRow {
+                dir: dir.clone(),
+                file: file.clone(),
+                line,
+                caller: caller.to_string(),
+                symbols: syms.into_iter().map(str::to_string).collect(),
+            });
         }
+    }
+
+    rows.sort_by(|a, b| {
+        a.dir
+            .cmp(&b.dir)
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.caller.cmp(&b.caller))
+    });
+
+    let mut out = String::from(heading);
+    let mut current_dir = String::new();
+    for row in rows {
+        if row.dir != current_dir {
+            current_dir.clone_from(&row.dir);
+            let _ = write!(out, "\n{current_dir}");
+        }
+        let loc = format!("{}:{}", row.file, row.line);
+        let joined = row.symbols.join(", ");
+        let _ = write!(out, "\n  {loc:<28} {:<20} → {joined}", row.caller);
     }
     out
 }

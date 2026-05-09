@@ -4,6 +4,22 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+### Added
+- Added action-first command routing for `find`, `files`, `callers`, `callees`, `deps`, `flow`, `impact`, and path reads, backed by split command services and focused integration coverage.
+- Added dependency-aware `map` output with local relation groups, outbound dependency previews for narrowed scopes, and shallow directory token rollups for deep source trees.
+- Added JS/TS artifact-mode navigation for bundle anchors, artifact reads, artifact search snippets, and artifact caller/callee support within the supported language surface.
+- Added path range read shortcuts such as `srcwalk <path>:start-end` for direct evidence reads without shell `sed`/`head` chains.
+
+### Changed
+- Split large CLI, read, search, display, ranking, symbol, and command modules into smaller focused modules while preserving existing command behavior.
+- Streamlined `srcwalk guide`, README, and agent instructions around srcwalk-first navigation, `srcwalk files` for project filename discovery, narrow `--scope`, and generic unsupported-file fallbacks.
+- Improved caller, callee, deps, find, and map output UX with more compact semantic rows, directory grouping, footer tips, and clearer scope/depth wording.
+
+### Fixed
+- Fixed unsupported `find` query syntax diagnostics so misuse now reports supported forms instead of falling through to misleading path-not-found errors.
+- Fixed map depth handling so explicit `--depth` remains strict while token totals still roll up deep files into visible shallow directories.
+- Fixed several search/read edge cases around multi-scope queries, artifact snippets, path-line routing, semantic context display, and pagination coverage.
+
 ## [0.3.2] - 2026-05-07
 
 ### Changed

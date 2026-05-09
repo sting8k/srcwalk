@@ -1,16 +1,31 @@
+use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
 
 use super::file_metadata;
 
 use crate::error::SrcwalkError;
+use crate::lang::detection;
 use crate::search::rank;
 use crate::types::{Match, SearchResult};
+use crate::ArtifactMode;
 use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
 
 const MAX_SEARCH_FILE_SIZE: u64 = 500_000;
+const MAX_ARTIFACT_TEXT_FILE_SIZE: u64 = 100_000_000;
+
+fn is_binary_file(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return true;
+    };
+    let mut buf = [0u8; 512];
+    let Ok(n) = file.read(&mut buf) else {
+        return true;
+    };
+    detection::is_binary(&buf[..n])
+}
 
 /// Content search using ripgrep crates. Literal by default, regex if `is_regex`.
 pub fn search(
@@ -19,6 +34,24 @@ pub fn search(
     is_regex: bool,
     context: Option<&Path>,
     glob: Option<&str>,
+) -> Result<SearchResult, SrcwalkError> {
+    search_with_artifact(
+        pattern,
+        scope,
+        is_regex,
+        context,
+        glob,
+        ArtifactMode::Source,
+    )
+}
+
+pub fn search_with_artifact(
+    pattern: &str,
+    scope: &Path,
+    is_regex: bool,
+    context: Option<&Path>,
+    glob: Option<&str>,
+    artifact: ArtifactMode,
 ) -> Result<SearchResult, SrcwalkError> {
     let matcher = if is_regex {
         RegexMatcher::new(pattern)
@@ -31,7 +64,11 @@ pub fn search(
     })?;
 
     let matches: Mutex<Vec<Match>> = Mutex::new(Vec::new());
-    let walker = super::walker(scope, glob)?;
+    let walker = if artifact.enabled() {
+        super::io::walker_with_artifact_dirs(scope, glob)?
+    } else {
+        super::walker(scope, glob)?
+    };
 
     walker.run(|| {
         let matcher = &matcher;
@@ -41,16 +78,28 @@ pub fn search(
             let Ok(entry) = entry else {
                 return ignore::WalkState::Continue;
             };
-
             if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 return ignore::WalkState::Continue;
             }
 
             let path = entry.path();
+            if super::io::is_minified_filename(path) && !artifact.enabled() {
+                return ignore::WalkState::Continue;
+            }
+            if artifact.enabled() && !crate::artifact::is_artifact_search_file(path) {
+                return ignore::WalkState::Continue;
+            }
+            if artifact.enabled() && is_binary_file(path) {
+                return ignore::WalkState::Continue;
+            }
 
-            // Skip oversized files — tree-sitter and ripgrep shouldn't spend time on minified bundles
             if let Ok(meta) = std::fs::metadata(path) {
-                if meta.len() > MAX_SEARCH_FILE_SIZE {
+                let max_size = if artifact.enabled() {
+                    MAX_ARTIFACT_TEXT_FILE_SIZE
+                } else {
+                    MAX_SEARCH_FILE_SIZE
+                };
+                if meta.len() > max_size {
                     return ignore::WalkState::Continue;
                 }
             }

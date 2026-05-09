@@ -75,6 +75,14 @@ fn is_test_match(m: &Match) -> bool {
     }
 
     // Content-based detection
+    if matches!(
+        crate::lang::detect_file_type(&m.path),
+        crate::types::FileType::Other | crate::types::FileType::Log
+    ) {
+        return false;
+    }
+
+    // Content-based detection
     let text = &m.text;
     text.contains("#[test]")
         || text.contains("#[cfg(test)]")

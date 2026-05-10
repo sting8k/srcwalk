@@ -4,6 +4,15 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [0.4.1] - 2026-05-10
+
+### Added
+- Improved artifact-mode JS/TS navigation with anchors, byte-range evidence, and section reads.
+- Extended artifact routing across find, flow, impact, callers, and callees.
+
+### Changed
+- Improved grouped artifact output, compact match snippets, and long-line hit evidence around matched terms.
+- Clarified public artifact workflow guidance and added regression coverage for artifact navigation and path reads.
 
 ## [0.4.0] - 2026-05-09
 

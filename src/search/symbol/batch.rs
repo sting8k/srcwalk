@@ -265,7 +265,11 @@ fn find_usages_batch(
                             local[i].push(Match {
                                 path: path.to_path_buf(),
                                 line: line_num as u32,
-                                text: line.trim_end().to_string(),
+                                text: crate::search::truncate::compact_match_line(
+                                    line.trim_end(),
+                                    q,
+                                    false,
+                                ),
                                 is_definition: false,
                                 exact: true,
                                 file_lines,

@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::cache::OutlineCache;
@@ -97,8 +98,17 @@ pub(crate) fn run_callees_with_artifact(
         }
         let filter_suffix = filter.map_or(String::new(), |f| format!(" matching `{f}`"));
         let mut out = format!("# Callees: {target} ({rel}){filter_suffix}\n");
+        let js_ts_artifact = artifact.enabled()
+            && matches!(
+                lang,
+                types::Lang::JavaScript | types::Lang::TypeScript | types::Lang::Tsx
+            );
         for s in &sites {
-            let _ = write!(out, "\n{}", format_call_site(s));
+            if js_ts_artifact {
+                let _ = write!(out, "\n{}", format_artifact_call_site(s, &content));
+            } else {
+                let _ = write!(out, "\n{}", format_call_site(s));
+            }
         }
         if filter.is_some() {
             let _ = write!(
@@ -107,6 +117,8 @@ pub(crate) fn run_callees_with_artifact(
                 sites.len(),
                 total_sites
             );
+        } else if js_ts_artifact {
+            out.push_str("\n\n> Next: drill into call evidence with `srcwalk <path> --artifact --section bytes:<start>-<end>`, or omit --detailed for resolved callee summaries.");
         } else {
             out.push_str("\n\n> Caveat: detailed call sites can be long. Retry with --budget <N>, or omit --detailed for resolved callee summaries.");
         }
@@ -230,4 +242,66 @@ pub(crate) fn run_callees_with_artifact(
         None => out,
     };
     Ok(output)
+}
+
+fn format_artifact_call_site(site: &search::callees::CallSite, content: &str) -> String {
+    let mut out = format_call_site(site);
+    let Some((start_byte, end_byte)) = site.call_byte_range else {
+        return out;
+    };
+    let _ = write!(out, " --section bytes:{start_byte}-{end_byte}");
+    out.push_str(&format_artifact_call_window(
+        content, site.line, start_byte, end_byte,
+    ));
+    out
+}
+
+fn format_artifact_call_window(
+    content: &str,
+    line: u32,
+    start_byte: usize,
+    end_byte: usize,
+) -> String {
+    const CONTEXT: usize = 80;
+    const MAX_WINDOW: usize = 360;
+
+    if start_byte >= end_byte || start_byte >= content.len() {
+        return String::new();
+    }
+    let end_byte = end_byte.min(content.len());
+    let mut window_start = start_byte.saturating_sub(CONTEXT);
+    let mut window_end = (end_byte + CONTEXT).min(content.len());
+    if window_end.saturating_sub(window_start) > MAX_WINDOW {
+        window_start = start_byte.saturating_sub(MAX_WINDOW / 3);
+        window_end = (end_byte + MAX_WINDOW / 3).min(content.len());
+    }
+    window_start = floor_char_boundary(content, window_start);
+    window_end = ceil_char_boundary(content, window_end);
+
+    let prefix = if window_start > 0 { "…" } else { "" };
+    let suffix = if window_end < content.len() {
+        "…"
+    } else {
+        ""
+    };
+    let snippet = content[window_start..window_end].trim();
+    format!(
+        "\n```js\n// line {line}, bytes {start_byte}-{end_byte}\n{prefix}{snippet}{suffix}\n```"
+    )
+}
+
+fn floor_char_boundary(text: &str, mut idx: usize) -> usize {
+    idx = idx.min(text.len());
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn ceil_char_boundary(text: &str, mut idx: usize) -> usize {
+    idx = idx.min(text.len());
+    while idx < text.len() && !text.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx
 }

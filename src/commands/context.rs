@@ -120,5 +120,9 @@ pub(crate) fn with_artifact_note(output: String, artifact: ArtifactMode) -> Stri
     let Some(note) = artifact.note() else {
         return output;
     };
+    let output = output.replace(
+        "> Next: drill into any hit with `srcwalk <path>:<line>`.",
+        "> Next: drill artifact hits with `srcwalk <path> --artifact --section <symbol|bytes:start-end>`.",
+    );
     format!("{output}\n\n> {note}")
 }

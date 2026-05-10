@@ -280,24 +280,6 @@ fn run_inner(
         query_type
     };
 
-    if !artifact.enabled()
-        && classify::looks_like_path_with_separator(query)
-        && !matches!(
-            query_type,
-            QueryType::FilePath(_)
-                | QueryType::FilePathLine(_, _)
-                | QueryType::FilePathSection(_, _)
-        )
-    {
-        return Err(SrcwalkError::PathLikeNotFound {
-            path: scope.join(query),
-            scope: scope.to_path_buf(),
-            basename: std::path::Path::new(query)
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned()),
-        });
-    }
-
     let use_expanded = expand > 0
         && !matches!(
             query_type,
@@ -358,7 +340,21 @@ fn run_inner(
             })
         }
         QueryType::FilePath(path) => {
-            let mut out = read::read_file_with_budget(&path, section, full, budget_tokens, cache)?;
+            let mut out = if artifact.enabled() {
+                if let Some(symbol) = section {
+                    if let Some(result) =
+                        artifact::read_js_ts_symbol_section(&path, symbol, budget_tokens)
+                    {
+                        result?
+                    } else {
+                        read::read_file_with_budget(&path, section, full, budget_tokens, cache)?
+                    }
+                } else {
+                    read::read_file_with_budget(&path, section, full, budget_tokens, cache)?
+                }
+            } else {
+                read::read_file_with_budget(&path, section, full, budget_tokens, cache)?
+            };
             out = with_artifact_read_label(out, artifact);
             if section.is_none() && !full {
                 out = artifact::add_anchors(out, &path, artifact);
@@ -380,13 +376,57 @@ fn run_inner(
         QueryType::FilePathLine(path, line) => {
             let line_section = line.to_string();
             let effective_section = section.unwrap_or(&line_section);
-            read::read_file_with_budget(&path, Some(effective_section), full, budget_tokens, cache)
-                .map(|out| with_artifact_read_label(out, artifact))
+            let out = if artifact.enabled() {
+                if let Some(result) =
+                    artifact::read_js_ts_symbol_section(&path, effective_section, budget_tokens)
+                {
+                    result?
+                } else {
+                    read::read_file_with_budget(
+                        &path,
+                        Some(effective_section),
+                        full,
+                        budget_tokens,
+                        cache,
+                    )?
+                }
+            } else {
+                read::read_file_with_budget(
+                    &path,
+                    Some(effective_section),
+                    full,
+                    budget_tokens,
+                    cache,
+                )?
+            };
+            Ok(with_artifact_read_label(out, artifact))
         }
         QueryType::FilePathSection(path, path_section) => {
             let effective_section = section.unwrap_or(&path_section);
-            read::read_file_with_budget(&path, Some(effective_section), full, budget_tokens, cache)
-                .map(|out| with_artifact_read_label(out, artifact))
+            let out = if artifact.enabled() {
+                if let Some(result) =
+                    artifact::read_js_ts_symbol_section(&path, effective_section, budget_tokens)
+                {
+                    result?
+                } else {
+                    read::read_file_with_budget(
+                        &path,
+                        Some(effective_section),
+                        full,
+                        budget_tokens,
+                        cache,
+                    )?
+                }
+            } else {
+                read::read_file_with_budget(
+                    &path,
+                    Some(effective_section),
+                    full,
+                    budget_tokens,
+                    cache,
+                )?
+            };
+            Ok(with_artifact_read_label(out, artifact))
         }
         QueryType::Glob(_) if classify::has_glob_chars(query) => Err(use_files_error(query)),
         QueryType::Glob(pattern) => search::search_files_glob(&pattern, scope, limit, offset),
@@ -436,6 +476,9 @@ fn run_inner(
     })
 }
 
+fn should_error_missing_path_like_query(query: &str) -> bool {
+    classify::looks_like_path_with_separator(query)
+}
 /// Dispatch search queries in expanded mode (inline source for top N matches).
 /// Only called for search query types — FilePath/Glob are handled before this.
 fn run_query_expanded(
@@ -599,6 +642,16 @@ fn single_query_search(
         search::pagination::paginate(&mut sym_result, limit, offset);
         search::compact_artifact_snippets(&mut sym_result, artifact);
         return search::format_raw_result(&sym_result, cache);
+    }
+
+    if !artifact.enabled() && should_error_missing_path_like_query(text) {
+        return Err(SrcwalkError::PathLikeNotFound {
+            path: scope.join(text),
+            scope: scope.to_path_buf(),
+            basename: std::path::Path::new(text)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+        });
     }
 
     Err(SrcwalkError::NoMatches {

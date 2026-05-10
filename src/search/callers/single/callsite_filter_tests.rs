@@ -7,6 +7,7 @@ fn sample_match() -> CallerMatch {
         calling_function: "main".to_string(),
         call_text: "client.start(1, monitor)".to_string(),
         caller_range: Some((40, 50)),
+        call_byte_range: None,
         receiver: Some("client".to_string()),
         prefix_kind: Some(PrefixKind::Variable),
         arg_count: Some(2),

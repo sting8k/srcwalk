@@ -279,19 +279,21 @@ pub(super) fn read_section(
             let filtered = filter_entries_in_range(&entries, start32, end32);
             if !filtered.is_empty() {
                 let body = format_section_outline(&filtered);
+                let next = section_over_limit_next_step(path, range, line_count, file_type);
                 return Ok(format!(
                     "{header}\n\n{body}\n\n\
                      > Caveat: section cap ~{tok_est}/{limit} tokens; lines {line_count}; outline {start}-{end}.\n\
-                     > Next: use narrower --section or --budget <N>."
+                     > Next: {next}"
                 ));
             }
         }
 
         // Fallback: no structured outline available — return header + advice only
+        let next = section_over_limit_next_step(path, range, line_count, file_type);
         return Ok(format!(
             "{header}\n\n\
              > Caveat: section cap ~{tok_est}/{limit} tokens; lines {line_count}.\n\
-             > Next: use narrower --section or --budget <N>."
+             > Next: {next}"
         ));
     }
 
@@ -302,6 +304,33 @@ pub(super) fn read_section(
         format::number_lines(&selected, start as u32)
     };
     Ok(format!("{header}\n\n{formatted}"))
+}
+
+fn section_over_limit_next_step(
+    path: &Path,
+    section: &str,
+    line_count: u32,
+    file_type: FileType,
+) -> String {
+    if line_count <= 1 && is_js_ts_file_type(file_type) {
+        return format!(
+            "minified artifact? retry `srcwalk {} --artifact --section {}` or `--artifact --section bytes:<start>-<end>`.",
+            path.display(),
+            section
+);
+    }
+    "use narrower --section or --budget <N>.".to_string()
+}
+
+fn is_js_ts_file_type(file_type: FileType) -> bool {
+    matches!(
+        file_type,
+        FileType::Code(
+            crate::types::Lang::JavaScript
+                | crate::types::Lang::TypeScript
+                | crate::types::Lang::Tsx
+        )
+    )
 }
 
 fn format_focused_lines(content: &str, start: u32, focus_line: usize) -> String {

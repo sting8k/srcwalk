@@ -264,6 +264,38 @@ fn artifact_callers_include_minified_js_bundle_calls() {
 }
 
 #[test]
+fn artifact_callers_group_repeated_same_caller_line() {
+    let dir = temp_repo("artifact_js_callers_grouped");
+    fs::write(
+        dir.join("bundle.min.js"),
+        "function target(x){return x}function boot(){target(1);target(2);target(3);target(4);target(5);target(6);target(7)}",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args(["callers", "target", "--artifact", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact callers failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("  bundle.min.js\n"), "{stdout}");
+    assert!(
+        stdout.contains("    [fn] boot:1 [7 calls] args=1"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("... 1 more byte ranges"), "{stdout}");
+    assert!(
+        !stdout.contains("\n    [fn] boot:1 args=1\n    [fn] boot:1 args=1"),
+        "repeated artifact callers should be collapsed:\n{stdout}"
+    );
+}
+
+#[test]
 fn artifact_callees_include_same_file_minified_js_calls() {
     let dir = temp_repo("artifact_js_callees");
     fs::write(
@@ -346,8 +378,9 @@ fn artifact_callees_resolve_nested_umd_functions_by_byte_range() {
     );
     let stdout = String::from_utf8_lossy(&detailed.stdout);
     assert!(stdout.contains("login()"), "{stdout}");
-    assert!(!stdout.contains("define"), "{stdout}");
-    assert!(!stdout.contains("fetch"), "{stdout}");
+    assert!(stdout.contains("--section bytes:"), "{stdout}");
+    assert!(stdout.contains("```js"), "{stdout}");
+    assert!(!stdout.contains("define(e)"), "{stdout}");
 }
 
 #[test]
@@ -386,6 +419,203 @@ fn artifact_search_centers_long_one_line_usage_snippets() {
     );
 }
 
+#[test]
+fn artifact_section_reads_minified_symbol_by_byte_span() {
+    let dir = temp_repo("artifact_section_byte_span");
+    let path = dir.join("app.min.js");
+    fs::write(
+        &path,
+        format!(
+            "var a='{}';function targetFn(x){{return helper(x)+1}}function helper(x){{return x}}var b='{}';",
+            "x".repeat(800),
+            "y".repeat(800)
+        ),
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .arg(&path)
+        .args(["--artifact", "--section", "targetFn", "--budget", "500"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact section failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[artifact section]"), "{stdout}");
+    assert!(stdout.contains("artifact section: targetFn"), "{stdout}");
+    assert!(
+        stdout.contains("function targetFn(x){return helper(x)+1}"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("bytes"), "{stdout}");
+    assert!(!stdout.contains("outline (over limit)"), "{stdout}");
+    assert!(
+        !stdout.contains(&"x".repeat(300)),
+        "artifact section should not dump minified prefix:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(&"y".repeat(300)),
+        "artifact section should not dump minified suffix:\n{stdout}"
+    );
+}
+
+#[test]
+fn artifact_section_reads_variable_declaration_context() {
+    let dir = temp_repo("artifact_section_variable_context");
+    let path = dir.join("loader.min.js");
+    fs::write(&path, "function boot(){return 1}var define,AMDLoader;(function(u){define=u})(AMDLoader||(AMDLoader={}))").unwrap();
+
+    let output = srcwalk()
+        .arg(&path)
+        .args(["--artifact", "--section", "define", "--budget", "500"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact variable section failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("artifact section: define"), "{stdout}");
+    assert!(stdout.contains("var define,AMDLoader"), "{stdout}");
+}
+
+#[test]
+fn artifact_section_reads_synthetic_iife_by_byte_span() {
+    let dir = temp_repo("artifact_section_iife_span");
+    let path = dir.join("jqueryish.min.js");
+    fs::write(
+        &path,
+        "(function(e,t){function inner(){return t}return inner()})(window,document);",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .arg(&path)
+        .args(["--artifact", "--section", "<iife@1>", "--budget", "500"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact iife section failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("artifact section: <iife@1>"), "{stdout}");
+    assert!(
+        stdout.contains("function(e,t){function inner(){return t}return inner()}"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("outline (over limit)"), "{stdout}");
+}
+
+#[test]
+fn artifact_section_reads_explicit_byte_range() {
+    let dir = temp_repo("artifact_section_bytes");
+    let path = dir.join("bundle.min.js");
+    fs::write(&path, "function a(){return 1}function b(){return a()+2}").unwrap();
+
+    let content = fs::read_to_string(&path).unwrap();
+    let start = content.find("a()+2").unwrap();
+    let end = start + "a()+2".len();
+    let section = format!("bytes:{start}-{end}");
+
+    let output = srcwalk()
+        .arg(&path)
+        .args(["--artifact", "--section", &section, "--budget", "500"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact byte section failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("artifact bytes: {start}-{end}")),
+        "{stdout}"
+    );
+    assert!(stdout.contains("a()+2"), "{stdout}");
+}
+
+#[test]
+fn artifact_callers_expand_uses_byte_window() {
+    let dir = temp_repo("artifact_callers_expand_window");
+    fs::write(
+        dir.join("bundle.min.js"),
+        format!(
+            "var a='{}';function login(){{return 1}}function boot(){{return login()}}var b='{}';",
+            "x".repeat(800),
+            "y".repeat(800)
+        ),
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args(["callers", "login", "--artifact", "--expand=1", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact callers expand failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("  bundle.min.js\n"), "{stdout}");
+    assert!(stdout.contains("    [fn] boot:1 args=0"), "{stdout}");
+    assert!(stdout.contains("bytes"), "{stdout}");
+    assert!(stdout.contains("login()"), "{stdout}");
+    assert!(stdout.contains("byte-window evidence"), "{stdout}");
+    assert!(
+        !stdout.contains(&"x".repeat(300)),
+        "artifact expand should not dump minified prefix:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(&"y".repeat(300)),
+        "artifact expand should not dump minified suffix:\n{stdout}"
+    );
+}
+
+#[test]
+fn artifact_callees_detailed_uses_byte_window_and_bytes_section_hint() {
+    let dir = temp_repo("artifact_callees_detailed_window");
+    fs::write(
+        dir.join("bundle.min.js"),
+        format!(
+            "var a='{}';function login(x){{return x}}function boot(){{return login(42)}}var b='{}';",
+            "x".repeat(800),
+            "y".repeat(800)
+        ),
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args(["callees", "boot", "--artifact", "--detailed", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact callees detailed failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--section bytes:"), "{stdout}");
+    assert!(stdout.contains("```js"), "{stdout}");
+    assert!(stdout.contains("login(42)"), "{stdout}");
+    assert!(
+        !stdout.contains(&"x".repeat(300)),
+        "artifact detailed should not dump minified prefix:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(&"y".repeat(300)),
+        "artifact detailed should not dump minified suffix:\n{stdout}"
+    );
+}
 #[test]
 fn artifact_relation_depth_is_rejected_until_supported() {
     let output = srcwalk()
@@ -625,4 +855,105 @@ fn artifact_mode_reenables_only_artifact_output_dirs() {
         !stdout.contains("node_modules") && !stdout.contains("DependencyBundle"),
         "artifact search should not re-enable dependency trees:\n{stdout}"
     );
+}
+
+#[test]
+fn artifact_find_usage_shows_byte_drilldown() {
+    let dir = temp_repo("artifact_find_byte_drilldown");
+    fs::write(
+        dir.join("bundle.min.js"),
+        format!(
+            "var a='{}';function read(k){{return window.localStorage.getItem(k)}}var b='{}';",
+            "x".repeat(500),
+            "y".repeat(500)
+        ),
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args(["find", "localStorage", "--artifact", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact find failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("localStorage.getItem"), "{stdout}");
+    assert!(stdout.contains("--section bytes:"), "{stdout}");
+    assert!(
+        !stdout.contains(&"x".repeat(200)),
+        "artifact find should not dump minified prefix:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(&"y".repeat(200)),
+        "artifact find should not dump minified suffix:\n{stdout}"
+    );
+}
+
+#[test]
+fn artifact_flow_shows_calls_callers_and_byte_drilldowns() {
+    let dir = temp_repo("artifact_flow_slice");
+    fs::write(
+        dir.join("bundle.min.js"),
+        "function helper(x){return x+1}function target(y){return helper(y)}function boot(){return target(1)}",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args(["flow", "target", "--artifact", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact flow failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("# Slice: target — artifact flow"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("-> calls (artifact)"), "{stdout}");
+    assert!(stdout.contains("helper"), "{stdout}");
+    assert!(stdout.contains("<- callers (artifact)"), "{stdout}");
+    assert!(stdout.contains("--section bytes:"), "{stdout}");
+    assert!(stdout.contains("byte-level bundle evidence"), "{stdout}");
+}
+
+#[test]
+fn artifact_impact_shows_byte_level_blast_radius() {
+    let dir = temp_repo("artifact_impact_slice");
+    fs::write(
+        dir.join("bundle.min.js"),
+        "function target(y){return y+1}function a(){return target(1)}function b(){return target(2)}",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args(["impact", "target", "--artifact", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "artifact impact failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("# Slice: target — artifact impact"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("= definitions"), "{stdout}");
+    assert!(
+        stdout.contains("<- artifact name-matched calls from"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  bundle.min.js\n"), "{stdout}");
+    assert!(stdout.contains("bytes:"), "{stdout}");
+    assert!(stdout.contains("not source-level blast radius"), "{stdout}");
 }

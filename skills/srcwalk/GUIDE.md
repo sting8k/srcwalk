@@ -59,10 +59,22 @@ srcwalk callees <symbol> --detailed --scope <dir>
 srcwalk callees <symbol> --depth 2 --scope <dir>
 ```
 
-Use `deps` for imports and dependents. Do not grep import/use/require.
+Use `deps` for file-level imports, local symbol deps, and dependents. Run it before editing, moving, deleting, or explaining cross-file coupling for a file. Do not grep import/use/require.
 
 ```bash
 srcwalk deps <file>
+```
+
+Use `flow` for a quick bidirectional slice around a symbol before deep-diving. It combines nearby upstream/downstream evidence; verify details with callers/callees/deps/path reads.
+
+```bash
+srcwalk flow <symbol> --scope <dir>
+```
+
+Use `impact` before changing, removing, renaming, or publicizing a symbol. It is a fast blast-radius scan; verify broad or risky results with callers/deps.
+
+```bash
+srcwalk impact <symbol> --scope <dir>
 ```
 
 Use path reads only after srcwalk gives a path/line/range or you already know the target.
@@ -73,12 +85,6 @@ srcwalk <path>:123-150
 srcwalk <path> --section <symbol>
 ```
 
-Use `flow` and `impact` only for quick triage; verify claims with callers/callees/deps/path reads.
-
-```bash
-srcwalk flow <symbol> --scope <dir>
-srcwalk impact <symbol> --scope <dir>
-```
 
 ## Replace shell chains
 
@@ -143,15 +149,24 @@ srcwalk find TranslateRequest --scope internal/runtime/executor --filter kind:fn
 srcwalk find TranslateRequest --scope .
 ```
 
-Use `callers` for call-site evidence. Use `deps` when a symbol may be imported from another file/package.
+Use `flow` first when you need a quick symbol slice, then use `callers`/`callees` for exact edges. Use `deps` when file coupling/imports/dependents matter. Use `impact` before edits that may break callers or public API.
 
 ## Artifact routes
+
+Use `--artifact` for generated/bundled/minified JS/TS, vendor `dist` bundles, or when a JS/TS read says `minified artifact?`. Artifact mode gives byte-span evidence instead of useless line-1 ranges.
 
 ```bash
 # JS/TS bundles
 srcwalk map --artifact --scope <dir>
 srcwalk find <query> --artifact --scope <dir>
+srcwalk flow <symbol> --artifact --scope <dir>
+srcwalk impact <symbol> --artifact --scope <dir>
+srcwalk callers <symbol> --artifact --expand=1 --scope <dir>
+srcwalk callees <symbol> --artifact --detailed --scope <dir>
 srcwalk <path> --artifact
+srcwalk <path> --artifact --section <symbol>
+srcwalk <path> --artifact --section bytes:<start>-<end>
+
 ```
 
 ## Escalation
@@ -159,11 +174,13 @@ srcwalk <path> --artifact
 1. Orientation: `srcwalk map --scope <dir>`.
 2. Symbol/text: `srcwalk find <query> --scope <dir>`.
 3. Filenames: `srcwalk files '<glob>' --scope <dir>`.
-4. Upstream: `srcwalk callers <symbol> --scope <dir>`.
-5. Downstream: `srcwalk callees <symbol> --detailed --scope <dir>`.
-6. Imports/dependents: `srcwalk deps <file>`.
-7. Evidence: `srcwalk <path>:<line|start-end>` or `srcwalk <path> --section <symbol>`.
-8. Raw text confirmation: `rg`.
+4. Quick symbol slice: `srcwalk flow <symbol> --scope <dir>`.
+5. Upstream exact edges: `srcwalk callers <symbol> --scope <dir>`.
+6. Downstream exact edges: `srcwalk callees <symbol> --detailed --scope <dir>`.
+7. File coupling/blast radius: `srcwalk deps <file>`.
+8. Pre-edit symbol blast radius: `srcwalk impact <symbol> --scope <dir>`.
+9. Evidence: `srcwalk <path>:<line|start-end>`, `srcwalk <path> --section <symbol>`, or artifact byte evidence with `srcwalk <path> --artifact --section bytes:<start>-<end>`.
+10. Raw text confirmation: `rg`.
 
 ## Supported structural languages
 

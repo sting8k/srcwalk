@@ -36,19 +36,20 @@ pub(super) fn format_single_match(
             m.line
         );
 
-        // Skip outline for small files — the expanded code speaks for itself.
-        // For larger files, show outline context only once per file to avoid
-        // repeated imports/module headers across consecutive matches.
-        if m.file_lines < 50 {
-            let _ = write!(out, "\n→ [{}]   {}", m.line, m.text);
-        } else if context_shown_files.insert(m.path.clone()) {
+        let _ = write!(out, "\n→ [{}]   {}", m.line, m.text);
+
+        // Artifact byte snippets are already centered evidence; do not replace them with outline context.
+        if crate::artifact::is_artifact_js_ts_file(&m.path) && m.text.contains("--section bytes:") {
+            // Exact byte evidence already printed above.
+            // Skip outline for small files — the expanded code speaks for itself.
+            // For larger files, show outline context only once per file to avoid
+            // repeated imports/module headers across consecutive matches.
+        } else if m.file_lines >= 50 && context_shown_files.insert(m.path.clone()) {
             if let Some(context) = outline_context_for_match(&m.path, m.line, cache) {
                 out.push_str(&context);
-            } else {
-                let _ = write!(out, "\n→ [{}]   {}", m.line, m.text);
             }
-        } else {
-            let _ = write!(out, "\n→ [{}]   {} [context shown earlier]", m.line, m.text);
+        } else if m.file_lines >= 50 {
+            out.push_str(" [context shown earlier]");
         }
     }
 

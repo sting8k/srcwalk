@@ -426,7 +426,29 @@ pub fn run_flow(
     depth: Option<usize>,
     filter: Option<&str>,
 ) -> Result<String, SrcwalkError> {
-    commands::flow::run_flow(target, scope, budget_tokens, cache, depth, filter)
+    commands::flow::run_flow(
+        target,
+        scope,
+        budget_tokens,
+        cache,
+        depth,
+        filter,
+        ArtifactMode::Source,
+    )
+}
+
+/// Compact flow slice with optional artifact evidence.
+#[allow(clippy::too_many_arguments)]
+pub fn run_flow_with_artifact(
+    target: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    cache: &OutlineCache,
+    depth: Option<usize>,
+    filter: Option<&str>,
+    artifact: ArtifactMode,
+) -> Result<String, SrcwalkError> {
+    commands::flow::run_flow(target, scope, budget_tokens, cache, depth, filter, artifact)
 }
 
 /// Lab: compact upstream blast-radius slice for changing a symbol.
@@ -436,7 +458,18 @@ pub fn run_impact(
     budget_tokens: Option<u64>,
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
-    commands::impact::run_impact(target, scope, budget_tokens, cache)
+    commands::impact::run_impact(target, scope, budget_tokens, cache, ArtifactMode::Source)
+}
+
+/// Compact impact slice with optional artifact evidence.
+pub fn run_impact_with_artifact(
+    target: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    cache: &OutlineCache,
+    artifact: ArtifactMode,
+) -> Result<String, SrcwalkError> {
+    commands::impact::run_impact(target, scope, budget_tokens, cache, artifact)
 }
 
 /// Analyze blast-radius dependencies of a file.

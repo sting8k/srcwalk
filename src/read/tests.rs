@@ -199,11 +199,35 @@ fn section_budget_controls_token_degradation() {
         "expected budget limit in footer: {low_budget}"
     );
 
+    assert!(
+        low_budget.contains("use narrower --section or --budget <N>"),
+        "non-artifact source files should keep generic over-limit advice: {low_budget}"
+    );
+
     let high_budget =
         read_file_with_budget(&path, Some("noisy"), false, Some(5_000), &cache).unwrap();
     assert!(
         high_budget.contains("[section]") && high_budget.contains("padding padding"),
         "expected high budget to return source: {high_budget}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn minified_js_section_over_limit_suggests_artifact_mode() {
+    let path = std::env::temp_dir().join("srcwalk_minified_section_hint.js");
+    let padding = "x".repeat(4_000);
+    std::fs::write(&path, format!("function target(){{return '{padding}'}}")).unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_file_with_budget(&path, Some("target"), false, Some(100), &cache).unwrap();
+    assert!(out.contains("[section, outline (over limit)]"), "{out}");
+    assert!(out.contains("minified artifact?"), "{out}");
+    assert!(out.contains("--artifact --section target"), "{out}");
+    assert!(
+        out.contains("--artifact --section bytes:<start>-<end>"),
+        "{out}"
     );
 
     let _ = std::fs::remove_file(&path);

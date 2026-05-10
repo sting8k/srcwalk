@@ -4,6 +4,7 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+
 ## [0.4.0] - 2026-05-09
 
 ### Added

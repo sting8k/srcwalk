@@ -12,6 +12,42 @@ const SMART_TRUNCATE_MIN_LINES: u32 = 80;
 /// Maximum number of lines to keep after truncation.
 const SMART_TRUNCATE_MAX_LINES: usize = 40;
 
+/// Maximum inline text kept for a single search-hit line.
+pub(crate) const SEARCH_MATCH_LINE_CHARS: usize = 360;
+
+/// Compact one matched source line for inline search evidence.
+pub(crate) fn compact_match_line(line: &str, pattern: &str, is_regex: bool) -> String {
+    if line.chars().count() <= SEARCH_MATCH_LINE_CHARS {
+        return line.to_string();
+    }
+    if !is_regex {
+        if let Some(hit) = line.to_lowercase().find(&pattern.to_lowercase()) {
+            return centered_line_window(line, hit, pattern.len(), SEARCH_MATCH_LINE_CHARS);
+        }
+    }
+    let end = line
+        .char_indices()
+        .nth(SEARCH_MATCH_LINE_CHARS)
+        .map_or(line.len(), |(idx, _)| idx);
+    format!("{}…", line[..end].trim_end())
+}
+
+fn centered_line_window(line: &str, hit_start: usize, hit_len: usize, max_chars: usize) -> String {
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let hit_char = chars.partition_point(|(idx, _)| *idx < hit_start);
+    let half = max_chars / 2;
+    let start_char = hit_char.saturating_sub(half);
+    let end_char = (start_char + max_chars).min(chars.len());
+    let start_byte = chars.get(start_char).map_or(0, |(idx, _)| *idx);
+    let end_byte = chars
+        .get(end_char)
+        .map_or_else(|| line.len(), |(idx, _)| *idx)
+        .max((hit_start + hit_len).min(line.len()));
+    let prefix = if start_byte > 0 { "…" } else { "" };
+    let suffix = if end_byte < line.len() { "…" } else { "" };
+    format!("{prefix}{}{suffix}", line[start_byte..end_byte].trim())
+}
+
 /// Select diverse/important lines from a function body.
 ///
 /// Returns `None` if the range is smaller than [`SMART_TRUNCATE_MIN_LINES`]

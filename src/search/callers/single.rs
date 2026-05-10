@@ -56,6 +56,8 @@ pub struct CallerMatch {
     pub call_text: String,
     /// Line range of the calling function (for expand).
     pub caller_range: Option<(u32, u32)>,
+    /// Byte range of the exact call expression, used for artifact expand windows.
+    pub call_byte_range: Option<(usize, usize)>,
     /// Selector prefix before `.method()`/`.function()` (for example `sdktranslator`).
     /// `None` for bare function calls.
     pub receiver: Option<String>,
@@ -156,6 +158,7 @@ pub fn find_callers_with_artifact(
             };
 
             let file_type = detect_file_type(path);
+
             if !is_artifact && !bloom.contains(path, mtime, content, target) {
                 return ignore::WalkState::Continue;
             }
@@ -253,7 +256,7 @@ fn find_callers_treesitter(
                 let line = cap.node.start_position().row as u32 + 1;
 
                 // Get the call text (the whole call expression, not just the callee)
-                let call_node = cap.node.parent().unwrap_or(cap.node);
+                let call_node = find_call_expression_node(cap.node);
                 let same_line = call_node.start_position().row == call_node.end_position().row;
                 let call_text: String = if same_line {
                     let row = call_node.start_position().row;
@@ -286,6 +289,7 @@ fn find_callers_treesitter(
                     calling_function,
                     call_text,
                     caller_range,
+                    call_byte_range: Some((call_node.start_byte(), call_node.end_byte())),
                     receiver,
                     prefix_kind,
                     arg_count,
@@ -427,6 +431,7 @@ pub(crate) fn find_callers_batch_with_artifact(
             };
 
             let file_type = detect_file_type(path);
+
             if !is_artifact
                 && !targets
                     .iter()
@@ -531,7 +536,7 @@ fn find_callers_treesitter_batch(
                 let line = cap.node.start_position().row as u32 + 1;
 
                 // Get the call text (the whole call expression, not just the callee)
-                let call_node = cap.node.parent().unwrap_or(cap.node);
+                let call_node = find_call_expression_node(cap.node);
                 let same_line = call_node.start_position().row == call_node.end_position().row;
                 let call_text: String = if same_line {
                     let row = call_node.start_position().row;
@@ -562,6 +567,7 @@ fn find_callers_treesitter_batch(
                         calling_function,
                         call_text,
                         caller_range,
+                        call_byte_range: Some((call_node.start_byte(), call_node.end_byte())),
                         receiver,
                         prefix_kind,
                         arg_count,
@@ -718,6 +724,20 @@ fn go_import_prefix_from_line(line: &str) -> Option<String> {
 }
 
 /// Count arguments at a call site.
+fn find_call_expression_node(mut node: tree_sitter::Node) -> tree_sitter::Node {
+    let original = node;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "call_expression" | "new_expression" => return parent,
+            "member_expression" | "field_expression" | "scoped_identifier" => {
+                node = parent;
+            }
+            _ => break,
+        }
+    }
+    node.parent().unwrap_or(original)
+}
+
 fn extract_arg_count(call_node: tree_sitter::Node) -> Option<u8> {
     // Try the node itself, then its parent (for languages where the callee is captured
     // inside a member_access/field_expression that is a child of the actual call node).
@@ -930,58 +950,67 @@ pub fn search_callers_expanded_with_artifact(
     sorted_callers.truncate(max_matches);
     let shown = sorted_callers.len();
 
+    let js_ts_artifact_callers = artifact.enabled()
+        && sorted_callers
+            .iter()
+            .any(|caller| crate::artifact::is_artifact_js_ts_file(&caller.path));
     // Format the output as semantic-compact call edges.
     let mut output = format!(
         "# Slice: {target} — {total} call site{}\n\n[symbol] {target}\n<- calls\n",
         if total == 1 { "" } else { "s" }
     );
 
-    for (i, caller) in sorted_callers.iter().enumerate() {
-        let caller_kind = "fn";
-        let _ = write!(
-            output,
-            "  [{caller_kind}] {} {}:{}",
-            caller.calling_function,
-            rel_nonempty(&caller.path, scope),
-            caller.line,
-        );
-        if let Some(ref prefix) = caller.receiver {
-            if let Some(kind) = caller.prefix_kind {
-                let _ = write!(output, " prefix={prefix}({})", kind.suffix());
-            } else {
-                let _ = write!(output, " prefix={prefix}");
-            }
-        }
-        if let Some(argc) = caller.arg_count {
-            let _ = write!(output, " args={argc}");
-        }
-        let _ = writeln!(output);
+    if js_ts_artifact_callers {
+        append_artifact_callers_grouped(&mut output, &sorted_callers, scope, expand);
+    } else {
+        for (i, caller) in sorted_callers.iter().enumerate() {
+            let caller_kind = "fn";
 
-        // Expand only when explicitly requested and we have the range.
-        if i < expand {
-            if let Some((start, end)) = caller.caller_range {
-                // Use cached content — no re-read needed.
-                // Show a compact window around the callsite (±2 lines)
-                // bounded by the enclosing function range.
-                let lines: Vec<&str> = caller.content.lines().collect();
-                let window_start = caller.line.saturating_sub(2).max(start);
-                let window_end = (caller.line + 2).min(end);
-                let start_idx = (window_start as usize).saturating_sub(1);
-                let end_idx = (window_end as usize).min(lines.len());
-
-                output.push_str("\n```\n");
-
-                for (idx, line) in lines[start_idx..end_idx].iter().enumerate() {
-                    let line_num = start_idx + idx + 1;
-                    let prefix = if line_num == caller.line as usize {
-                        "► "
-                    } else {
-                        "  "
-                    };
-                    let _ = writeln!(output, "{prefix}{line_num:4} │ {line}");
+            let _ = write!(
+                output,
+                "  [{caller_kind}] {} {}:{}",
+                caller.calling_function,
+                rel_nonempty(&caller.path, scope),
+                caller.line,
+            );
+            if let Some(ref prefix) = caller.receiver {
+                if let Some(kind) = caller.prefix_kind {
+                    let _ = write!(output, " prefix={prefix}({})", kind.suffix());
+                } else {
+                    let _ = write!(output, " prefix={prefix}");
                 }
+            }
+            if let Some(argc) = caller.arg_count {
+                let _ = write!(output, " args={argc}");
+            }
+            let _ = writeln!(output);
 
-                output.push_str("```\n");
+            // Expand only when explicitly requested and we have the range.
+            if i < expand {
+                if let Some((start, end)) = caller.caller_range {
+                    // Use cached content — no re-read needed.
+                    // Show a compact window around the callsite (±2 lines)
+                    // bounded by the enclosing function range.
+                    let lines: Vec<&str> = caller.content.lines().collect();
+                    let window_start = caller.line.saturating_sub(2).max(start);
+                    let window_end = (caller.line + 2).min(end);
+                    let start_idx = (window_start as usize).saturating_sub(1);
+                    let end_idx = (window_end as usize).min(lines.len());
+
+                    output.push_str("\n```\n");
+
+                    for (idx, line) in lines[start_idx..end_idx].iter().enumerate() {
+                        let line_num = start_idx + idx + 1;
+                        let prefix = if line_num == caller.line as usize {
+                            "► "
+                        } else {
+                            "  "
+                        };
+                        let _ = writeln!(output, "{prefix}{line_num:4} │ {line}");
+                    }
+
+                    output.push_str("```\n");
+                }
             }
         }
     }
@@ -1004,9 +1033,15 @@ pub fn search_callers_expanded_with_artifact(
     if !footer.is_empty() {
         footer.push('\n');
     }
-    footer.push_str(
-        "> Next: <path>:<line> | --expand[=N] | --count-by args|path | --filter 'args:N prefix:NAME' | --depth N.",
-    );
+    if js_ts_artifact_callers {
+        footer.push_str(
+            "> Next: --expand[=N] for byte-window evidence | --count-by args|path | --filter 'args:N prefix:NAME'.",
+        );
+    } else {
+        footer.push_str(
+            "> Next: <path>:<line> | --expand[=N] | --count-by args|path | --filter 'args:N prefix:NAME' | --depth N.",
+        );
+    }
     if artifact.enabled() {
         if let Some(note) = artifact.callers_note() {
             footer.push_str("\n> ");
@@ -1108,6 +1143,153 @@ pub fn search_callers_expanded_with_artifact(
         let _ = write!(output, "\n\n{footer}");
     }
     Ok(output)
+}
+
+fn append_artifact_callers_grouped(
+    output: &mut String,
+    callers: &[CallerMatch],
+    scope: &Path,
+    expand: usize,
+) {
+    let groups = artifact_caller_groups(callers);
+    let mut current_path: Option<String> = None;
+    for (idx, group) in groups.iter().enumerate() {
+        let rel = rel_nonempty(&group.path, scope);
+        if current_path.as_deref() != Some(rel.as_str()) {
+            current_path = Some(rel.clone());
+            let _ = writeln!(output, "  {rel}");
+        }
+        append_artifact_caller_group(output, group);
+        if idx < expand {
+            if let Some((start, end)) = group.callers[0].call_byte_range {
+                output.push_str(&format_artifact_call_window(group.callers[0], start, end));
+            }
+        }
+    }
+}
+
+struct ArtifactCallerGroup<'a> {
+    path: PathBuf,
+    calling_function: String,
+    line: u32,
+    receiver: Option<String>,
+    arg_count: Option<u8>,
+    callers: Vec<&'a CallerMatch>,
+}
+
+fn artifact_caller_groups(callers: &[CallerMatch]) -> Vec<ArtifactCallerGroup<'_>> {
+    let mut groups: Vec<ArtifactCallerGroup<'_>> = Vec::new();
+    for caller in callers {
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| same_artifact_caller_group(group.callers[0], caller))
+        {
+            group.callers.push(caller);
+        } else {
+            groups.push(ArtifactCallerGroup {
+                path: caller.path.clone(),
+                calling_function: caller.calling_function.clone(),
+                line: caller.line,
+                receiver: caller.receiver.clone(),
+                arg_count: caller.arg_count,
+                callers: vec![caller],
+            });
+        }
+    }
+    groups
+}
+
+fn same_artifact_caller_group(a: &CallerMatch, b: &CallerMatch) -> bool {
+    a.path == b.path
+        && a.calling_function == b.calling_function
+        && a.line == b.line
+        && a.receiver == b.receiver
+        && a.arg_count == b.arg_count
+}
+
+fn append_artifact_caller_group(output: &mut String, group: &ArtifactCallerGroup<'_>) {
+    let _ = write!(output, "    [fn] {}:{}", group.calling_function, group.line);
+    if group.callers.len() > 1 {
+        let _ = write!(output, " [{} calls]", group.callers.len());
+    }
+    if let Some(ref receiver) = group.receiver {
+        let _ = write!(output, " prefix={receiver}");
+    }
+    if let Some(argc) = group.arg_count {
+        let _ = write!(output, " args={argc}");
+    }
+
+    let ranges: Vec<_> = group
+        .callers
+        .iter()
+        .filter_map(|caller| caller.call_byte_range)
+        .collect();
+    if group.callers.len() == 1 {
+        if let Some((start, end)) = ranges.first() {
+            let _ = write!(output, " bytes:{start}-{end}");
+        }
+        let _ = writeln!(output);
+        return;
+    }
+
+    let _ = writeln!(output);
+    for (start, end) in ranges.iter().take(6) {
+        let _ = writeln!(output, "      bytes:{start}-{end}");
+    }
+    if ranges.len() > 6 {
+        let _ = writeln!(output, "      ... {} more byte ranges", ranges.len() - 6);
+    }
+}
+
+fn format_artifact_call_window(caller: &CallerMatch, start_byte: usize, end_byte: usize) -> String {
+    const CONTEXT: usize = 180;
+    const MAX_WINDOW: usize = 560;
+
+    let content = caller.content.as_str();
+    if start_byte >= end_byte || start_byte >= content.len() {
+        return String::new();
+    }
+    let end_byte = end_byte.min(content.len());
+    let mut window_start = start_byte.saturating_sub(CONTEXT);
+    let mut window_end = (end_byte + CONTEXT).min(content.len());
+    if window_end.saturating_sub(window_start) > MAX_WINDOW {
+        window_start = start_byte.saturating_sub(MAX_WINDOW / 3);
+        window_end = (end_byte + MAX_WINDOW / 3).min(content.len());
+    }
+    window_start = floor_char_boundary(content, window_start);
+    window_end = ceil_char_boundary(content, window_end);
+
+    let prefix = if window_start > 0 { "…" } else { "" };
+    let suffix = if window_end < content.len() {
+        "…"
+    } else {
+        ""
+    };
+    let snippet = content[window_start..window_end].trim();
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "\n```js\n// line {}, bytes {}-{}\n{prefix}{snippet}{suffix}\n```",
+        caller.line, start_byte, end_byte
+    );
+    out
+}
+
+fn floor_char_boundary(text: &str, mut idx: usize) -> usize {
+    idx = idx.min(text.len());
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn ceil_char_boundary(text: &str, mut idx: usize) -> usize {
+    idx = idx.min(text.len());
+    while idx < text.len() && !text.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx
 }
 
 fn format_callsite_counts(

@@ -56,16 +56,20 @@ pub(crate) fn run(config: RunConfig) {
     if config.artifact.enabled()
         && !matches!(
             config.mode,
-            Mode::Search | Mode::PathExact | Mode::Callers | Mode::Callees | Mode::Map
+            Mode::Search
+                | Mode::PathExact
+                | Mode::Callers
+                | Mode::Callees
+                | Mode::Map
+                | Mode::Flow
+                | Mode::Impact
         )
     {
-        eprintln!("error: --artifact currently supports file reads, find/search, map, direct callers, and direct callees only");
+        eprintln!("error: --artifact currently supports file reads, find/search, map, flow, impact, direct callers, and direct callees only");
         process::exit(2);
     }
-    if config.artifact.enabled() && config.expand > 0 {
-        eprintln!(
-            "error: --artifact does not support --expand yet; use --section on a matched file"
-        );
+    if config.artifact.enabled() && config.expand > 0 && !matches!(config.mode, Mode::Callers) {
+        eprintln!("error: --artifact --expand currently applies to callers only");
         process::exit(2);
     }
 
@@ -138,20 +142,27 @@ pub(crate) fn run(config: RunConfig) {
     }
 
     if matches!(config.mode, Mode::Flow) {
-        let result = srcwalk::run_flow(
+        let result = srcwalk::run_flow_with_artifact(
             &query,
             &scope,
             effective_budget,
             &cache,
             config.depth,
             config.filter.as_deref(),
+            config.artifact,
         );
         output::emit_result(result, &query, config.json);
         return;
     }
 
     if matches!(config.mode, Mode::Impact) {
-        let result = srcwalk::run_impact(&query, &scope, effective_budget, &cache);
+        let result = srcwalk::run_impact_with_artifact(
+            &query,
+            &scope,
+            effective_budget,
+            &cache,
+            config.artifact,
+        );
         output::emit_result(result, &query, config.json);
         return;
     }

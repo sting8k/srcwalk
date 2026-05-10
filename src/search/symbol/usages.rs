@@ -56,14 +56,12 @@ pub(super) fn find_usages_with_artifact(
 
             // Skip oversized files
             if let Ok(meta) = std::fs::metadata(path) {
-                let is_smali_or_asm = false;
-                if !is_smali_or_asm
-                    && meta.len()
-                        > if is_artifact {
-                            MAX_ARTIFACT_FILE_SIZE
-                        } else {
-                            500_000
-                        }
+                if meta.len()
+                    > if is_artifact {
+                        MAX_ARTIFACT_FILE_SIZE
+                    } else {
+                        500_000
+                    }
                 {
                     return ignore::WalkState::Continue;
                 }
@@ -81,7 +79,11 @@ pub(super) fn find_usages_with_artifact(
                     file_matches.push(Match {
                         path: path.to_path_buf(),
                         line: line_num as u32,
-                        text: line.trim_end().to_string(),
+                        text: crate::search::truncate::compact_match_line(
+                            line.trim_end(),
+                            query,
+                            false,
+                        ),
                         is_definition: false,
                         exact: line.contains(query),
                         file_lines,

@@ -55,14 +55,28 @@ pub(crate) fn run_path_exact_with_artifact(
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
     let path = resolve_exact_path(query, scope)?;
-    let output = read::read_file_with_budget(&path, section, full, budget_tokens, cache)?;
-    let output = with_artifact_read_label(output, ArtifactMode::from(artifact));
+    let artifact_mode = ArtifactMode::from(artifact);
+    let output = if artifact_mode.enabled() {
+        if let Some(symbol) = section {
+            if let Some(result) = artifact::read_js_ts_symbol_section(&path, symbol, budget_tokens)
+            {
+                result?
+            } else {
+                read::read_file_with_budget(&path, section, full, budget_tokens, cache)?
+            }
+        } else {
+            read::read_file_with_budget(&path, section, full, budget_tokens, cache)?
+        }
+    } else {
+        read::read_file_with_budget(&path, section, full, budget_tokens, cache)?
+    };
+    let output = with_artifact_read_label(output, artifact_mode);
     let output = if section.is_none() && !full {
-        artifact::add_anchors(output, &path, ArtifactMode::from(artifact))
+        artifact::add_anchors(output, &path, artifact_mode)
     } else {
         output
     };
-    let output = with_artifact_note(output, ArtifactMode::from(artifact));
+    let output = with_artifact_note(output, artifact_mode);
     Ok(match budget_tokens {
         Some(b) => budget::apply_preserving_footer(&output, b),
         None => output,

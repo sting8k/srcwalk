@@ -87,7 +87,7 @@ benchmark/             Evaluation harness (26 tasks, 4 repos).
 
 ## Languages
 
-Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir, and Kotlin. Unsupported languages still work for reading files, but structural facts may be unavailable.
+Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir, Kotlin.
 
 ## Build & test
 

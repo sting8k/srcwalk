@@ -61,10 +61,12 @@ pub(super) fn format_definition_semantic_match(
     }
     if m.impl_target.is_some() {
         format_relation_definition_match(m, "impl", &path, out);
+        append_artifact_definition_snippet(m, out);
         return;
     }
     if m.base_target.is_some() {
         format_relation_definition_match(m, "base", &path, out);
+        append_artifact_definition_snippet(m, out);
         return;
     }
     if let Some(candidate) = semantic_candidate_for_match(m, cache) {
@@ -118,6 +120,20 @@ pub(super) fn format_definition_semantic_match(
             let _ = write!(out, "\n  [{kind}] {path}:{}", m.line);
         }
     }
+    append_artifact_definition_snippet(m, out);
+}
+
+fn append_artifact_definition_snippet(m: &Match, out: &mut String) {
+    if !crate::artifact::is_artifact_js_ts_file(&m.path)
+        || (!m.text.contains('…') && m.text.len() <= 220)
+    {
+        return;
+    }
+    let snippet = m.text.trim();
+    if snippet.is_empty() {
+        return;
+    }
+    let _ = write!(out, "\n    → {snippet}");
 }
 
 pub(super) fn format_relation_definition_match(
@@ -153,7 +169,6 @@ fn structured_outline_entries(path: &Path, cache: &OutlineCache) -> Option<Vec<O
     }
     let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let content = fs::read_to_string(path).ok()?;
-
     let ts_lang = crate::lang::outline::outline_language(lang)?;
     let tree = cache.get_or_parse(path, mtime, &content, &ts_lang)?;
     let lines: Vec<&str> = content.lines().collect();

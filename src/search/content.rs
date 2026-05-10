@@ -116,7 +116,11 @@ pub fn search_with_artifact(
                     file_matches.push(Match {
                         path: path.to_path_buf(),
                         line: line_num as u32,
-                        text: line.trim_end().to_string(),
+                        text: crate::search::truncate::compact_match_line(
+                            line.trim_end(),
+                            pattern,
+                            is_regex,
+                        ),
                         is_definition: false,
                         exact: false,
                         file_lines,

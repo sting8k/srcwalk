@@ -75,24 +75,51 @@ fn format_compact_facet_matches(
     cache: &OutlineCache,
     out: &mut String,
 ) {
+    let mut grouped: IndexMap<&Path, Vec<&Match>> = IndexMap::new();
     for m in matches {
         if m.is_definition {
             semantic::format_definition_semantic_match(m, scope, cache, out);
         } else {
+            grouped.entry(m.path.as_path()).or_default().push(m);
+        }
+    }
+
+    for (path, group) in grouped {
+        if group.len() == 1 {
+            format_compact_non_definition_match(group[0], scope, out);
+            continue;
+        }
+        let noun = non_definition_group_noun(path);
+        let _ = write!(
+            out,
+            "\n  {} [{} {noun}]",
+            rel_nonempty(path, scope),
+            group.len()
+        );
+        for m in group {
             let kind = if m.in_comment {
                 "comment"
             } else {
                 non_definition_label(m)
             };
-            let _ = write!(
-                out,
-                "\n  [{kind}] {}:{} | {}",
-                rel_nonempty(&m.path, scope),
-                m.line,
-                m.text.trim()
-            );
+            let _ = write!(out, "\n    [{kind}] :{} | {}", m.line, m.text.trim());
         }
     }
+}
+
+fn format_compact_non_definition_match(m: &Match, scope: &Path, out: &mut String) {
+    let kind = if m.in_comment {
+        "comment"
+    } else {
+        non_definition_label(m)
+    };
+    let _ = write!(
+        out,
+        "\n  [{kind}] {}:{} | {}",
+        rel_nonempty(&m.path, scope),
+        m.line,
+        m.text.trim()
+    );
 }
 
 /// Groups consecutive usage matches in the same enclosing function to reduce token noise.

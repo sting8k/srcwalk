@@ -323,6 +323,7 @@ fn filter_call_sites_matches_exact_callee() {
             args: vec!["1".to_string()],
             return_var: Some("value".to_string()),
             is_return: false,
+            call_byte_range: None,
         },
         CallSite {
             line: 2,
@@ -332,6 +333,7 @@ fn filter_call_sites_matches_exact_callee() {
             args: vec!["value".to_string()],
             return_var: None,
             is_return: false,
+            call_byte_range: None,
         },
     ];
 

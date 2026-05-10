@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::cache::OutlineCache;
 use crate::commands::call_format::format_call_site;
-use crate::commands::context::apply_optional_budget;
+use crate::commands::context::{apply_optional_budget, ArtifactMode};
 use crate::commands::find::symbol_or_file_suggestion;
 use crate::error::SrcwalkError;
 use crate::{format, index, lang, search, types};
@@ -15,8 +15,13 @@ pub(crate) fn run_flow(
     cache: &OutlineCache,
     depth: Option<usize>,
     filter: Option<&str>,
+    artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
     use std::fmt::Write as _;
+
+    if artifact.enabled() {
+        return run_artifact_flow(target, scope, budget_tokens, cache, filter, artifact);
+    }
 
     let bloom = index::bloom::BloomFilterCache::new();
     let def_match = find_primary_definition(target, scope)?;
@@ -114,6 +119,142 @@ pub(crate) fn run_flow(
     }
     out.push_str("\n> Caveat: flow output capped.\n> Next: use `srcwalk callees <symbol> --detailed` or `srcwalk callers <symbol>`.");
     Ok(apply_optional_budget(out, budget_tokens))
+}
+
+fn run_artifact_flow(
+    target: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    cache: &OutlineCache,
+    filter: Option<&str>,
+    artifact: ArtifactMode,
+) -> Result<String, SrcwalkError> {
+    use std::fmt::Write as _;
+
+    let bloom = index::bloom::BloomFilterCache::new();
+    let def_match = find_primary_definition_with_artifact(target, scope, artifact)?;
+    let content = std::fs::read_to_string(&def_match.path).map_err(|e| SrcwalkError::IoError {
+        path: def_match.path.clone(),
+        source: e,
+    })?;
+    let types::FileType::Code(lang) = lang::detect_file_type(&def_match.path) else {
+        return Ok(format!(
+            "# Slice: {target} — artifact flow\n\n(not a code file)"
+        ));
+    };
+
+    let rel = format::rel_nonempty(&def_match.path, scope);
+    let mut out = format!(
+        "# Slice: {target} — artifact flow\n\n[symbol] {target} {rel}:{}\n",
+        def_match.line
+    );
+    let _ = writeln!(
+        out,
+        "  section: srcwalk {} --artifact --section {}",
+        def_match.path.display(),
+        target
+    );
+
+    let mut sites = search::callees::extract_call_sites_for_artifact_target(
+        &content,
+        lang,
+        target,
+        def_match.def_range,
+    );
+    let total_sites = sites.len();
+    sites = search::callees::filter_call_sites(sites, filter)?;
+    if let Some(filter) = filter {
+        let _ = writeln!(out, "\n-> calls (artifact, filtered {filter})");
+    } else {
+        out.push_str("\n-> calls (artifact)\n");
+    }
+    if sites.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for site in sites.iter().take(12) {
+            append_artifact_call_site(&mut out, site);
+        }
+        if sites.len() > 12 {
+            let _ = writeln!(out, "  ... {} more call sites", sites.len() - 12);
+        }
+    }
+
+    if let Ok(mut callers) = search::callers::find_callers_with_artifact(
+        target,
+        scope,
+        &bloom,
+        None,
+        Some(cache),
+        artifact,
+    ) {
+        callers.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+        if !callers.is_empty() {
+            out.push_str("\n<- callers (artifact)\n");
+            let mut current_path: Option<String> = None;
+            for caller in callers.iter().take(8) {
+                let rel_c = format::rel_nonempty(&caller.path, scope);
+                if current_path.as_deref() != Some(rel_c.as_str()) {
+                    current_path = Some(rel_c.clone());
+                    let _ = writeln!(out, "  {rel_c}");
+                }
+                let _ = write!(out, "    [fn] {}:{}", caller.calling_function, caller.line);
+                if let Some((start, end)) = caller.call_byte_range {
+                    let _ = write!(out, "  bytes:{start}-{end}");
+                }
+                let _ = writeln!(out);
+            }
+            if callers.len() > 8 {
+                let _ = writeln!(out, "  ... {} more callers", callers.len() - 8);
+            }
+        }
+    }
+
+    if filter.is_some() {
+        let _ = write!(
+            out,
+            "\n> Note: filter matched {}/{} call sites. Qualifiers: callee:NAME.",
+            sites.len(),
+            total_sites
+        );
+    }
+    out.push_str(
+        "\n> Caveat: artifact flow is byte-level bundle evidence, not sourcemap/source semantics.",
+    );
+    out.push_str("\n> Next: use `srcwalk <path> --artifact --section <symbol|bytes:start-end>`, `callers --artifact --expand=1`, or `callees --artifact --detailed`.");
+    if let Some(note) = artifact.callees_note() {
+        out.push_str("\n> ");
+        out.push_str(note);
+    }
+    Ok(apply_optional_budget(out, budget_tokens))
+}
+
+fn append_artifact_call_site(out: &mut String, site: &search::callees::CallSite) {
+    use std::fmt::Write as _;
+
+    let _ = write!(out, "  [call] L{} {}", site.line, site.callee);
+    if !site.args.is_empty() {
+        let _ = write!(out, " args={}", site.args.len());
+    }
+    if let Some((start, end)) = site.call_byte_range {
+        let _ = write!(out, "  --section bytes:{start}-{end}");
+    }
+    let _ = writeln!(out);
+}
+
+fn find_primary_definition_with_artifact(
+    target: &str,
+    scope: &Path,
+    artifact: ArtifactMode,
+) -> Result<types::Match, SrcwalkError> {
+    let raw = search::search_symbol_raw_with_artifact(target, scope, None, artifact)?;
+    raw.matches
+        .into_iter()
+        .find(|m| m.is_definition && m.def_range.is_some())
+        .ok_or_else(|| SrcwalkError::NoMatches {
+            query: target.to_string(),
+            scope: scope.to_path_buf(),
+            suggestion: symbol_or_file_suggestion(scope, target, None),
+        })
 }
 
 fn find_primary_definition(target: &str, scope: &Path) -> Result<types::Match, SrcwalkError> {

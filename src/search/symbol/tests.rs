@@ -439,3 +439,74 @@ fn artifact_anchor_definitions_preserve_exact_metadata() {
     assert_eq!(def.def_weight, 95);
     assert!(def.def_range.is_none());
 }
+
+#[test]
+fn batch_search_matches_single_search_for_defs_usages_and_comments() {
+    use std::collections::BTreeSet;
+
+    fn keys(result: &SearchResult) -> BTreeSet<(String, u32, bool, bool, Option<String>)> {
+        result
+            .matches
+            .iter()
+            .map(|m| {
+                (
+                    m.path.file_name().unwrap().to_string_lossy().into_owned(),
+                    m.line,
+                    m.is_definition,
+                    m.in_comment,
+                    m.def_name.clone(),
+                )
+            })
+            .collect()
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        r#"fn alpha() {
+    beta();
+}
+
+fn beta() {}
+
+// beta appears in a comment-only usage
+"#,
+    )
+    .unwrap();
+
+    let queries = ["alpha", "beta"];
+    let batch = search_batch(&queries, dir.path(), None, None, Some("*.rs")).unwrap();
+    assert_eq!(batch.len(), queries.len());
+
+    for (idx, query) in queries.iter().enumerate() {
+        let single = search(query, dir.path(), None, None, Some("*.rs")).unwrap();
+        assert_eq!(
+            keys(&batch[idx]),
+            keys(&single),
+            "batch result diverged from single-symbol search for {query}\nbatch: {:?}\nsingle: {:?}",
+            batch[idx],
+            single
+        );
+        assert_eq!(
+            batch[idx].definitions, single.definitions,
+            "definitions diverged for {query}"
+        );
+        assert_eq!(
+            batch[idx].usages, single.usages,
+            "usages diverged for {query}"
+        );
+        assert_eq!(
+            batch[idx].comments, single.comments,
+            "comments diverged for {query}"
+        );
+    }
+
+    assert!(
+        batch[1]
+            .matches
+            .iter()
+            .any(|m| m.in_comment && !m.is_definition),
+        "expected beta comment usage to be tagged, got: {:?}",
+        batch[1]
+    );
+}

@@ -49,6 +49,10 @@ export async function shutdown(conn: Conn, watcher: Watcher) {
         "expected honest heading, got:\n{stdout}"
     );
     assert!(
+        stdout.contains("  sample.ts\n    [fn] shutdown:"),
+        "expected source impact rows grouped under path, got:\n{stdout}"
+    );
+    assert!(
         stdout.contains("[group] receiver=conn count=1"),
         "expected conn receiver group, got:\n{stdout}"
     );

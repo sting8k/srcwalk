@@ -20,7 +20,7 @@ fn temp_repo(name: &str) -> PathBuf {
 }
 
 #[test]
-fn path_like_missing_query_fails_fast_without_fallback_search() {
+fn path_like_query_searches_content_before_missing_path_error() {
     let dir = temp_repo("path_note");
     fs::write(
         dir.join("notes.txt"),
@@ -35,19 +35,14 @@ fn path_like_missing_query_fails_fast_without_fallback_search() {
         .output()
         .unwrap();
 
-    assert!(!out.status.success(), "expected missing path to fail");
-    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("not found")
-            && stderr.contains("looks like a file path")
-            && stderr.contains("Next: check the path or scope")
-            && !stderr.contains("interpreting as search"),
-        "expected path-like not-found guidance, got:\n{stderr}"
+        out.status.success(),
+        "path-like query with content match should search before missing-path error"
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.is_empty(),
-        "missing path should not emit fallback search output, got:\n{stdout}"
+        stdout.contains("notes.txt:1") && stdout.contains("internal/missing.go appears in a note"),
+        "expected content hit for path-like text, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);

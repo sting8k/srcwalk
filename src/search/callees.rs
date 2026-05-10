@@ -43,6 +43,8 @@ pub struct CallSite {
     pub return_var: Option<String>,
     /// True if this call is the direct return expression of the function.
     pub is_return: bool,
+    /// Exact byte range of the enclosing call expression, for artifact byte-window evidence.
+    pub call_byte_range: Option<(usize, usize)>,
 }
 
 /// A resolved callee with its own callees (2nd hop).
@@ -377,6 +379,7 @@ fn extract_call_sites_scoped(
                     args,
                     return_var,
                     is_return,
+                    call_byte_range: Some(range),
                 });
             }
         }

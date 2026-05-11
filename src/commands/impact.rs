@@ -50,7 +50,7 @@ fn run_artifact_impact(
                 out,
                 "  [def] {rel}:{}  section: srcwalk {} --artifact --section {target}",
                 def.line,
-                def.path.display()
+                format::display_path(&def.path)
             );
         }
         if defs.len() > DEF_DISPLAY_LIMIT {

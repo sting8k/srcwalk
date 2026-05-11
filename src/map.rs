@@ -46,7 +46,7 @@ fn map_walk_builder(
 ) -> Result<WalkBuilder, SrcwalkError> {
     let mut builder = WalkBuilder::new(scope);
     builder
-        .follow_links(true)
+        .follow_links(false)
         .hidden(cfg.hidden)
         .git_ignore(cfg.git_ignore)
         .git_global(cfg.git_global)
@@ -409,7 +409,7 @@ fn append_map_footer(
     if artifact.enabled() {
         out.push_str("\n\n> Next: drill into artifact files with `srcwalk <path> --artifact`, or search anchors with `srcwalk find <name> --artifact`.\n");
     } else if show_no_relations_hint {
-        out.push_str("\n\n> Next: no in-scope relations shown. Widen --scope to include dependency targets, or use `srcwalk deps <file>` for outbound deps.\n");
+        out.push_str("\n\n> Next: no cross-group relations shown. Use `srcwalk deps <file>` for file-level deps, or adjust --scope/--depth.\n");
     } else if has_outbound_relations {
         // Outbound preview already includes the relevant next action.
     } else if include_symbols {
@@ -448,13 +448,19 @@ fn normalize_existing_path(path: PathBuf) -> PathBuf {
 }
 
 fn compute_relations(scope: &Path, depth: usize, visible_files: &[PathBuf]) -> Vec<RelationEntry> {
+    let scope = normalize_existing_path(scope.to_path_buf());
+    let visible_files: Vec<PathBuf> = visible_files
+        .iter()
+        .cloned()
+        .map(normalize_existing_path)
+        .collect();
     let visible: HashSet<PathBuf> = visible_files.iter().cloned().collect();
     let mut go_modules = BTreeMap::<PathBuf, Option<(String, PathBuf)>>::new();
     let mut php_autoloads = BTreeMap::<PathBuf, Vec<(String, PathBuf)>>::new();
     let relation_depth = depth.clamp(1, 2);
     let mut edges = BTreeSet::<(String, String, PathBuf, PathBuf)>::new();
 
-    for source in visible_files {
+    for source in &visible_files {
         let Ok(content) = std::fs::read_to_string(source) else {
             continue;
         };
@@ -464,27 +470,28 @@ fn compute_relations(scope: &Path, depth: usize, visible_files: &[PathBuf]) -> V
             if target == *source || !visible.contains(&target) {
                 continue;
             }
-            add_relation_edge(scope, relation_depth, source, &target, &mut edges);
+            add_relation_edge(scope.as_path(), relation_depth, source, &target, &mut edges);
         }
 
-        let source_dir = source.parent().unwrap_or(scope).to_path_buf();
+        let source_dir = source.parent().unwrap_or(scope.as_path()).to_path_buf();
         let go_module = go_modules
             .entry(source_dir.clone())
             .or_insert_with(|| find_go_module(&source_dir));
         if let Some((module_name, module_root)) = go_module.as_ref() {
             for target_dir in go_import_dirs(source, &content, module_name, module_root) {
-                if !target_dir.starts_with(scope)
-                    || !has_visible_file_under(&target_dir, visible_files)
+                let target_dir = normalize_existing_path(target_dir);
+                if !target_dir.starts_with(&scope)
+                    || !has_visible_file_under(&target_dir, &visible_files)
                 {
                     continue;
                 }
-                let relation_base = if module_root.starts_with(scope) {
+                let relation_base = if module_root.starts_with(&scope) {
                     module_root.as_path()
                 } else {
-                    scope
+                    scope.as_path()
                 };
                 add_relation_edge_with_base(
-                    scope,
+                    scope.as_path(),
                     relation_base,
                     relation_depth,
                     source,
@@ -494,15 +501,16 @@ fn compute_relations(scope: &Path, depth: usize, visible_files: &[PathBuf]) -> V
             }
         }
         if matches!(detect_file_type(source), FileType::Code(Lang::Php)) {
-            let source_dir = source.parent().unwrap_or(scope).to_path_buf();
+            let source_dir = source.parent().unwrap_or(scope.as_path()).to_path_buf();
             let php_autoload = php_autoloads
                 .entry(source_dir.clone())
                 .or_insert_with(|| find_php_psr4_autoload(&source_dir));
             for target in php_import_paths(&content, php_autoload) {
+                let target = normalize_existing_path(target);
                 if target == *source || !visible.contains(&target) {
                     continue;
                 }
-                add_relation_edge(scope, relation_depth, source, &target, &mut edges);
+                add_relation_edge(scope.as_path(), relation_depth, source, &target, &mut edges);
             }
         }
     }
@@ -515,24 +523,30 @@ fn compute_outbound_relations(
     depth: usize,
     visible_files: &[PathBuf],
 ) -> Vec<RelationEntry> {
+    let scope = normalize_existing_path(scope.to_path_buf());
+    let visible_files: Vec<PathBuf> = visible_files
+        .iter()
+        .cloned()
+        .map(normalize_existing_path)
+        .collect();
     let visible: HashSet<PathBuf> = visible_files.iter().cloned().collect();
     let mut go_modules = BTreeMap::<PathBuf, Option<(String, PathBuf)>>::new();
     let outbound_depth = depth.clamp(1, 2);
     let mut edges = BTreeSet::<(String, String, PathBuf, PathBuf)>::new();
 
-    for source in visible_files {
+    for source in &visible_files {
         let Ok(content) = std::fs::read_to_string(source) else {
             continue;
         };
 
         for target in imports::resolve_all_related_files_with_content(source, &content) {
             let target = normalize_existing_path(target);
-            if target == *source || visible.contains(&target) || target.starts_with(scope) {
+            if target == *source || visible.contains(&target) || target.starts_with(&scope) {
                 continue;
             }
-            let relation_base = outbound_relation_base(scope, source, &target);
+            let relation_base = outbound_relation_base(scope.as_path(), source, &target);
             add_relation_edge_with_base(
-                scope,
+                scope.as_path(),
                 &relation_base,
                 outbound_depth,
                 source,
@@ -541,17 +555,18 @@ fn compute_outbound_relations(
             );
         }
 
-        let source_dir = source.parent().unwrap_or(scope).to_path_buf();
+        let source_dir = source.parent().unwrap_or(scope.as_path()).to_path_buf();
         let go_module = go_modules
             .entry(source_dir.clone())
             .or_insert_with(|| find_go_module(&source_dir));
         if let Some((module_name, module_root)) = go_module.as_ref() {
             for target_dir in go_import_dirs(source, &content, module_name, module_root) {
-                if target_dir.starts_with(scope) {
+                let target_dir = normalize_existing_path(target_dir);
+                if target_dir.starts_with(&scope) {
                     continue;
                 }
                 add_relation_edge_with_base(
-                    scope,
+                    scope.as_path(),
                     module_root,
                     outbound_depth,
                     source,

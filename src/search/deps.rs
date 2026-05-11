@@ -1,7 +1,7 @@
 //! File-level dependency analysis: what a file imports and what imports it.
 //! Used by `srcwalk_deps` for blast-radius checks before breaking changes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -66,6 +66,9 @@ pub fn analyze_deps(
         source: e,
     })?;
 
+    let scope = scope.canonicalize().unwrap_or_else(|_| scope.to_path_buf());
+    let scope = scope.as_path();
+
     let content = fs::read_to_string(path).map_err(|e| SrcwalkError::IoError {
         path: path.clone(),
         source: e,
@@ -89,33 +92,37 @@ pub fn analyze_deps(
     let entries = get_outline_entries(&content, lang);
     let _ = cache; // available for future caching
 
-    let mut all_names: Vec<String> = Vec::new();
+    let mut candidates: HashMap<String, ReverseCandidate> = HashMap::new();
     for entry in &entries {
-        // Skip imports and re-export wrappers — they don't define symbols here.
-        if matches!(entry.kind, OutlineKind::Import | OutlineKind::Export) {
-            continue;
-        }
-        collect_symbol_names(entry, &mut all_names);
+        collect_reverse_candidates(entry, &mut candidates, None, true);
     }
+    candidates.retain(|name, _| !is_placeholder_name(name));
 
-    // Deduplicate
+    let mut all_names: Vec<String> = candidates.keys().cloned().collect();
     all_names.sort();
-    all_names.dedup();
-
-    // Filter placeholder / noise names
-    all_names.retain(|n| !is_placeholder_name(n));
-
     let exported_count = all_names.len();
 
-    // Cap reverse-dependent searches, preferring longer (more specific) names.
-    let mut searched_names = all_names.clone();
-    let searched_count = if searched_names.len() > MAX_EXPORTED_SYMBOLS {
-        searched_names.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-        searched_names.truncate(MAX_EXPORTED_SYMBOLS);
-        MAX_EXPORTED_SYMBOLS
-    } else {
-        searched_names.len()
-    };
+    // Cap reverse-dependent searches, preferring strong file/type symbols before
+    // owner-gated members, then longer (more specific) names.
+    let mut searched_candidates: Vec<ReverseCandidate> = candidates.values().cloned().collect();
+    searched_candidates.sort_by(|a, b| {
+        b.is_strong()
+            .cmp(&a.is_strong())
+            .then_with(|| b.name.len().cmp(&a.name.len()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    if searched_candidates.len() > MAX_EXPORTED_SYMBOLS {
+        searched_candidates.truncate(MAX_EXPORTED_SYMBOLS);
+    }
+    let searched_count = searched_candidates.len();
+    let candidate_by_name: HashMap<String, ReverseCandidate> = searched_candidates
+        .iter()
+        .map(|candidate| (candidate.name.clone(), candidate.clone()))
+        .collect();
+    let searched_names: Vec<String> = searched_candidates
+        .iter()
+        .map(|candidate| candidate.name.clone())
+        .collect();
 
     // ── Phase 2: Forward dependencies ────────────────────────────────────────
 
@@ -127,8 +134,9 @@ pub fn analyze_deps(
     let mut local_by_file: HashMap<PathBuf, Vec<String>> = HashMap::new();
     for callee in resolved {
         if callee.file != *path {
+            let callee_file = callee.file.canonicalize().unwrap_or(callee.file);
             local_by_file
-                .entry(callee.file)
+                .entry(callee_file)
                 .or_default()
                 .push(callee.name);
         }
@@ -138,6 +146,7 @@ pub fn analyze_deps(
     // weren't matched, but the import relationship itself is meaningful)
     let import_files = resolve_related_files_with_content(path, &content);
     for import_path in import_files {
+        let import_path = import_path.canonicalize().unwrap_or(import_path);
         local_by_file.entry(import_path).or_default();
     }
 
@@ -186,6 +195,12 @@ pub fn analyze_deps(
             for (matched_symbol, caller_match) in raw_matches {
                 // Exclude calls from within the target file itself (self-references)
                 if caller_match.path == *path {
+                    continue;
+                }
+                let Some(candidate) = candidate_by_name.get(&matched_symbol) else {
+                    continue;
+                };
+                if !candidate.accepts(&caller_match.content) {
                     continue;
                 }
                 by_file.entry(caller_match.path).or_default().push((
@@ -254,6 +269,9 @@ pub fn format_deps(
     limit: Option<usize>,
     offset: usize,
 ) -> String {
+    let scope = scope.canonicalize().unwrap_or_else(|_| scope.to_path_buf());
+    let scope = scope.as_path();
+
     let dep_count = result.total_dependents;
     let page_limit = limit.unwrap_or(MAX_DEPENDENTS).max(1);
     let page_start = offset.min(result.used_by.len());
@@ -358,15 +376,109 @@ pub fn format_deps(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Collect symbol names from an outline entry and its children.
-fn collect_symbol_names(entry: &crate::types::OutlineEntry, out: &mut Vec<String>) {
-    out.push(entry.name.clone());
-    for child in &entry.children {
-        // Include public methods of classes/structs/impls
-        if !matches!(child.kind, OutlineKind::Import | OutlineKind::Export) {
-            out.push(child.name.clone());
+#[derive(Clone, Debug)]
+struct ReverseCandidate {
+    name: String,
+    strong: bool,
+    owners: HashSet<String>,
+}
+
+impl ReverseCandidate {
+    fn strong(name: String) -> Self {
+        Self {
+            name,
+            strong: true,
+            owners: HashSet::new(),
         }
     }
+
+    fn member(name: String) -> Self {
+        Self {
+            name,
+            strong: false,
+            owners: HashSet::new(),
+        }
+    }
+
+    fn is_strong(&self) -> bool {
+        self.strong
+    }
+
+    fn accepts(&self, content: &str) -> bool {
+        self.strong || self.owners.iter().any(|owner| content.contains(owner))
+    }
+}
+
+/// Collect reverse-dependency candidates.
+///
+/// Top-level declarations and nested type identities are strong file/type
+/// evidence. Child members are searched only with owner context; a bare `run`,
+/// `render`, or `get` match does not create a dependent unless the matching file
+/// also mentions the owning type/module.
+fn collect_reverse_candidates(
+    entry: &crate::types::OutlineEntry,
+    out: &mut HashMap<String, ReverseCandidate>,
+    owner: Option<&str>,
+    top_level: bool,
+) {
+    if matches!(entry.kind, OutlineKind::Import | OutlineKind::Export) {
+        return;
+    }
+
+    if top_level || is_type_identity(entry.kind) {
+        out.insert(
+            entry.name.clone(),
+            ReverseCandidate::strong(entry.name.clone()),
+        );
+    } else if is_member_identity(entry.kind) {
+        if let Some(owner) = owner.filter(|owner| !is_placeholder_name(owner)) {
+            let candidate = out
+                .entry(entry.name.clone())
+                .or_insert_with(|| ReverseCandidate::member(entry.name.clone()));
+            if !candidate.is_strong() {
+                candidate.owners.insert(owner.to_string());
+            }
+        }
+    }
+
+    let normalized_owner = owner_name(entry).or(owner);
+    for child in &entry.children {
+        collect_reverse_candidates(child, out, normalized_owner, false);
+    }
+}
+
+fn is_type_identity(kind: OutlineKind) -> bool {
+    matches!(
+        kind,
+        OutlineKind::Class
+            | OutlineKind::Struct
+            | OutlineKind::Interface
+            | OutlineKind::TypeAlias
+            | OutlineKind::Enum
+            | OutlineKind::Module
+    )
+}
+
+fn is_member_identity(kind: OutlineKind) -> bool {
+    matches!(
+        kind,
+        OutlineKind::Function
+            | OutlineKind::Property
+            | OutlineKind::Constant
+            | OutlineKind::Variable
+            | OutlineKind::ImmutableVariable
+    )
+}
+
+fn owner_name(entry: &crate::types::OutlineEntry) -> Option<&str> {
+    if !is_type_identity(entry.kind) {
+        return None;
+    }
+    entry
+        .name
+        .strip_prefix("impl ")
+        .or(Some(entry.name.as_str()))
+        .filter(|name| !is_placeholder_name(name))
 }
 
 /// Returns true if the name is a noise/placeholder that should be excluded
@@ -450,16 +562,34 @@ fn format_uses_local(deps: &[LocalDep], scope: &Path, with_symbols: bool) -> Str
     if deps.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## Uses (local)");
+
+    let mut by_dir: BTreeMap<String, Vec<(String, &LocalDep)>> = BTreeMap::new();
     for dep in deps {
         let rel = rel_nonempty(&dep.path, scope);
-        if with_symbols && !dep.symbols.is_empty() {
-            let _ = write!(out, "\n{:<30} {}", rel, dep.symbols.join(", "));
-        } else {
-            let _ = write!(out, "\n{rel}");
+        let (dir, file) = split_rel_dir_file(&rel);
+        by_dir.entry(dir).or_default().push((file.to_string(), dep));
+    }
+
+    let mut out = String::from("## Uses (local)");
+    for (dir, mut rows) in by_dir {
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        let _ = write!(out, "\n{dir}");
+        for (file, dep) in rows {
+            if with_symbols && !dep.symbols.is_empty() {
+                let _ = write!(out, "\n  {:<28} {}", file, dep.symbols.join(", "));
+            } else {
+                let _ = write!(out, "\n  {file}");
+            }
         }
     }
     out
+}
+
+fn split_rel_dir_file(rel: &str) -> (String, &str) {
+    match rel.rsplit_once('/') {
+        Some((dir, file)) if !dir.is_empty() => (format!("{dir}/"), file),
+        _ => ("(root)/".to_string(), rel),
+    }
 }
 
 /// Format the "Uses (external)" section.
@@ -492,22 +622,10 @@ fn format_used_by(deps: &[&Dependent], scope: &Path, heading: &str) -> String {
     let mut rows = Vec::new();
     for dep in deps {
         let rel = rel_nonempty(&dep.path, scope);
-        let rel_path = Path::new(&rel);
-        let dir = rel_path
-            .parent()
-            .and_then(|p| {
-                if p.as_os_str().is_empty() {
-                    None
-                } else {
-                    Some(format!("{}/", p.display()))
-                }
-            })
-            .unwrap_or_else(|| "(root)/".to_string());
-        let file = rel_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(rel.as_str())
-            .to_string();
+        let (dir, file) = match rel.rsplit_once('/') {
+            Some((dir, file)) if !dir.is_empty() => (format!("{dir}/"), file.to_string()),
+            _ => ("(root)/".to_string(), rel),
+        };
 
         // Group by (caller, line) within each dependent for readability — keep the earliest line per caller.
         let mut by_caller: HashMap<&str, (u32, Vec<&str>)> = HashMap::new();

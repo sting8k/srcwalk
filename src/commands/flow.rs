@@ -151,7 +151,7 @@ fn run_artifact_flow(
     let _ = writeln!(
         out,
         "  section: srcwalk {} --artifact --section {}",
-        def_match.path.display(),
+        format::display_path(&def_match.path),
         target
     );
 

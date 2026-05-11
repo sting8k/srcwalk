@@ -4,6 +4,21 @@ use std::process;
 use crate::cli::{Mode, RunConfig};
 use crate::output;
 
+fn display_path(path: &Path) -> String {
+    let path = path.display().to_string();
+    if !cfg!(windows) {
+        return path;
+    }
+
+    let path = path.replace('\\', "/");
+    if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else if let Some(rest) = path.strip_prefix("//?/") {
+        rest.to_string()
+    } else {
+        path
+    }
+}
 fn canonicalize_scopes_or_exit(scopes: Vec<PathBuf>) -> Vec<PathBuf> {
     scopes
         .into_iter()
@@ -11,14 +26,14 @@ fn canonicalize_scopes_or_exit(scopes: Vec<PathBuf>) -> Vec<PathBuf> {
             let meta = match std::fs::metadata(&scope) {
                 Ok(meta) => meta,
                 Err(e) => {
-                    eprintln!("error: invalid scope: {} [{e}]", scope.display());
+                    eprintln!("error: invalid scope: {} [{e}]", display_path(&scope));
                     process::exit(2);
                 }
             };
             if !meta.is_dir() {
                 eprintln!(
                     "error: invalid scope: {} [not a directory]",
-                    scope.display()
+                    display_path(&scope)
                 );
                 process::exit(2);
             }

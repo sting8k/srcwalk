@@ -509,12 +509,7 @@ fn format_bfs_json(
     let all_edges_json: Vec<serde_json::Value> = edges
         .iter()
         .map(|e| {
-            let rel = e
-                .from_file
-                .strip_prefix(scope)
-                .unwrap_or(&e.from_file)
-                .display()
-                .to_string();
+            let rel = crate::format::rel_nonempty(&e.from_file, scope);
             serde_json::json!({
                 "hop": e.hop,
                 "from": e.from,
@@ -586,7 +581,7 @@ fn format_bfs_json(
     let payload = serde_json::json!({
         "query": format!("callers {} --depth {}", target, max_depth),
         "root": target,
-        "scope": scope.display().to_string(),
+        "scope": crate::format::display_path(scope),
         "max_depth": max_depth,
         "depth_reached": stats.depth_reached,
         "edges_total": stats.edges_total,

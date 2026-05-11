@@ -19,6 +19,10 @@ fn temp_repo(name: &str) -> PathBuf {
     dir
 }
 
+fn norm_path_separators(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 #[test]
 fn artifact_flag_includes_minified_js_symbol_evidence() {
     let dir = temp_repo("artifact_js_find");
@@ -694,7 +698,10 @@ fn artifact_search_enters_dist_dirs_when_explicitly_enabled() {
         String::from_utf8_lossy(&artifact.stderr)
     );
     let stdout = String::from_utf8_lossy(&artifact.stdout);
-    assert!(stdout.contains("dist/app.min.js"), "{stdout}");
+    assert!(
+        norm_path_separators(&stdout).contains("dist/app.min.js"),
+        "{stdout}"
+    );
     assert!(stdout.contains("Artifact mode:"), "{stdout}");
 }
 
@@ -778,7 +785,8 @@ fn artifact_symbol_search_does_not_return_source_definitions() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !stdout.contains("src/cache.rs") && !stdout.contains("[struct] OutlineCache"),
+        !norm_path_separators(&stdout).contains("src/cache.rs")
+            && !stdout.contains("[struct] OutlineCache"),
         "artifact definition search should not return source definitions:\n{stdout}"
     );
 }
@@ -806,7 +814,10 @@ fn artifact_name_glob_search_includes_synthetic_export_anchors() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("[anchor] export MyBundle"), "{stdout}");
-    assert!(stdout.contains("dist/app.min.js:1"), "{stdout}");
+    assert!(
+        norm_path_separators(&stdout).contains("dist/app.min.js:1"),
+        "{stdout}"
+    );
 }
 
 #[test]

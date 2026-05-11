@@ -54,15 +54,23 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
+            bin: srcwalk
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
+            bin: srcwalk
           - target: x86_64-apple-darwin
             os: macos-latest
             cross: false
+            bin: srcwalk
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
+            bin: srcwalk
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+            bin: srcwalk.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -99,7 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           cd target/${{ matrix.target }}/release
-          tar czf ../../../srcwalk-${{ matrix.target }}.tar.gz srcwalk
+          tar czf ../../../srcwalk-${{ matrix.target }}.tar.gz ${{ matrix.bin }}
           cd ../../..
           shasum -a 256 srcwalk-${{ matrix.target }}.tar.gz > srcwalk-${{ matrix.target }}.tar.gz.sha256
 

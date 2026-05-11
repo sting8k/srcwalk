@@ -316,8 +316,17 @@ fn callers_search_glob_restricts_results() {
     }
 }
 
+fn skip_if_symlink_permission_denied(result: std::io::Result<()>) {
+    if let Err(err) = result {
+        if cfg!(windows) && err.kind() == std::io::ErrorKind::PermissionDenied {
+            return;
+        }
+        panic!("failed to create symlink: {err}");
+    }
+}
+
 #[test]
-fn walker_follows_symlinked_file() {
+fn walker_skips_symlinked_file() {
     let tmp = tempfile::tempdir().unwrap();
     let real_dir = tmp.path().join("real");
     std::fs::create_dir(&real_dir).unwrap();
@@ -326,47 +335,84 @@ fn walker_follows_symlinked_file() {
     let link_dir = tmp.path().join("linked");
     std::fs::create_dir(&link_dir).unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::symlink(real_dir.join("hello.rs"), link_dir.join("hello.rs")).unwrap();
+    skip_if_symlink_permission_denied(std::os::unix::fs::symlink(
+        real_dir.join("hello.rs"),
+        link_dir.join("hello.rs"),
+    ));
     #[cfg(windows)]
-    std::os::windows::fs::symlink_file(real_dir.join("hello.rs"), link_dir.join("hello.rs"))
-        .unwrap();
+    skip_if_symlink_permission_denied(std::os::windows::fs::symlink_file(
+        real_dir.join("hello.rs"),
+        link_dir.join("hello.rs"),
+    ));
 
     let paths = walk_paths(tmp.path(), None);
     let names: Vec<&str> = paths
         .iter()
         .filter_map(|p| p.file_name()?.to_str())
         .collect();
-    // Should find hello.rs twice: once in real/, once via the symlink in linked/
     assert_eq!(
         names.iter().filter(|n| **n == "hello.rs").count(),
-        2,
-        "expected hello.rs from both real and symlinked dirs, got: {names:?}"
+        1,
+        "expected only real hello.rs; symlinked file should be skipped, got: {names:?}"
     );
 }
 
 #[test]
-fn walker_follows_symlinked_directory() {
+fn walker_skips_symlinked_directory() {
     let tmp = tempfile::tempdir().unwrap();
     let real_dir = tmp.path().join("real_pkg");
     std::fs::create_dir(&real_dir).unwrap();
     std::fs::write(real_dir.join("lib.rs"), "pub fn add() {}").unwrap();
     std::fs::write(real_dir.join("util.rs"), "pub fn helper() {}").unwrap();
 
-    // Symlink the entire directory
+    // Symlink the entire directory; walkers must not traverse it.
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&real_dir, tmp.path().join("deps_link")).unwrap();
+    skip_if_symlink_permission_denied(std::os::unix::fs::symlink(
+        &real_dir,
+        tmp.path().join("deps_link"),
+    ));
     #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(&real_dir, tmp.path().join("deps_link")).unwrap();
+    skip_if_symlink_permission_denied(std::os::windows::fs::symlink_dir(
+        &real_dir,
+        tmp.path().join("deps_link"),
+    ));
 
     let paths = walk_paths(tmp.path(), None);
     let link_files: Vec<_> = paths
         .iter()
         .filter(|p| p.starts_with(tmp.path().join("deps_link")))
         .collect();
-    assert_eq!(
-        link_files.len(),
-        2,
-        "expected 2 files via symlinked directory, got: {link_files:?}"
+    assert!(
+        link_files.is_empty(),
+        "expected symlinked directory to be skipped, got: {link_files:?}"
+    );
+}
+
+#[test]
+fn walker_skips_symlinked_directory_outside_scope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(
+        outside.path().join("secret.rs"),
+        "pub fn secret_escape() {}",
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    skip_if_symlink_permission_denied(std::os::unix::fs::symlink(
+        outside.path(),
+        tmp.path().join("linkout"),
+    ));
+    #[cfg(windows)]
+    skip_if_symlink_permission_denied(std::os::windows::fs::symlink_dir(
+        outside.path(),
+        tmp.path().join("linkout"),
+    ));
+
+    let paths = walk_paths(tmp.path(), None);
+    assert!(
+        paths.iter().all(|p| !p.ends_with("secret.rs")),
+        "expected out-of-scope symlink target to be skipped, got: {paths:?}"
     );
 }
 
@@ -379,7 +425,7 @@ fn walker_survives_symlink_cycle() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(tmp.path(), tmp.path().join("loop")).unwrap();
 
-    // Should complete without hanging — ignore crate detects the cycle via inode tracking
+    // Should complete without hanging because symlinked directories are not traversed.
     let paths = walk_paths(tmp.path(), None);
     let names: Vec<&str> = paths
         .iter()
@@ -444,7 +490,7 @@ fn semantic_candidate_prefers_class_entry_for_generated_stub_range() {
 }
 
 #[test]
-fn content_search_finds_symbol_through_symlink() {
+fn content_search_skips_symbol_through_symlink() {
     let tmp = tempfile::tempdir().unwrap();
     let real_dir = tmp.path().join("real");
     std::fs::create_dir(&real_dir).unwrap();
@@ -454,7 +500,7 @@ fn content_search_finds_symbol_through_symlink() {
     )
     .unwrap();
 
-    // Symlink the directory into the search scope
+    // Symlink the directory into the search scope; search must not traverse it.
     #[cfg(unix)]
     std::os::unix::fs::symlink(&real_dir, tmp.path().join("linked")).unwrap();
     #[cfg(windows)]
@@ -462,10 +508,9 @@ fn content_search_finds_symbol_through_symlink() {
 
     let result =
         content::search("unique_symlink_test_symbol", tmp.path(), false, None, None).unwrap();
-    // Should find the symbol in both real/api.rs and linked/api.rs
-    assert!(
-        result.total_found >= 2,
-        "expected symbol found via both real and symlinked paths, got {}",
+    assert_eq!(
+        result.total_found, 1,
+        "expected only real/api.rs; symlinked directory should be skipped, got {}",
         result.total_found
     );
 }

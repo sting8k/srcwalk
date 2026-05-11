@@ -750,16 +750,15 @@ pub(crate) fn extract_import_source(text: &str, lang: Option<crate::types::Lang>
             .to_string();
     }
 
-    // JS/TS: `import ... from "source"` or `import "source"`
-    if trimmed.starts_with("import") {
-        if let Some(from_pos) = trimmed.find("from ") {
-            let source = &trimmed[from_pos + 5..];
-            return source
-                .trim()
-                .trim_matches(|c| c == '"' || c == '\'' || c == ';')
-                .to_string();
+    // JS/TS: `import ... from "source"`, `import "source"`, or `export ... from "source"`.
+    if is_js_like_lang(lang) {
+        if let Some(source) = extract_js_module_source(trimmed) {
+            return source;
         }
-        // Direct import: `import "source"`
+    }
+
+    if trimmed.starts_with("import") {
+        // Non-JS imports such as Go `import "source"` and Python `import module`.
         let after = trimmed.strip_prefix("import ").unwrap_or("");
         return after
             .trim()
@@ -787,6 +786,90 @@ pub(crate) fn extract_import_source(text: &str, lang: Option<crate::types::Lang>
         .last()
         .unwrap_or(trimmed)
         .to_string()
+}
+
+fn is_js_like_lang(lang: Option<crate::types::Lang>) -> bool {
+    matches!(
+        lang,
+        Some(
+            crate::types::Lang::TypeScript
+                | crate::types::Lang::Tsx
+                | crate::types::Lang::JavaScript
+        )
+    )
+}
+
+fn extract_js_module_source(trimmed: &str) -> Option<String> {
+    if starts_js_keyword(trimmed, "export") {
+        return extract_js_from_source(trimmed);
+    }
+    if starts_js_keyword(trimmed, "import") {
+        return extract_js_from_source(trimmed).or_else(|| first_quoted(trimmed));
+    }
+    extract_js_require_source(trimmed)
+}
+
+fn starts_js_keyword(trimmed: &str, keyword: &str) -> bool {
+    let Some(rest) = trimmed.strip_prefix(keyword) else {
+        return false;
+    };
+    rest.chars()
+        .next()
+        .is_none_or(|c| !is_js_identifier_char(c))
+}
+
+fn is_js_identifier_char(c: char) -> bool {
+    c == '_' || c == '$' || c.is_ascii_alphanumeric()
+}
+
+fn extract_js_from_source(trimmed: &str) -> Option<String> {
+    let from_pos = find_js_keyword(trimmed, "from")?;
+    first_quoted(&trimmed[from_pos + "from".len()..])
+}
+
+fn extract_js_require_source(trimmed: &str) -> Option<String> {
+    let require_pos = find_js_keyword(trimmed, "require")?;
+    let after = trimmed[require_pos + "require".len()..].trim_start();
+    if !after.starts_with('(') {
+        return None;
+    }
+    first_quoted(after)
+}
+
+fn find_js_keyword(text: &str, keyword: &str) -> Option<usize> {
+    let mut search_start = 0;
+    while let Some(offset) = text[search_start..].find(keyword) {
+        let pos = search_start + offset;
+        let before_ok = text[..pos]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_js_identifier_char(c));
+        let after_ok = text[pos + keyword.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_js_identifier_char(c));
+        if before_ok && after_ok {
+            return Some(pos);
+        }
+        search_start = pos + keyword.len();
+    }
+    None
+}
+
+fn first_quoted(text: &str) -> Option<String> {
+    let mut chars = text.char_indices();
+    while let Some((start, c)) = chars.next() {
+        if c != '\'' && c != '"' {
+            continue;
+        }
+        let quote = c;
+        for (end, c) in chars.by_ref() {
+            if c == quote {
+                return Some(text[start + quote.len_utf8()..end].to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Get structured outline entries for file content.

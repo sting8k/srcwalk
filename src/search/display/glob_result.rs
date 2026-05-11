@@ -14,16 +14,10 @@ fn append_grouped_files(out: &mut String, files: &[glob::GlobFileEntry], scope: 
     let mut groups: BTreeMap<String, Vec<(String, Option<&str>)>> = BTreeMap::new();
     for file in files {
         let display = rel_nonempty(&file.path, scope);
-        let display_path = Path::new(&display);
-        let dir = display_path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| "./".to_string(), |p| format!("{}/", p.display()));
-        let name = display_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(display.as_str())
-            .to_string();
+        let (dir, name) = match display.rsplit_once('/') {
+            Some((dir, name)) if !dir.is_empty() => (format!("{dir}/"), name.to_string()),
+            _ => ("./".to_string(), display),
+        };
         groups
             .entry(dir)
             .or_default()

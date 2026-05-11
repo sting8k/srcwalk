@@ -69,7 +69,7 @@ fn find_basename_fallback(scope: &Path, query_lower: &str) -> Option<PathBuf> {
     let mut best_priority: u8 = 0;
 
     let walker = ignore::WalkBuilder::new(scope)
-        .follow_links(true)
+        .follow_links(false)
         .hidden(true)
         .git_ignore(true)
         .max_depth(Some(6))

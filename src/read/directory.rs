@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::SrcwalkError;
+use crate::format;
 use crate::types::estimate_tokens;
 
 /// List directory contents — treat as glob on dir/*.
@@ -35,6 +36,6 @@ pub(super) fn list_directory(path: &Path) -> Result<String, SrcwalkError> {
         entries.push(format!("  {name}{suffix}"));
     }
 
-    let header = format!("# {} ({} items)", path.display(), items.len());
+    let header = format!("# {} ({} items)", format::display_path(path), items.len());
     Ok(format!("{header}\n\n{}", entries.join("\n")))
 }

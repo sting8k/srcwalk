@@ -25,6 +25,7 @@ pub mod map;
 pub(crate) mod read;
 pub(crate) mod search;
 pub(crate) mod session;
+pub mod threading;
 pub(crate) mod types;
 
 mod commands;
@@ -482,4 +483,11 @@ pub fn run_deps(
     offset: usize,
 ) -> Result<String, SrcwalkError> {
     commands::deps::run_deps(path, scope, budget_tokens, cache, limit, offset)
+}
+
+/// Separator-tolerant path substring matching for CLI filters.
+///
+/// Windows result paths use `\`, while docs and agents often type `/`.
+pub(crate) fn path_match_contains(path: &str, needle: &str) -> bool {
+    path.contains(needle) || path.replace('\\', "/").contains(&needle.replace('\\', "/"))
 }

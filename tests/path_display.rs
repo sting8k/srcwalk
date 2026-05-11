@@ -19,6 +19,10 @@ fn temp_repo(name: &str) -> PathBuf {
     dir
 }
 
+fn norm_path_separators(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 fn write_fixture(dir: &Path) {
     fs::create_dir_all(dir.join("src")).unwrap();
     fs::write(
@@ -44,8 +48,9 @@ fn read_header_prefers_pwd_relative_path() {
 
     assert!(out.status.success(), "expected read to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
     assert!(
-        stdout.starts_with("# src/lib.rs "),
+        normalized.starts_with("# src/lib.rs "),
         "expected pwd-relative file header, got:\n{stdout}"
     );
     assert!(
@@ -69,12 +74,13 @@ fn search_header_and_hits_are_pwd_relative_and_drillable() {
 
     assert!(out.status.success(), "expected search to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
     assert!(
-        stdout.starts_with("# Search: \"target_fn\" in src —"),
+        normalized.starts_with("# Search: \"target_fn\" in src —"),
         "expected pwd-relative search header, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("src/lib.rs:1-3"),
+        normalized.contains("src/lib.rs:1-3"),
         "expected pwd-relative copy-pasteable hit path, got:\n{stdout}"
     );
     assert!(
@@ -210,14 +216,15 @@ pi.registerTool({ name: "read_more" });
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("  index.ts [4 usages]"), "{stdout}");
+    let normalized = norm_path_separators(&stdout);
+    assert!(normalized.contains("  index.ts [4 usages]"), "{stdout}");
     assert!(stdout.contains("    [usage] :1 | pi.on"), "{stdout}");
     assert!(
-        stdout.contains("  tool-tags/read.ts [2 usages]"),
+        normalized.contains("  tool-tags/read.ts [2 usages]"),
         "{stdout}"
     );
     assert!(
-        !stdout.contains("  [usage] index.ts:1 |"),
+        !normalized.contains("  [usage] index.ts:1 |"),
         "repeated path hits should be grouped, got:\n{stdout}"
     );
 

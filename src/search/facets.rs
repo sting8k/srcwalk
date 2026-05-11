@@ -65,11 +65,7 @@ pub fn facet_matches(matches: Vec<Match>, _scope: &Path) -> FacetedResult {
 fn is_test_match(m: &Match) -> bool {
     // Path-based detection
     let path_str = m.path.to_string_lossy();
-    if path_str.contains("_test.")
-        || path_str.contains("/test/")
-        || path_str.contains("/tests/")
-        || path_str.contains("_spec.")
-        || path_str.contains("/spec/")
+    if path_str.contains("_test.") || path_str.contains("_spec.") || has_test_dir_component(&m.path)
     {
         return true;
     }
@@ -109,4 +105,13 @@ fn is_same_package(path: &Path, primary_pkg: Option<&PathBuf>) -> bool {
 /// Re-export from lang module.
 fn package_root(path: &Path) -> Option<&Path> {
     crate::lang::package_root(path)
+}
+
+fn has_test_dir_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| matches!(name, "test" | "tests" | "spec"))
+    })
 }

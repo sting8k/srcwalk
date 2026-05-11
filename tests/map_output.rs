@@ -19,6 +19,52 @@ fn temp_repo(name: &str) -> PathBuf {
     dir
 }
 
+fn create_symlink_dir_or_skip(target: &std::path::Path, link: &std::path::Path) -> bool {
+    let result = {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link)
+        }
+    };
+    match result {
+        Ok(()) => true,
+        Err(err) if cfg!(windows) && err.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(err) => panic!("failed to create symlink: {err}"),
+    }
+}
+
+#[test]
+fn map_does_not_traverse_symlinked_directory_outside_scope() {
+    let dir = temp_repo("map_symlink_escape");
+    let outside = temp_repo("map_symlink_outside");
+    fs::write(outside.join("secret.rs"), "pub fn secret_escape() {}\n").unwrap();
+
+    if !create_symlink_dir_or_skip(&outside, &dir.join("linkout")) {
+        return;
+    }
+
+    let out = srcwalk()
+        .arg("map")
+        .arg("--scope")
+        .arg(&dir)
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "expected map to succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("secret.rs") && !stdout.contains("secret_escape"),
+        "map should not traverse out-of-scope symlink target, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&outside);
+}
+
 #[test]
 fn map_default_is_compact_without_symbols() {
     let dir = temp_repo("map_compact");
@@ -605,6 +651,94 @@ fn map_relations_smoke_js_and_python_imports() {
             && stdout.contains("py/app deps:1")
             && stdout.contains("  -> py/lib deps:1"),
         "expected JS and Python local relations, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn map_relations_work_with_relative_scope() {
+    let dir = temp_repo("map_relative_scope_relations");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(dir.join("app/main.ts"), "import '../lib/helper';\n").unwrap();
+    fs::write(dir.join("lib/helper.ts"), "export function helper() {}\n").unwrap();
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .arg("map")
+        .arg("--scope")
+        .arg(".")
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "expected map to succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("app deps:1") && stdout.contains("  -> lib deps:1"),
+        "expected relation with relative scope, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn map_relations_include_ts_esm_js_specifiers_and_reexports() {
+    let dir = temp_repo("map_ts_esm_reexports");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("pkg")).unwrap();
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    fs::write(
+        dir.join("app/main.ts"),
+        "import { helper } from '../pkg/index.js';\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("pkg/index.ts"),
+        "export { helper } from '../lib/helper.js';\n",
+    )
+    .unwrap();
+    fs::write(dir.join("lib/helper.ts"), "export function helper() {}\n").unwrap();
+
+    let out = srcwalk()
+        .arg("map")
+        .arg("--scope")
+        .arg(&dir)
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "expected map to succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("app deps:1")
+            && stdout.contains("  -> pkg deps:1")
+            && stdout.contains("pkg deps:1")
+            && stdout.contains("  -> lib deps:1"),
+        "expected TS ESM import and re-export relations, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn map_footer_describes_no_cross_group_relations() {
+    let dir = temp_repo("map_no_cross_group_relations");
+    fs::write(dir.join("main.ts"), "import './helper';\n").unwrap();
+    fs::write(dir.join("helper.ts"), "export function helper() {}\n").unwrap();
+
+    let out = srcwalk()
+        .arg("map")
+        .arg("--scope")
+        .arg(&dir)
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "expected map to succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("no cross-group relations shown")
+            && !stdout.contains("no in-scope relations shown"),
+        "expected precise no-relations footer, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);

@@ -24,6 +24,10 @@ fn write_file(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
 }
 
+fn norm_path_separators(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 #[test]
 fn find_accepts_repeated_scopes_and_outputs_pwd_relative_hits() {
     let dir = temp_repo("multi_scope_find");
@@ -49,14 +53,15 @@ fn find_accepts_repeated_scopes_and_outputs_pwd_relative_hits() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
     assert!(
-        stdout.starts_with("# Search: \"shared_target\" in 2 scopes"),
+        normalized.starts_with("# Search: \"shared_target\" in 2 scopes"),
         "expected multi-scope header, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("Scopes: src (1), tests (1)")
-            && stdout.contains("src/lib.rs:1-1")
-            && stdout.contains("tests/lib.rs:1-1"),
+        normalized.contains("Scopes: src (1), tests (1)")
+            && normalized.contains("src/lib.rs:1-1")
+            && normalized.contains("tests/lib.rs:1-1"),
         "expected pwd-relative hits and per-scope counts, got:\n{stdout}"
     );
     assert!(
@@ -137,14 +142,15 @@ fn find_accepts_repeated_scopes_with_multi_symbol_query() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
     assert!(
-        stdout.contains("# Search: \"alpha_symbol\" in 2 scopes")
+        normalized.contains("# Search: \"alpha_symbol\" in 2 scopes")
             && stdout.contains("# Search: \"beta_symbol\" in 2 scopes")
             && stdout.contains("# Search: \"customized_data\" in 2 scopes"),
         "expected one section per query, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("classes/cart.php") && stdout.contains("controllers/upload.php"),
+        normalized.contains("classes/cart.php") && normalized.contains("controllers/upload.php"),
         "expected hits from both scopes, got:\n{stdout}"
     );
 
@@ -260,13 +266,14 @@ fn overlapping_scopes_are_deduped_before_pagination() {
 
     assert!(out.status.success(), "expected overlap search to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
     assert_eq!(
-        stdout.matches("src/lib.rs:1-1").count(),
+        normalized.matches("src/lib.rs:1-1").count(),
         1,
         "overlapping scopes should dedupe duplicate hits, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("overlapping scopes were deduplicated"),
+        normalized.contains("overlapping scopes were deduplicated"),
         "expected overlap note, got:\n{stdout}"
     );
 

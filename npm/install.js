@@ -9,14 +9,18 @@ const path = require("path");
 const zlib = require("zlib");
 
 const PLATFORM_MAP = {
-  "linux-x64": "x86_64-unknown-linux-musl",
-  "linux-arm64": "aarch64-unknown-linux-musl",
-  "darwin-x64": "x86_64-apple-darwin",
-  "darwin-arm64": "aarch64-apple-darwin",
+  "linux-x64": { target: "x86_64-unknown-linux-musl", binName: "srcwalk" },
+  "linux-arm64": { target: "aarch64-unknown-linux-musl", binName: "srcwalk" },
+  "darwin-x64": { target: "x86_64-apple-darwin", binName: "srcwalk" },
+  "darwin-arm64": { target: "aarch64-apple-darwin", binName: "srcwalk" },
+  "win32-x64": { target: "x86_64-pc-windows-msvc", binName: "srcwalk.exe" },
+  // Windows on ARM runs x64 binaries via OS emulation; native ARM64 is not shipped yet.
+  "win32-arm64": { target: "x86_64-pc-windows-msvc", binName: "srcwalk.exe" },
 };
 
 const key = `${process.platform}-${process.arch}`;
-const target = PLATFORM_MAP[key];
+const platform = PLATFORM_MAP[key];
+const target = platform && platform.target;
 
 if (!target) {
   console.error(`srcwalk: unsupported platform ${key}`);
@@ -26,7 +30,7 @@ if (!target) {
 
 const version = require("./package.json").version;
 const url = `https://github.com/sting8k/srcwalk/releases/download/v${version}/srcwalk-${target}.tar.gz`;
-const binName = "srcwalk";
+const binName = platform.binName;
 
 const binDir = path.join(__dirname, "bin");
 const binPath = path.join(binDir, binName);
@@ -70,7 +74,9 @@ follow(url, (res) => {
       console.error("srcwalk: failed to extract. Install manually: cargo install srcwalk");
       process.exit(1);
     }
-    fs.chmodSync(binPath, 0o755);
+    if (process.platform !== "win32") {
+      fs.chmodSync(binPath, 0o755);
+    }
     console.log("srcwalk: installed successfully");
   });
 });

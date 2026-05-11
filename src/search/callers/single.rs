@@ -16,6 +16,7 @@ use crate::error::SrcwalkError;
 use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
+use crate::path_match_contains;
 use crate::session::Session;
 use crate::types::FileType;
 use crate::ArtifactMode;
@@ -1437,7 +1438,8 @@ impl CallsiteFilter {
                 .is_some_and(|argc| self.value.parse::<u8>().is_ok_and(|wanted| argc == wanted)),
             "receiver" => caller.receiver.as_deref() == Some(self.value.as_str()),
             "caller" => caller.calling_function == self.value,
-            "path" | "file" => rel_nonempty(&caller.path, scope).contains(&self.value),
+            "path" => path_match_contains(&rel_nonempty(&caller.path, scope), &self.value),
+            "file" => rel_nonempty(&caller.path, scope).contains(&self.value),
             "text" => caller.call_text.contains(&self.value),
             _ => false,
         }

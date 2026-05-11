@@ -315,7 +315,7 @@ fn section_over_limit_next_step(
     if line_count <= 1 && is_js_ts_file_type(file_type) {
         return format!(
             "minified artifact? retry `srcwalk {} --artifact --section {}` or `--artifact --section bytes:<start>-<end>`.",
-            path.display(),
+            crate::format::display_path(path),
             section
 );
     }

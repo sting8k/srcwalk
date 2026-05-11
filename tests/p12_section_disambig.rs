@@ -29,18 +29,23 @@ fn setup_repo() -> std::path::PathBuf {
     dir
 }
 
+fn norm_path_separators(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 #[test]
 fn bare_filename_with_section_auto_resolves_to_prod() {
     let dir = setup_repo();
     let cache = srcwalk::cache::OutlineCache::new();
     let out = srcwalk::run("Cart.php", &dir, Some("10-15"), None, None, 0, None, &cache).unwrap();
+    let normalized = norm_path_separators(&out);
 
     assert!(
         out.contains("Resolved 'Cart.php'"),
         "expected resolution note, got: {out}"
     );
     assert!(
-        out.contains("classes/Cart.php"),
+        normalized.contains("classes/Cart.php"),
         "expected prod path in output, got: {out}"
     );
     assert!(
@@ -122,9 +127,10 @@ fn bare_filename_respects_gitignore_for_disambig() {
 
     let cache = srcwalk::cache::OutlineCache::new();
     let out = srcwalk::run("lib.rs", &dir, Some("1-1"), None, None, 0, None, &cache).unwrap();
+    let normalized = norm_path_separators(&out);
 
     assert!(
-        out.contains("Resolved 'lib.rs'") && out.contains("src/lib.rs"),
+        out.contains("Resolved 'lib.rs'") && normalized.contains("src/lib.rs"),
         "gitignore-marked benchmark should be non-primary, got: {out}"
     );
     assert!(
@@ -160,6 +166,7 @@ fn bare_filename_depth_rank_picks_shallowest() {
         "expected resolution via depth-rank, got: {out}"
     );
     let picked_line = out.lines().find(|l| l.contains("Resolved")).unwrap_or("");
+    let picked_line = norm_path_separators(picked_line);
     assert!(
         picked_line.contains("→ src/main.rs"),
         "expected shallowest path picked, got: {picked_line}"

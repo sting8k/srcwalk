@@ -74,18 +74,18 @@ pub fn number_lines(content: &str, start: u32) -> String {
 /// Human display path. Prefer cwd-relative paths so output can be copied back
 /// into `srcwalk <path>:<line>` from the user's current directory.
 pub(crate) fn display_path(path: &Path) -> String {
-    cwd_relative(path).unwrap_or_else(|| path.display().to_string())
+    normalize_display_path(cwd_relative(path).unwrap_or_else(|| path.display().to_string()))
 }
 
 /// Path for human result rows. Prefer cwd-relative copy-pasteable paths, then
 /// fall back to scope-relative legacy display when the scope lives elsewhere.
 pub(crate) fn rel(path: &Path, scope: &Path) -> String {
-    cwd_relative(path).unwrap_or_else(|| {
+    normalize_display_path(cwd_relative(path).unwrap_or_else(|| {
         path.strip_prefix(scope)
             .unwrap_or(path)
             .display()
             .to_string()
-    })
+    }))
 }
 
 fn cwd_relative(path: &Path) -> Option<String> {
@@ -95,7 +95,22 @@ fn cwd_relative(path: &Path) -> Option<String> {
     if rel.as_os_str().is_empty() {
         Some(".".to_string())
     } else {
-        Some(rel.display().to_string())
+        Some(normalize_display_path(rel.display().to_string()))
+    }
+}
+
+fn normalize_display_path(path: String) -> String {
+    if !cfg!(windows) {
+        return path;
+    }
+
+    let path = path.replace('\\', "/");
+    if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else if let Some(rest) = path.strip_prefix("//?/") {
+        rest.to_string()
+    } else {
+        path
     }
 }
 

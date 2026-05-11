@@ -93,13 +93,19 @@ Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C
 
 ```bash
 cargo build --release
-cargo test
+cargo test --locked
 cargo clippy -- -D warnings
 cargo fmt --check
 cargo install --path .       # → ~/.cargo/bin/srcwalk
 ```
 
 Formatting workflow: after editing Rust source/tests, run `cargo fmt` before any `cargo fmt --check`/full verify command. Use `cargo fmt --check` first only when no Rust edits were made since the last format.
+
+Windows is part of the required verification surface. For the full current workflow, use memory `projects/srcwalk/session-state.md`; in-repo references are `.github/workflows/ci.yml` for the Linux + Windows x64 CI matrix and `tests/windows_paths.rs` for Windows path/range/filter coverage.
+
+When touching path parsing/display, traversal, deps/callers output, artifact/file matching, npm/release binary behavior, or other platform-sensitive code, verify the affected behavior on Windows too. Prefer the existing Windows integration tests and CI job; add or extend Windows-specific tests when the behavior is not covered. For semantic/UX changes, live-test on multiple real repos and include Windows x64 binary smoke when platform behavior could be affected.
+
+Do not document private VM hosts, credentials, or other sensitive environment details in this file.
 
 ## Version bumps
 
@@ -119,8 +125,8 @@ Update all release metadata, then tag:
 git status --short
 cargo fmt --check
 cargo clippy -- -D warnings
-cargo test
-
+cargo test --locked
+# CI must also pass the Windows x64 job.
 # 2. Bump version + changelog
 # Cargo.toml, npm/package.json, GUIDE.md if agent-facing behavior changed,
 # SKILL.md only if bootstrap compatibility changed, CHANGELOG.md, then:

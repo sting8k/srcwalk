@@ -24,6 +24,32 @@ fn write_file(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
 }
 
+fn norm_path_separators(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
+#[test]
+fn files_rejects_huge_srcwalk_threads() {
+    let dir = temp_repo("files_threads_guard");
+    write_file(&dir.join("src/lib.rs"), "pub fn alpha() {}\n");
+
+    let out = srcwalk()
+        .env("SRCWALK_THREADS", "50000")
+        .args(["files", "*.rs", "--scope", "src"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "expected huge thread count to fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("SRCWALK_THREADS") && stderr.contains("1..=24"),
+        "expected clear thread range error, got:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn files_action_lists_file_globs() {
     let dir = temp_repo("files_action");
@@ -52,12 +78,13 @@ fn files_action_lists_file_globs() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
     assert!(
-        stdout.starts_with("# Files: \"*.php\" in controllers/front"),
+        normalized.starts_with("# Files: \"*.php\" in controllers/front"),
         "bad header:\n{stdout}"
     );
     assert!(
-        stdout.contains("controllers/front/ (2)"),
+        normalized.contains("controllers/front/ (2)"),
         "missing grouped directory:\n{stdout}"
     );
     assert!(
@@ -69,7 +96,7 @@ fn files_action_lists_file_globs() {
         "missing product:\n{stdout}"
     );
     assert!(
-        !stdout.contains("controllers/admin/AdminController.php"),
+        !normalized.contains("controllers/admin/AdminController.php"),
         "scope leaked:\n{stdout}"
     );
 
@@ -175,16 +202,17 @@ fn find_symbol_name_glob_supports_repeated_scopes() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
     assert!(
-        stdout.starts_with("# Search: \"display_ajax_*\" in 2 scopes"),
+        normalized.starts_with("# Search: \"display_ajax_*\" in 2 scopes"),
         "bad header:\n{stdout}"
     );
     assert!(
-        stdout.contains("src/lib.rs:1-1"),
+        normalized.contains("src/lib.rs:1-1"),
         "missing src match:\n{stdout}"
     );
     assert!(
-        stdout.contains("tests/lib.rs:1-1"),
+        normalized.contains("tests/lib.rs:1-1"),
         "missing tests match:\n{stdout}"
     );
 
@@ -262,8 +290,9 @@ fn find_symbol_name_glob_matches_definitions_only() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
     assert!(
-        stdout.starts_with("# Search names: \"displayAjax*\" in controllers/front"),
+        normalized.starts_with("# Search names: \"displayAjax*\" in controllers/front"),
         "bad header:\n{stdout}"
     );
     assert!(

@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::path_match_contains;
+
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
 use crate::format::rel_nonempty;
@@ -78,7 +80,7 @@ pub fn apply_general_filter(
 impl GeneralFilter {
     fn matches(&self, m: &Match, scope: &Path, cache: &OutlineCache) -> bool {
         match self.field.as_str() {
-            "path" => rel_nonempty(&m.path, scope).contains(&self.value),
+            "path" => path_match_contains(&rel_nonempty(&m.path, scope), &self.value),
             "file" => m
                 .path
                 .file_name()

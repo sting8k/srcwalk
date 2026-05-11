@@ -152,29 +152,16 @@ fn walker_with_options(
     glob: Option<&str>,
     include_artifact_dirs: bool,
 ) -> Result<ignore::WalkParallel, SrcwalkError> {
-    let threads = std::env::var("SRCWALK_THREADS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or_else(|| {
-            // Tree-sitter parsing is CPU-bound → hyperthreading gives little benefit
-            // and oversubscription regresses 10-20% on tested workloads.
-            // Heuristic: use logical cores up to 8, then 75% beyond that.
-            // - 2 cores → 2, 4 cores → 4, 8 cores → 8 (typical dev laptop sweet spot)
-            // - 16 cores → 12, 32 cores → 24, 64 cores → 48 (server cap to avoid IO thrash)
-            // Override via SRCWALK_THREADS env var.
-            std::thread::available_parallelism().map_or(4, |n| {
-                let logical = n.get();
-                if logical <= 8 {
-                    logical
-                } else {
-                    (logical * 3 / 4).min(24)
-                }
-            })
-        });
+    let threads = crate::threading::configured_walker_threads().map_err(|reason| {
+        SrcwalkError::InvalidQuery {
+            query: "SRCWALK_THREADS".to_string(),
+            reason,
+        }
+    })?;
 
     let mut builder = WalkBuilder::new(scope);
     builder
-        .follow_links(true)
+        .follow_links(false)
         .hidden(false)
         .git_ignore(true)
         .git_global(true)

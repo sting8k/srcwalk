@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::format;
 /// Every error srcwalk can produce. Displayed as user-facing messages with suggestions.
 #[derive(Debug)]
 pub enum SrcwalkError {
@@ -42,7 +43,7 @@ impl std::fmt::Display for SrcwalkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound { path, suggestion } => {
-                write!(f, "not found: {}", path.display())?;
+                write!(f, "not found: {}", format::display_path(path))?;
                 if let Some(s) = suggestion {
                     write!(f, " — did you mean: {s}")?;
                 }
@@ -53,7 +54,11 @@ impl std::fmt::Display for SrcwalkError {
                 scope,
                 suggestion,
             } => {
-                write!(f, "no matches for \"{query}\" in {}", scope.display())?;
+                write!(
+                    f,
+                    "no matches for \"{query}\" in {}",
+                    format::display_path(scope)
+                )?;
                 if let Some(s) = suggestion {
                     write!(f, "\n> Did you mean: {s}")?;
                 }
@@ -64,26 +69,28 @@ impl std::fmt::Display for SrcwalkError {
                 scope,
                 basename,
             } => {
-                writeln!(f, "not found: {}", path.display())?;
+                writeln!(f, "not found: {}", format::display_path(path))?;
                 writeln!(
                     f,
                     "> Caveat: this looks like a file path, but no file exists at that path under {}.",
-                    scope.display()
+                    format::display_path(scope)
                 )?;
-                let _ = basename;
+                if let Some(basename) = basename {
+                    writeln!(f, "> Did you mean to search for basename: {basename}")?;
+                }
                 write!(f, "> Next: check the path or scope.")
             }
             Self::PermissionDenied { path } => {
-                write!(f, "{} [permission denied]", path.display())
+                write!(f, "{} [permission denied]", format::display_path(path))
             }
             Self::InvalidQuery { query, reason } => {
                 write!(f, "invalid query \"{query}\": {reason}")
             }
             Self::IoError { path, source } => {
-                write!(f, "{}: {source}", path.display())
+                write!(f, "{}: {source}", format::display_path(path))
             }
             Self::ParseError { path, reason } => {
-                write!(f, "parse error in {}: {reason}", path.display())
+                write!(f, "parse error in {}: {reason}", format::display_path(path))
             }
             Self::WithNote { note, source } => write!(f, "{note}\n\n{source}"),
         }

@@ -2,6 +2,9 @@ use std::{io, process};
 
 // mimalloc: faster than system allocator for parallel walker workloads
 // where many small Strings/Vecs are allocated across rayon threads.
+// Keep the system allocator on Windows: native Windows ARM64 crashed in
+// walker/search commands with mimalloc as the global allocator.
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -72,12 +75,13 @@ fn main() {
 /// This matters for long-lived MCP sessions where back-to-back searches
 /// can sustain high CPU (see #27).
 fn configure_thread_pools() {
-    let num_threads = std::env::var("SRCWALK_THREADS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).clamp(2, 6))
-        });
+    let num_threads = match srcwalk::threading::configured_rayon_threads() {
+        Ok(n) => n,
+        Err(message) => {
+            eprintln!("error: {message}");
+            process::exit(2);
+        }
+    };
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)

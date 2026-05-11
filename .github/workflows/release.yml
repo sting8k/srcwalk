@@ -109,7 +109,11 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar czf ../../../srcwalk-${{ matrix.target }}.tar.gz ${{ matrix.bin }}
           cd ../../..
-          shasum -a 256 srcwalk-${{ matrix.target }}.tar.gz > srcwalk-${{ matrix.target }}.tar.gz.sha256
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 srcwalk-${{ matrix.target }}.tar.gz > srcwalk-${{ matrix.target }}.tar.gz.sha256
+          else
+            sha256sum srcwalk-${{ matrix.target }}.tar.gz > srcwalk-${{ matrix.target }}.tar.gz.sha256
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0

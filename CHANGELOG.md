@@ -4,6 +4,19 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [0.5.0] - 2026-05-11
+
+### Added
+- Added Windows x64 CI, release asset, and npm install/run support, with path display, path filters, and path reads covered by Windows-specific tests.
+
+### Changed
+- Improved JavaScript and TypeScript local dependency extraction for ESM specifiers, re-exports, and CommonJS `require` calls, so `map` and `deps` report more complete local relations.
+- Documented Windows verification expectations for maintainers and tightened pull request workflow permissions.
+
+### Fixed
+- Hardened source discovery against symlink scope escapes and invalid `SRCWALK_THREADS` values.
+- Reduced noisy reverse dependency evidence by capping candidate searches and avoiding bare child-member matches without owner context.
+
 ## [0.4.1] - 2026-05-10
 
 ### Added

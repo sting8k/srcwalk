@@ -92,7 +92,18 @@ jobs:
         if: matrix.cross
         run: cargo install cross --version 0.2.5 --locked
 
+      - name: Build Windows
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        env:
+          CC: clang-cl
+          CXX: clang-cl
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target ${{ matrix.target }} --bin srcwalk
+
       - name: Build
+        if: matrix.target != 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
           set -euo pipefail

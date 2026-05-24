@@ -352,15 +352,15 @@ fn suggest_symbols_includes_line_ranges() {
 }
 
 #[test]
-fn suggest_symbols_empty_for_non_code() {
-    let md = b"# Heading\nSome text\n";
-    let path = std::env::temp_dir().join("srcwalk_suggest_md.md");
-    std::fs::write(&path, md).unwrap();
+fn suggest_symbols_empty_for_non_structural_file() {
+    let text = b"Heading\nSome text\n";
+    let path = std::env::temp_dir().join("srcwalk_suggest_plain.txt");
+    std::fs::write(&path, text).unwrap();
 
-    let suggestions = suggest_symbols(md, &path, "foo", 3);
+    let suggestions = suggest_symbols(text, &path, "foo", 3);
     assert!(
         suggestions.is_empty(),
-        "non-code file should return empty suggestions"
+        "non-structural file should return empty suggestions"
     );
 
     let _ = std::fs::remove_file(&path);
@@ -408,6 +408,30 @@ fn c_kr_function_section_resolves_by_name() {
     assert!(
         out.contains("rust_demangle_callback(data, len)") && out.contains("return 0;"),
         "K&R C function should resolve as a named section: {out}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn c_preprocessor_function_section_resolves_by_name() {
+    let code = r#"#if (NGX_PCRE)
+void
+ngx_http_script_copy_capture_code(ngx_http_script_engine_t *e)
+{
+    e->is_args = 1;
+}
+#endif
+"#;
+    let path = std::env::temp_dir().join("srcwalk_preproc_section.c");
+    std::fs::write(&path, code).unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_section(&path, "ngx_http_script_copy_capture_code", None, &cache).unwrap();
+    assert!(
+        out.contains("ngx_http_script_copy_capture_code(ngx_http_script_engine_t *e)")
+            && out.contains("e->is_args = 1;"),
+        "C functions inside preprocessor blocks should resolve as named sections: {out}"
     );
 
     let _ = std::fs::remove_file(&path);

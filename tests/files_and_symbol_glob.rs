@@ -25,7 +25,149 @@ fn write_file(path: &Path, body: &str) {
 }
 
 fn norm_path_separators(s: &str) -> String {
-    s.replace('\\', "/")
+    s.replace("\r\n", "\n").replace('\\', "/")
+}
+
+#[test]
+fn discover_outputs_per_hit_provenance_for_structural_usage_and_text_hits() {
+    let dir = temp_repo("hit_provenance");
+    write_file(
+        &dir.join("src/lib.rs"),
+        r#"pub fn alpha(input: &str) -> String {
+    let value = input.trim();
+    value.to_string()
+}
+
+pub fn beta() {
+    let _ = alpha("x");
+}
+"#,
+    );
+    write_file(&dir.join("src/readme.txt"), "alpha text only\n");
+
+    let symbol_out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "alpha", "--scope", "src", "--limit", "5"])
+        .output()
+        .unwrap();
+    assert!(
+        symbol_out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&symbol_out.stderr)
+    );
+    let symbol_stdout = norm_path_separators(&String::from_utf8_lossy(&symbol_out.stdout));
+    assert!(
+        symbol_stdout.contains("[fn] alpha src/lib.rs:1-4\n  source: ast · kind: definition · confidence: structural syntax"),
+        "definition provenance should identify AST-backed structural evidence:\n{symbol_stdout}"
+    );
+    assert!(
+        symbol_stdout.contains(
+            "## src/lib.rs:7 [usage]\nsource: text · kind: usage · confidence: text evidence"
+        ),
+        "usage provenance should identify text-backed usage evidence:\n{symbol_stdout}"
+    );
+    assert!(
+        symbol_stdout.contains(
+            "## src/readme.txt:1 [text]\nsource: text · kind: text · confidence: text evidence"
+        ),
+        "text-file provenance should not overclaim as usage evidence:\n{symbol_stdout}"
+    );
+
+    let text_out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover", "alpha", "--as", "text", "--scope", "src", "--limit", "5",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        text_out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&text_out.stderr)
+    );
+    let text_stdout = norm_path_separators(&String::from_utf8_lossy(&text_out.stdout));
+    assert!(
+        text_stdout.contains(
+            "## src/lib.rs [2 usages]\nsource: text · kind: usage · confidence: text evidence"
+        ),
+        "grouped usage provenance should stay visible at the group header:\n{text_stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exact_symbol_miss_suggests_wildcard_file_and_text_routes() {
+    let dir = temp_repo("symbol_prefix_guidance");
+    write_file(
+        &dir.join("src/http/modules/ngx_http_secure_link_module.c"),
+        "void ngx_http_secure_link_variable(void) {}\n",
+    );
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "ngx_http_secure_link",
+            "--scope",
+            "src/http/modules",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "exact zero-result symbol search should remain a successful search"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("0 matches"),
+        "expected zero-result output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("No exact symbol named `ngx_http_secure_link`"),
+        "expected exact-symbol explanation:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ngx_http_secure_link*")
+            && stdout.contains("--as file")
+            && stdout.contains("--as text"),
+        "expected wildcard/file/text guidance:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn filter_zero_result_error_names_the_filter() {
+    let dir = temp_repo("filter_zero_guidance");
+    write_file(
+        &dir.join("src/http/module.c"),
+        "static const char *alias = \"/tmp\";\nvoid handler(void) { alias; }\n",
+    );
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover", "alias", "--filter", "kind:fn", "--scope", "src/http",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "filter should remove all matches");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no matches after --filter kind:fn"),
+        "expected filter-specific no-match guidance:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("kind filters match result row kinds")
+            && stderr.contains("--as symbol")
+            && stderr.contains("--as text"),
+        "expected kind/action hints:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -35,7 +177,7 @@ fn files_rejects_huge_srcwalk_threads() {
 
     let out = srcwalk()
         .env("SRCWALK_THREADS", "50000")
-        .args(["files", "*.rs", "--scope", "src"])
+        .args(["discover", "*.rs", "--as", "file", "--scope", "src"])
         .current_dir(&dir)
         .output()
         .unwrap();
@@ -68,7 +210,14 @@ fn files_action_lists_file_globs() {
 
     let out = srcwalk()
         .current_dir(&dir)
-        .args(["files", "*.php", "--scope", "controllers/front"])
+        .args([
+            "discover",
+            "*.php",
+            "--as",
+            "file",
+            "--scope",
+            "controllers/front",
+        ])
         .output()
         .unwrap();
 
@@ -104,29 +253,280 @@ fn files_action_lists_file_globs() {
 }
 
 #[test]
-fn find_file_globs_tell_user_to_use_files() {
-    let dir = temp_repo("find_file_glob_error");
-    write_file(&dir.join("src/lib.rs"), "fn alpha() {}\n");
+fn files_action_accepts_glob_scope() {
+    let dir = temp_repo("files_glob_scope");
+    write_file(&dir.join("src/http/a.c"), "void a() {}\n");
+    write_file(&dir.join("src/http/b.h"), "void b();\n");
+    write_file(&dir.join("src/http/nested/c.c"), "void c() {}\n");
 
-    for args in [["find", "*.rs"].as_slice(), ["*.rs"].as_slice()] {
-        let out = srcwalk()
-            .current_dir(&dir)
-            .args(args)
-            .arg("--scope")
-            .arg("src")
-            .output()
-            .unwrap();
-        assert!(
-            !out.status.success(),
-            "file glob through find/legacy should fail"
-        );
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            stderr.contains("unsupported syntax for `srcwalk find`")
-                && stderr.contains("srcwalk files '<glob>' --scope <dir>"),
-            "expected supported files syntax, got:\n{stderr}"
-        );
-    }
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "*.c", "--as", "file", "--scope", "src/http/*.c"])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
+    assert!(normalized.contains("src/http/ (1)"), "{stdout}");
+    assert!(normalized.contains("  a.c"), "{stdout}");
+    assert!(
+        !normalized.contains("src/http/b.h"),
+        "glob scope should filter non-matching extensions:\n{stdout}"
+    );
+    assert!(
+        !normalized.contains("nested/c.c"),
+        "src/http/*.c should not include nested files:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_text_accepts_exact_file_range_scope() {
+    let dir = temp_repo("text_file_range_scope");
+    write_file(
+        &dir.join("src/lib.rs"),
+        "pub fn before() {\n    let target = 1;\n}\npub fn inside() {\n    let target = 2;\n}\npub fn after() {\n    let target = 3;\n}\n",
+    );
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "target",
+            "--as",
+            "text",
+            "--scope",
+            "src/lib.rs:4-6",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let normalized = norm_path_separators(&stdout);
+    assert!(
+        normalized.starts_with("# Search: \"target\" in src/lib.rs — 1 matches"),
+        "range scope should narrow text hits before counts:\n{stdout}"
+    );
+    assert!(stdout.contains(":5"), "{stdout}");
+    assert!(stdout.contains("let target = 2;"), "{stdout}");
+    assert!(!stdout.contains("let target = 1;"), "{stdout}");
+    assert!(!stdout.contains("let target = 3;"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_range_scope_rejects_invalid_line_range_before_path_lookup() {
+    let dir = temp_repo("invalid_range_scope");
+    write_file(&dir.join("src/lib.rs"), "pub fn target() {}\n");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "target",
+            "--as",
+            "text",
+            "--scope",
+            "src/lib.rs:4-2",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "invalid range should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("invalid scope line range: 4-2"),
+        "expected clear range error, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("No such file or directory"),
+        "range parser should not report the whole file:range as a missing path:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_range_scope_rejects_explicit_line_filter() {
+    let dir = temp_repo("range_scope_line_filter");
+    write_file(
+        &dir.join("src/lib.rs"),
+        "pub fn target() {\n    target();\n}\n",
+    );
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "target",
+            "--scope",
+            "src/lib.rs:1-2",
+            "--filter",
+            "line:1-1",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !out.status.success(),
+        "ambiguous double line range should fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot be combined with --filter line"),
+        "expected clear line-filter conflict, got:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_glob_scope_rejects_extra_glob_filter() {
+    let dir = temp_repo("scope_glob_plus_glob");
+    write_file(&dir.join("src/a.rs"), "pub fn target() {}\n");
+    write_file(&dir.join("src/a.ts"), "function target() {}\n");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover", "target", "--scope", "src/*.rs", "--glob", "*.ts",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "scope glob plus --glob should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("glob scope cannot be combined with --glob"),
+        "expected clear glob conflict, got:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_range_scope_reports_missing_file_without_range_suffix() {
+    let dir = temp_repo("missing_file_range_scope");
+    write_file(&dir.join("src/lib.rs"), "pub fn target() {}\n");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "target",
+            "--as",
+            "text",
+            "--scope",
+            "src/missing.rs:1-2",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "missing file range should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("invalid scope: src/missing.rs"),
+        "expected missing base file path, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("src/missing.rs:1-2"),
+        "range suffix should not be reported as part of missing path:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_match_all_accepts_exact_file_and_glob_scopes() {
+    let dir = temp_repo("match_all_file_glob_scope");
+    write_file(
+        &dir.join("src/one.rs"),
+        "pub fn target() {\n    let alpha = beta;\n}\n",
+    );
+    write_file(&dir.join("src/two.py"), "def target():\n    alpha = beta\n");
+
+    let file_out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "all",
+            "--as",
+            "text",
+            "--scope",
+            "src/one.rs",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        file_out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&file_out.stderr)
+    );
+    let file_stdout = String::from_utf8_lossy(&file_out.stdout);
+    assert!(file_stdout.contains("src/one.rs"), "{file_stdout}");
+    assert!(!file_stdout.contains("two.py"), "{file_stdout}");
+
+    let glob_out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "all",
+            "--as",
+            "text",
+            "--scope",
+            "src/*.rs",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        glob_out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&glob_out.stderr)
+    );
+    let glob_stdout = String::from_utf8_lossy(&glob_out.stdout);
+    assert!(glob_stdout.contains("src/one.rs"), "{glob_stdout}");
+    assert!(!glob_stdout.contains("two.py"), "{glob_stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_file_globs_infer_file_discovery() {
+    let dir = temp_repo("find_file_glob_inferred");
+    write_file(&dir.join("src/lib.rs"), "fn alpha() {}\n");
+    write_file(&dir.join("src/two.py"), "def alpha(): pass\n");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "*.rs", "--scope", "src"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "file glob through discover should infer file mode:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Files:"), "{stdout}");
+    assert!(stdout.contains("src/ (1)"), "{stdout}");
+    assert!(stdout.contains("lib.rs"), "{stdout}");
+    assert!(!stdout.contains("two.py"), "{stdout}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -141,26 +541,26 @@ fn find_unsupported_syntax_lists_supported_forms() {
 
     let out = srcwalk()
         .current_dir(&dir)
-        .args(["find", "BaseInfo\\|DomainInfo", "--scope", "src"])
+        .args(["discover", "BaseInfo\\|DomainInfo", "--scope", "src"])
         .output()
         .unwrap();
 
     assert!(!out.status.success(), "expected invalid query to fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("unsupported syntax for `srcwalk find`"),
+        stderr.contains("unsupported syntax for `srcwalk discover`"),
         "expected generic syntax diagnostic, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("srcwalk find \"BaseInfo, DomainInfo\" --scope <dir>"),
+        stderr.contains("srcwalk discover \"BaseInfo, DomainInfo\" --scope <dir>"),
         "expected supported syntax, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("srcwalk find <query> --scope <dir>"),
+        stderr.contains("srcwalk discover <query> --scope <dir>"),
         "expected single-query syntax, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("srcwalk files '<glob>' --scope <dir>"),
+        stderr.contains("srcwalk discover '<glob>' --as file --scope <dir>"),
         "expected filename syntax, got:\n{stderr}"
     );
     assert!(
@@ -184,7 +584,7 @@ fn find_symbol_name_glob_supports_repeated_scopes() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "display_ajax_*",
             "--scope",
             "src",
@@ -230,7 +630,7 @@ fn find_symbol_name_glob_expands_definition_source() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "display_ajax_*",
             "--scope",
             "src",
@@ -274,7 +674,7 @@ fn find_symbol_name_glob_matches_definitions_only() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "displayAjax*",
             "--scope",
             "controllers/front",
@@ -337,7 +737,7 @@ func translateRequest() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "TranslateRequest",
             "--scope",
             "internal/executor",

@@ -58,7 +58,9 @@ pub(super) fn search_name_glob_with_artifact(
             let path = entry.path();
             let file_size = match std::fs::metadata(path) {
                 Ok(meta) => {
-                    if meta.len() > 500_000 {
+                    if !crate::capabilities::is_private_text_file_type(detect_file_type(path))
+                        && meta.len() > 500_000
+                    {
                         return ignore::WalkState::Continue;
                     }
                     meta.len()
@@ -73,7 +75,7 @@ pub(super) fn search_name_glob_with_artifact(
                 return ignore::WalkState::Continue;
             }
 
-            let skip_bloom = false;
+            let skip_bloom = crate::capabilities::is_private_text_file_type(detect_file_type(path));
             let Some(bytes) = read_file_bytes(path, file_size) else {
                 return ignore::WalkState::Continue;
             };

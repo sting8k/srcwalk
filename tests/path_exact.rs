@@ -20,7 +20,7 @@ fn temp_repo(name: &str) -> PathBuf {
 }
 
 #[test]
-fn path_like_query_searches_content_before_missing_path_error() {
+fn root_path_like_query_no_longer_falls_back_to_search() {
     let dir = temp_repo("path_note");
     fs::write(
         dir.join("notes.txt"),
@@ -35,11 +35,32 @@ fn path_like_query_searches_content_before_missing_path_error() {
         .output()
         .unwrap();
 
+    assert!(!out.status.success(), "root non-path fallback is removed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        out.status.success(),
-        "path-like query with content match should search before missing-path error"
+        stderr.contains("not found") && stderr.contains("internal/missing.go"),
+        "expected exact-read not found, got:\n{stderr}"
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).is_empty(),
+        "missing exact path should not emit fallback search output"
+    );
+
+    let discover = srcwalk()
+        .arg("discover")
+        .arg("internal/missing.go")
+        .arg("--as")
+        .arg("text")
+        .arg("--scope")
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        discover.status.success(),
+        "discover text query should search path-like text:\n{}",
+        String::from_utf8_lossy(&discover.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&discover.stdout);
     assert!(
         stdout.contains("notes.txt:1") && stdout.contains("internal/missing.go appears in a note"),
         "expected content hit for path-like text, got:\n{stdout}"
@@ -49,7 +70,7 @@ fn path_like_query_searches_content_before_missing_path_error() {
 }
 
 #[test]
-fn path_like_missing_nested_package_suggests_basename_lookup() {
+fn path_like_missing_nested_package_fails_as_exact_read() {
     let dir = temp_repo("path_note_nested");
     fs::create_dir_all(dir.join("node_modules/pkg/dist/modes/interactive")).unwrap();
     fs::write(
@@ -72,16 +93,15 @@ fn path_like_missing_nested_package_suggests_basename_lookup() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("not found")
-            && stderr.contains("node_modules/pkg/dist/interactive/interactive-mode.js")
-            && stderr.contains("Next: check the path or scope"),
-        "expected basename locate hint, got:\n{stderr}"
+            && stderr.contains("node_modules/pkg/dist/interactive/interactive-mode.js"),
+        "expected exact-read not found, got:\n{stderr}"
     );
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn path_exact_reads_file_without_fallback() {
+fn root_path_shortcut_reads_file_without_fallback() {
     let dir = temp_repo("path_exact_read");
     fs::create_dir_all(dir.join("internal")).unwrap();
     fs::write(
@@ -94,7 +114,6 @@ fn path_exact_reads_file_without_fallback() {
         .arg("internal/target.go")
         .arg("--scope")
         .arg(&dir)
-        .arg("--path-exact")
         .arg("--full")
         .output()
         .unwrap();
@@ -107,14 +126,14 @@ fn path_exact_reads_file_without_fallback() {
     );
     assert!(
         !stdout.contains("Search:") && !stdout.contains("Glob:"),
-        "--path-exact should not fallback to search/glob, got:\n{stdout}"
+        "root path shortcut should not fallback to search/glob, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn path_exact_missing_fails_fast() {
+fn root_missing_path_fails_fast() {
     let dir = temp_repo("path_exact_missing");
     fs::write(
         dir.join("notes.txt"),
@@ -126,11 +145,10 @@ fn path_exact_missing_fails_fast() {
         .arg("internal/missing.go")
         .arg("--scope")
         .arg(&dir)
-        .arg("--path-exact")
         .output()
         .unwrap();
 
-    assert!(!out.status.success(), "expected --path-exact to fail");
+    assert!(!out.status.success(), "expected missing path to fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("not found") && stderr.contains("internal/missing.go"),
@@ -139,7 +157,7 @@ fn path_exact_missing_fails_fast() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.is_empty(),
-        "--path-exact should not emit fallback search output, got:\n{stdout}"
+        "missing exact path should not emit fallback search output, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);

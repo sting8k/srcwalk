@@ -53,7 +53,13 @@ fn symbol_search_exposes_class_kind_range_and_child_context() {
     .unwrap();
 
     let out = srcwalk()
-        .args(["DependencyProperty", "--glob", "*.cs", "--scope"])
+        .args([
+            "discover",
+            "DependencyProperty",
+            "--glob",
+            "*.cs",
+            "--scope",
+        ])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -98,6 +104,7 @@ fn symbol_search_pagination_footer_remains_trailing_with_semantic_context() {
 
     let out = srcwalk()
         .args([
+            "discover",
             "DependencyProperty",
             "--glob",
             "*.cs",
@@ -144,7 +151,13 @@ fn symbol_search_facets_use_semantic_compact_definition_rows() {
     }
 
     let out = srcwalk()
-        .args(["DependencyProperty", "--glob", "*.cs", "--scope"])
+        .args([
+            "discover",
+            "DependencyProperty",
+            "--glob",
+            "*.cs",
+            "--scope",
+        ])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -169,6 +182,50 @@ fn symbol_search_facets_use_semantic_compact_definition_rows() {
 }
 
 #[test]
+fn symbol_search_compact_groups_multiple_definitions_in_same_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut source = String::new();
+    for idx in 0..6 {
+        source.push_str(&format!(
+            "export class Shared{idx} {{\n  value() {{ return {idx}; }}\n}}\n"
+        ));
+    }
+    std::fs::write(dir.path().join("multi.ts"), source).unwrap();
+
+    let out = srcwalk()
+        .args([
+            "discover",
+            "Shared*",
+            "--as",
+            "symbol",
+            "--filter",
+            "kind:class",
+            "--scope",
+        ])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("### Definitions (6)"),
+        "expected compact definitions facet, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("multi.ts [6 matches]"),
+        "expected same-file definition group, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[class] Shared0 :1-3"),
+        "expected pathless exact range under file group, got:\n{stdout}"
+    );
+    assert!(
+        stdout.matches("multi.ts:").count() <= 1,
+        "grouped compact definitions should not repeat file path for every row, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn symbol_search_semantic_rows_work_across_rust_typescript_and_python() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -188,7 +245,7 @@ fn symbol_search_semantic_rows_work_across_rust_typescript_and_python() {
     .unwrap();
 
     let rust = srcwalk()
-        .args(["Widget", "--glob", "*.rs", "--scope"])
+        .args(["discover", "Widget", "--glob", "*.rs", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -199,7 +256,7 @@ fn symbol_search_semantic_rows_work_across_rust_typescript_and_python() {
     );
 
     let typescript = srcwalk()
-        .args(["Widget", "--glob", "*.ts", "--scope"])
+        .args(["discover", "Widget", "--glob", "*.ts", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -214,7 +271,7 @@ fn symbol_search_semantic_rows_work_across_rust_typescript_and_python() {
     );
 
     let python = srcwalk()
-        .args(["Widget", "--glob", "*.py", "--scope"])
+        .args(["discover", "Widget", "--glob", "*.py", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -256,7 +313,14 @@ func caller() {
     .unwrap();
 
     let go = srcwalk()
-        .args(["TranslateRequest", "--callers", "--glob", "*.go", "--scope"])
+        .args([
+            "trace",
+            "callers",
+            "TranslateRequest",
+            "--glob",
+            "*.go",
+            "--scope",
+        ])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -270,8 +334,9 @@ func caller() {
 
     let python = srcwalk()
         .args([
+            "trace",
+            "callers",
             "translate_request",
-            "--callers",
             "--glob",
             "*.py",
             "--scope",
@@ -289,8 +354,9 @@ func caller() {
 
     let rust = srcwalk()
         .args([
+            "trace",
+            "callers",
             "translate_request",
-            "--callers",
             "--glob",
             "*.rs",
             "--scope",
@@ -328,7 +394,14 @@ func other() {
     .unwrap();
 
     let out = srcwalk()
-        .args(["TranslateRequest", "--callers", "--limit", "1", "--scope"])
+        .args([
+            "trace",
+            "callers",
+            "TranslateRequest",
+            "--limit",
+            "1",
+            "--scope",
+        ])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -381,7 +454,7 @@ func caller() {
     .unwrap();
 
     let compact = srcwalk()
-        .args(["TranslateRequest", "--callers", "--scope"])
+        .args(["trace", "callers", "TranslateRequest", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -401,7 +474,13 @@ func caller() {
     );
 
     let expanded = srcwalk()
-        .args(["TranslateRequest", "--callers", "--expand=1", "--scope"])
+        .args([
+            "trace",
+            "callers",
+            "TranslateRequest",
+            "--expand=1",
+            "--scope",
+        ])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -437,8 +516,9 @@ func other() {
 
     let out = srcwalk()
         .args([
+            "trace",
+            "callers",
             "TranslateRequest",
-            "--callers",
             "--filter",
             "args:5 prefix:sdktranslator",
             "--scope",
@@ -494,8 +574,9 @@ func c() {
 
     let out = srcwalk()
         .args([
+            "trace",
+            "callers",
             "TranslateRequest",
-            "--callers",
             "--filter",
             "receiver:sdktranslator",
             "--count-by",
@@ -513,7 +594,7 @@ func c() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains("# Slice: TranslateRequest — 2 call sites grouped by args matching `receiver:sdktranslator`"),
+        stdout.contains("# Trace callers: TranslateRequest — 2 call sites grouped by args matching `receiver:sdktranslator`"),
         "expected count header, got:\n{stdout}"
     );
     assert!(
@@ -544,8 +625,9 @@ fn callers_filter_rejects_depth_bfs_until_supported() {
 
     let out = srcwalk()
         .args([
+            "trace",
+            "callers",
             "TranslateRequest",
-            "--callers",
             "--depth",
             "2",
             "--filter",
@@ -562,7 +644,7 @@ fn callers_filter_rejects_depth_bfs_until_supported() {
         "depth+filter should fail until supported"
     );
     assert!(
-        stderr.contains("direct --callers only"),
+        stderr.contains("direct trace callers only"),
         "expected direct-callers guardrail, got:\n{stderr}"
     );
 }
@@ -578,8 +660,9 @@ fn callers_count_by_zero_matches_uses_no_callers_diagnostic() {
 
     let out = srcwalk()
         .args([
+            "trace",
+            "callers",
             "missingCall",
-            "--callers",
             "--count-by",
             "receiver",
             "--scope",
@@ -613,8 +696,9 @@ export function c(other: any) { other.callTool({}); }
 
     let out = srcwalk()
         .args([
+            "trace",
+            "callers",
             "callTool",
-            "--callers",
             "--count-by",
             "receiver",
             "--limit",
@@ -658,7 +742,13 @@ fn general_filter_path_narrows_symbol_search_without_callers() {
     .unwrap();
 
     let out = srcwalk()
-        .args(["Depends", "--filter", "path:param_functions", "--scope"])
+        .args([
+            "discover",
+            "Depends",
+            "--filter",
+            "path:param_functions",
+            "--scope",
+        ])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -666,7 +756,7 @@ fn general_filter_path_narrows_symbol_search_without_callers() {
 
     assert!(
         out.status.success(),
-        "general path filter should work without --callers, stderr:\n{}\nstdout:\n{stdout}",
+        "general path filter should work without trace callers, stderr:\n{}\nstdout:\n{stdout}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
@@ -685,7 +775,7 @@ fn caller_only_filter_qualifiers_are_rejected_without_callers() {
     std::fs::write(dir.path().join("app.py"), "def Depends(x):\n    return x\n").unwrap();
 
     let out = srcwalk()
-        .args(["Depends", "--filter", "args:1", "--scope"])
+        .args(["discover", "Depends", "--filter", "args:1", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -693,10 +783,10 @@ fn caller_only_filter_qualifiers_are_rejected_without_callers() {
 
     assert!(
         !out.status.success(),
-        "caller-only args filter should fail without --callers"
+        "caller-only args filter should fail without trace callers"
     );
     assert!(
-        stderr.contains("only applies with --callers"),
+        stderr.contains("only applies with trace callers"),
         "expected caller-only qualifier diagnostic, got:\n{stderr}"
     );
 }
@@ -720,7 +810,7 @@ impl Matcher for RegexMatcher {
     .unwrap();
 
     let out = srcwalk()
-        .args(["Matcher", "--filter", "kind:impl", "--scope"])
+        .args(["discover", "Matcher", "--filter", "kind:impl", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -757,7 +847,7 @@ class RegexMatcher implements Matcher {
     .unwrap();
 
     let out = srcwalk()
-        .args(["Matcher", "--filter", "kind:impl", "--scope"])
+        .args(["discover", "Matcher", "--filter", "kind:impl", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -788,7 +878,7 @@ class RegexMatcher implements Matcher {
     .unwrap();
 
     let out = srcwalk()
-        .args(["Matcher", "--filter", "kind:impl", "--scope"])
+        .args(["discover", "Matcher", "--filter", "kind:impl", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -817,7 +907,7 @@ class RegexMatcher : IMatcher { public void Find() {} }
     .unwrap();
 
     let base = srcwalk()
-        .args(["IMatcher", "--filter", "kind:base", "--scope"])
+        .args(["discover", "IMatcher", "--filter", "kind:base", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -833,7 +923,7 @@ class RegexMatcher : IMatcher { public void Find() {} }
     );
 
     let imp = srcwalk()
-        .args(["IMatcher", "--filter", "kind:impl", "--scope"])
+        .args(["discover", "IMatcher", "--filter", "kind:impl", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -911,7 +1001,7 @@ const assigned = (function assignedIife() {
     }
 
     let find = srcwalk()
-        .args(["assignedIife", "--scope"])
+        .args(["discover", "assignedIife", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -923,7 +1013,7 @@ const assigned = (function assignedIife() {
     );
 
     let callees = srcwalk()
-        .args(["boot", "--callees", "--scope"])
+        .args(["trace", "callees", "boot", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -946,7 +1036,7 @@ const assigned = (function assignedIife() {
         ("assignedWork", "assignedIife"),
     ] {
         let callers = srcwalk()
-            .args([target, "--callers", "--scope"])
+            .args(["trace", "callers", target, "--scope"])
             .arg(dir.path())
             .output()
             .unwrap();
@@ -979,7 +1069,7 @@ const bootIife = (() => {
     .unwrap();
 
     let find = srcwalk()
-        .args(["boot", "--scope"])
+        .args(["discover", "boot", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -991,7 +1081,7 @@ const bootIife = (() => {
     );
 
     let callees = srcwalk()
-        .args(["bootIife", "--callees", "--scope"])
+        .args(["trace", "callees", "bootIife", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -1006,7 +1096,7 @@ const bootIife = (() => {
     );
 
     let callers = srcwalk()
-        .args(["helper", "--callers", "--scope"])
+        .args(["trace", "callers", "helper", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -1059,7 +1149,7 @@ const bootIife = (<T>(value: T): T => {
     );
 
     let callees = srcwalk()
-        .args(["boot", "--callees", "--scope"])
+        .args(["trace", "callees", "boot", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -1074,7 +1164,7 @@ const bootIife = (<T>(value: T): T => {
     );
 
     let callers = srcwalk()
-        .args(["helper", "--callers", "--scope"])
+        .args(["trace", "callers", "helper", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -1117,7 +1207,7 @@ class B {
     .unwrap();
 
     let out = srcwalk()
-        .args(["callers", "getCacheDir", "--scope"])
+        .args(["trace", "callers", "getCacheDir", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -1158,7 +1248,7 @@ export function start() {
     .unwrap();
 
     let out = srcwalk()
-        .args(["callers", "makeClient", "--scope"])
+        .args(["trace", "callers", "makeClient", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -1197,7 +1287,7 @@ class Runner {
     .unwrap();
 
     let out = srcwalk()
-        .args(["callers", "Flush", "--scope"])
+        .args(["trace", "callers", "Flush", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();

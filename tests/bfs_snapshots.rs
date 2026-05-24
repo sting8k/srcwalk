@@ -18,15 +18,14 @@ fn fixture_scope() -> PathBuf {
     repo_root().join("src")
 }
 
-fn run_callers(target: &str, scope: &Path, depth: Option<usize>, json: bool) -> String {
-    run_callers_capped(target, scope, depth, json, Some(20_000))
+fn run_callers(target: &str, scope: &Path, depth: Option<usize>) -> String {
+    run_callers_capped(target, scope, depth, Some(20_000))
 }
 
 fn run_callers_capped(
     target: &str,
     scope: &Path,
     depth: Option<usize>,
-    json: bool,
     max_edges: Option<usize>,
 ) -> String {
     let cache = OutlineCache::new();
@@ -34,7 +33,6 @@ fn run_callers_capped(
         target, scope, /* expand */ 0, /* budget_tokens */ None, /* limit */ None,
         /* offset */ 0, /* glob */ None, &cache, depth, /* max_frontier */ None,
         max_edges, /* skip_hubs */ None, /* filter */ None, /* count_by */ None,
-        json,
     )
     .expect("run_callers should succeed on fixture")
 }
@@ -78,6 +76,17 @@ fn strip_timing(s: &str) -> String {
     out
 }
 
+fn auto_hub_count(output: &str, symbol: &str) -> Option<usize> {
+    let needle = format!("{symbol}(");
+    let line = output
+        .lines()
+        .find(|line| line.contains("auto-promoted to hub") && line.contains(&needle))?;
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    let end = rest.find(')')?;
+    rest[..end].parse().ok()
+}
+
 // ── #1 Legacy byte-exact ─────────────────────────────────────────────────
 // No --depth  ==  --depth 1. Protects the "don't surprise existing users"
 // contract documented in src/lib.rs:150.
@@ -85,8 +94,8 @@ fn strip_timing(s: &str) -> String {
 #[test]
 fn legacy_equals_depth_1() {
     let scope = fixture_scope();
-    let legacy = run_callers("find_callers_batch", &scope, None, false);
-    let depth_1 = run_callers("find_callers_batch", &scope, Some(1), false);
+    let legacy = run_callers("find_callers_batch", &scope, None);
+    let depth_1 = run_callers("find_callers_batch", &scope, Some(1));
 
     // Both paths route through `search_callers_expanded`. The impact hop-2
     // section order depends on parallel walker scheduling (pre-existing
@@ -112,9 +121,9 @@ fn legacy_equals_depth_1() {
 #[test]
 fn bfs_deterministic_across_runs() {
     let scope = fixture_scope();
-    let out1 = strip_timing(&run_callers("find_callers_batch", &scope, Some(3), false));
-    let out2 = strip_timing(&run_callers("find_callers_batch", &scope, Some(3), false));
-    let out3 = strip_timing(&run_callers("find_callers_batch", &scope, Some(3), false));
+    let out1 = strip_timing(&run_callers("find_callers_batch", &scope, Some(3)));
+    let out2 = strip_timing(&run_callers("find_callers_batch", &scope, Some(3)));
+    let out3 = strip_timing(&run_callers("find_callers_batch", &scope, Some(3)));
     assert_eq!(out1, out2, "BFS run 1 vs 2 must be deterministic");
     assert_eq!(out2, out3, "BFS run 2 vs 3 must be deterministic");
 }
@@ -124,35 +133,33 @@ fn bfs_deterministic_across_runs() {
 // (same frontier/edge caps). A regression that drops hop-1 edges while
 // computing hop-2 would fail here.
 
-fn extract_edges(json: &str) -> Vec<(u32, String, String, u32, String)> {
-    let v: serde_json::Value = serde_json::from_str(json).expect("valid json");
-    v["edges"]
-        .as_array()
-        .expect("edges array")
-        .iter()
-        .map(|e| {
-            (
-                e["hop"].as_u64().unwrap() as u32,
-                e["from"].as_str().unwrap().to_string(),
-                e["from_file"].as_str().unwrap().to_string(),
-                e["from_line"].as_u64().unwrap() as u32,
-                e["to"].as_str().unwrap().to_string(),
-            )
-        })
-        .collect()
+fn hop_lines(output: &str, hop: usize) -> Vec<String> {
+    let mut in_hop = false;
+    let marker = format!("── hop {hop} ");
+    let mut lines = Vec::new();
+    for line in output.lines() {
+        if line.starts_with("── hop ") {
+            in_hop = line.starts_with(&marker);
+            continue;
+        }
+        if in_hop && line.starts_with("  ") && line.contains("  → ") {
+            lines.push(line.trim().to_string());
+        }
+    }
+    lines
 }
 
 #[test]
 fn deeper_bfs_superset_of_shallower() {
     let scope = fixture_scope();
-    let e2 = extract_edges(&run_callers("find_callers_batch", &scope, Some(2), true));
-    let e3 = extract_edges(&run_callers("find_callers_batch", &scope, Some(3), true));
+    let d2 = run_callers("find_callers_batch", &scope, Some(2));
+    let d3 = run_callers("find_callers_batch", &scope, Some(3));
 
     // Every hop-1 edge in depth=2 must exist in depth=3.
     // (We compare hop-1 only — deeper hops may differ if frontier cap differs,
     //  but hop-1 is fully determined by the root symbol.)
-    let hop1_from_d2: std::collections::HashSet<_> = e2.iter().filter(|e| e.0 == 1).collect();
-    let hop1_from_d3: std::collections::HashSet<_> = e3.iter().filter(|e| e.0 == 1).collect();
+    let hop1_from_d2: std::collections::HashSet<_> = hop_lines(&d2, 1).into_iter().collect();
+    let hop1_from_d3: std::collections::HashSet<_> = hop_lines(&d3, 1).into_iter().collect();
     assert_eq!(
         hop1_from_d2, hop1_from_d3,
         "hop-1 edges must be identical regardless of max_depth"
@@ -171,76 +178,27 @@ fn deeper_bfs_superset_of_shallower() {
 #[test]
 fn auto_hub_promotes_new_on_self() {
     let scope = repo_root(); // full repo so `new` fan-out > 200
-    let json = run_callers("Session", &scope, Some(4), true);
-    let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
-    let promoted = v["elided"]["auto_hubs_promoted"]
-        .as_array()
-        .expect("auto_hubs_promoted array");
+    let output = run_callers("Session", &scope, Some(4));
+    let new_edges = auto_hub_count(&output, "new")
+        .unwrap_or_else(|| panic!("expected `new` to be auto-promoted; output:\n{output}"));
     assert!(
-        !promoted.is_empty(),
-        "expected at least one auto-promoted hub on self-BFS; got empty"
-    );
-    // Must include "new" with >= 200 edges (the AUTO_HUB_THRESHOLD).
-    let new_entry = promoted
-        .iter()
-        .find(|e| e["symbol"].as_str() == Some("new"));
-    assert!(
-        new_entry.is_some(),
-        "expected `new` to be auto-promoted; got: {promoted:?}"
-    );
-    let edges = new_entry.unwrap()["edges"].as_u64().unwrap();
-    assert!(
-        edges >= 200,
-        "auto-promoted `new` must have >=200 edges (threshold); got {edges}"
+        new_edges >= 200,
+        "auto-promoted `new` must have >=200 edges (threshold); got {new_edges}\n{output}"
     );
 }
 
-// ── #5 JSON schema lock ──────────────────────────────────────────────────
-// Top-level keys must remain stable — agents parse this output.
+// ── #5 Text shape lock ───────────────────────────────────────────────────
+// Multi-hop callers now has a text-only public surface. Keep the core sections
+// stable enough for agents to navigate without relying on machine output.
 
 #[test]
-fn json_schema_top_level_keys() {
+fn bfs_text_includes_core_sections() {
     let scope = fixture_scope();
-    let json = run_callers("find_callers_batch", &scope, Some(2), true);
-    let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    let output = run_callers("find_callers_batch", &scope, Some(2));
 
-    for key in [
-        "root",
-        "scope",
-        "depth_reached",
-        "max_depth",
-        "edges_total",
-        "elapsed_ms",
-        "edges",
-        "stats",
-        "elided",
-        "disclaimer",
-    ] {
-        assert!(
-            v.get(key).is_some(),
-            "JSON missing top-level key `{key}`; schema changed"
-        );
-    }
-
-    for key in ["per_hop", "top_level_terminal", "unresolved_symbols"] {
-        assert!(
-            v["stats"].get(key).is_some(),
-            "JSON missing stats.{key}; schema changed"
-        );
-    }
-
-    for key in [
-        "edges_cut_at_hop",
-        "frontier_cuts",
-        "hubs_skipped",
-        "auto_hubs_promoted",
-        "auto_hub_threshold",
-    ] {
-        assert!(
-            v["elided"].get(key).is_some(),
-            "JSON missing elided.{key}; schema changed"
-        );
-    }
+    assert!(output.contains("# BFS callers of \"find_callers_batch\""));
+    assert!(output.contains("── hop 1 ("));
+    assert!(output.contains("Static by-name call graph only."));
 }
 
 // ── #6 Determinism under --max-edges cap ─────────────────────────────────
@@ -257,18 +215,20 @@ fn json_schema_top_level_keys() {
 #[test]
 fn bfs_deterministic_under_edge_cap() {
     let scope = repo_root();
-    let j1 = run_callers_capped("Session", &scope, Some(4), true, Some(50));
-    let j2 = run_callers_capped("Session", &scope, Some(4), true, Some(50));
-    let j3 = run_callers_capped("Session", &scope, Some(4), true, Some(50));
-    let e1 = extract_edges(&j1);
-    let e2 = extract_edges(&j2);
-    let e3 = extract_edges(&j3);
-    assert_eq!(e1, e2, "cap-truncated BFS run 1 vs 2 must be deterministic");
-    assert_eq!(e2, e3, "cap-truncated BFS run 2 vs 3 must be deterministic");
+    let out1 = strip_timing(&run_callers_capped("Session", &scope, Some(4), Some(50)));
+    let out2 = strip_timing(&run_callers_capped("Session", &scope, Some(4), Some(50)));
+    let out3 = strip_timing(&run_callers_capped("Session", &scope, Some(4), Some(50)));
+    assert_eq!(
+        out1, out2,
+        "cap-truncated BFS run 1 vs 2 must be deterministic"
+    );
+    assert_eq!(
+        out2, out3,
+        "cap-truncated BFS run 2 vs 3 must be deterministic"
+    );
     // Sanity: cap must actually trigger, otherwise the test doesn't guard.
-    let v: serde_json::Value = serde_json::from_str(&j1).unwrap();
     assert!(
-        v["elided"]["edges_cut_at_hop"].is_number(),
+        out1.contains("edges capped at hop"),
         "test fixture no longer trips the edge cap; pick a heavier target or lower the cap"
     );
 }
@@ -285,20 +245,13 @@ fn bfs_deterministic_under_edge_cap() {
 #[test]
 fn bfs_hop2_finds_edges_after_frontier_propagation() {
     let scope = fixture_scope();
-    let json = run_callers("find_callers_batch", &scope, Some(3), true);
-    let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
-    let per_hop = v["stats"]["per_hop"].as_array().expect("per_hop array");
+    let output = run_callers("find_callers_batch", &scope, Some(3));
+    let hop2_edges = hop_lines(&output, 2);
 
-    // Must reach at least hop 2.
-    assert!(
-        per_hop.len() >= 2,
-        "expected at least 2 hops; got {}",
-        per_hop.len()
-    );
     // Hop 2 must have edges (proves bare-name frontier works).
-    let hop2_edges = per_hop[1]["edges"].as_u64().unwrap_or(0);
     assert!(
-        hop2_edges > 0,
-        "hop 2 must have >0 edges (frontier propagation); got 0"
+        !hop2_edges.is_empty(),
+        "hop 2 must have >0 edges (frontier propagation); output:
+{output}"
     );
 }

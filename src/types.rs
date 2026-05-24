@@ -1,5 +1,44 @@
+use std::fmt;
 use std::path::PathBuf;
 use std::time::SystemTime;
+
+use crate::evidence::{Anchor, EvidenceAtom, EvidenceKind, EvidenceSource};
+
+macro_rules! define_id_type {
+    ($name:ident) => {
+        #[allow(dead_code)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub(crate) struct $name(&'static str);
+
+        #[allow(dead_code)]
+        impl $name {
+            #[must_use]
+            pub(crate) const fn new(value: &'static str) -> Self {
+                Self(value)
+            }
+
+            #[must_use]
+            pub(crate) const fn as_str(self) -> &'static str {
+                self.0
+            }
+
+            #[must_use]
+            pub(crate) fn is_empty(self) -> bool {
+                self.0.is_empty()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+    };
+}
+
+define_id_type!(LangId);
+define_id_type!(OutlineKindId);
+define_id_type!(ViewModeId);
 
 /// What kind of query the user issued.
 #[derive(Debug)]
@@ -17,9 +56,35 @@ pub enum QueryType {
     Fallthrough(String),
 }
 
+/// Provider-owned language identity for removable capability modules.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProviderLang {
+    id: LangId,
+    label: &'static str,
+}
+
+#[allow(dead_code)]
+impl ProviderLang {
+    #[must_use]
+    pub const fn new(id: LangId, label: &'static str) -> Self {
+        Self { id, label }
+    }
+
+    #[must_use]
+    pub(crate) const fn id(self) -> LangId {
+        self.id
+    }
+
+    #[must_use]
+    pub(crate) const fn label(self) -> &'static str {
+        self.label
+    }
+}
+
 /// Programming language, carried through the type system so downstream
-/// code never re-detects. Adding a language means adding an arm here
-/// and the compiler tells you everywhere else.
+/// code never re-detects. Public built-ins stay closed; removable providers use
+/// `Lang::Provider` while the compiler still checks built-in coverage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
     Rust,
@@ -38,6 +103,13 @@ pub enum Lang {
     Kotlin,
     CSharp,
     Elixir,
+    Css,
+    Scss,
+    Less,
+    Html,
+    Markdown,
+    #[allow(dead_code)]
+    Provider(ProviderLang),
     Dockerfile,
     Make,
 }
@@ -46,14 +118,52 @@ pub enum Lang {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
     Code(Lang),
-    Markdown,
+    Document(Lang),
     StructuredData,
     Tabular,
     Log,
     Other,
 }
 
+impl FileType {
+    pub(crate) const fn structural_lang(self) -> Option<Lang> {
+        match self {
+            Self::Code(lang) | Self::Document(lang) => Some(lang),
+            Self::StructuredData | Self::Tabular | Self::Log | Self::Other => None,
+        }
+    }
+
+    pub(crate) const fn is_code(self) -> bool {
+        matches!(self, Self::Code(_))
+    }
+}
+
 /// What the output contains — shown in the header bracket.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProviderViewMode {
+    id: ViewModeId,
+    label: &'static str,
+}
+
+#[allow(dead_code)]
+impl ProviderViewMode {
+    #[must_use]
+    pub(crate) const fn new(id: ViewModeId, label: &'static str) -> Self {
+        Self { id, label }
+    }
+
+    #[must_use]
+    pub(crate) const fn id(self) -> ViewModeId {
+        self.id
+    }
+
+    #[must_use]
+    pub(crate) const fn label(self) -> &'static str {
+        self.label
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     Full,
@@ -67,6 +177,8 @@ pub enum ViewMode {
     HeadTail,
     Empty,
     Generated,
+    #[allow(dead_code)]
+    Provider(ProviderViewMode),
     #[allow(dead_code)]
     Binary,
     #[allow(dead_code)]
@@ -87,6 +199,10 @@ impl std::fmt::Display for ViewMode {
             Self::HeadTail => write!(f, "head+tail"),
             Self::Empty => write!(f, "empty"),
             Self::Generated => write!(f, "generated — skipped"),
+            Self::Provider(mode) => {
+                debug_assert!(!mode.id().is_empty());
+                f.write_str(mode.label())
+            }
             Self::Binary => write!(f, "skipped"),
             Self::Error => write!(f, "error"),
             Self::Section => write!(f, "section"),
@@ -123,6 +239,33 @@ pub struct Match {
     pub in_comment: bool,
 }
 
+impl Match {
+    pub(crate) fn to_evidence_atom(&self) -> EvidenceAtom {
+        let kind = if self.is_definition {
+            EvidenceKind::Definition
+        } else if self.exact {
+            EvidenceKind::Usage
+        } else {
+            EvidenceKind::Text
+        };
+        let source = if self.is_definition {
+            EvidenceSource::Ast
+        } else {
+            EvidenceSource::Text
+        };
+        let anchor = if self.is_definition {
+            self.def_range.map_or_else(
+                || Anchor::line(&self.path, self.line),
+                |(start, end)| Anchor::lines(&self.path, start, end),
+            )
+        } else {
+            Anchor::line(&self.path, self.line)
+        };
+
+        EvidenceAtom::new(kind, None, anchor, self.text.clone(), source)
+    }
+}
+
 /// Assembled search results before formatting.
 #[derive(Debug)]
 pub struct SearchResult {
@@ -151,6 +294,56 @@ pub struct OutlineEntry {
     pub doc: Option<String>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProviderOutlineKind {
+    id: OutlineKindId,
+    outline_label: &'static str,
+    semantic_label: &'static str,
+    definition_weight: u16,
+}
+
+#[allow(dead_code)]
+impl ProviderOutlineKind {
+    #[must_use]
+    pub(crate) const fn new(
+        id: OutlineKindId,
+        outline_label: &'static str,
+        semantic_label: &'static str,
+        definition_weight: u16,
+    ) -> Self {
+        Self {
+            id,
+            outline_label,
+            semantic_label,
+            definition_weight,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn id(self) -> OutlineKindId {
+        self.id
+    }
+
+    #[must_use]
+    pub(crate) fn outline_label(self) -> &'static str {
+        debug_assert!(!self.id().is_empty());
+        self.outline_label
+    }
+
+    #[must_use]
+    pub(crate) fn semantic_label(self) -> &'static str {
+        debug_assert!(!self.id().is_empty());
+        self.semantic_label
+    }
+
+    #[must_use]
+    pub(crate) fn definition_weight(self) -> u16 {
+        debug_assert!(!self.id().is_empty());
+        self.definition_weight
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OutlineKind {
     Import,
@@ -164,6 +357,14 @@ pub enum OutlineKind {
     Variable,
     ImmutableVariable,
     Export,
+    #[allow(dead_code)]
+    Provider(ProviderOutlineKind),
+    Selector,
+    AtRule,
+    Section,
+    Element,
+    CodeBlock,
+    Mixin,
     #[allow(dead_code)]
     Property,
     Module,
@@ -192,5 +393,19 @@ pub fn truncate_str(s: &str, max: usize) -> &str {
         s
     } else {
         &s[..s.floor_char_boundary(max)]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_lang_exposes_id_and_label() {
+        let lang = ProviderLang::new(LangId::new("lang.example"), "Example");
+
+        assert_eq!(lang.id(), LangId::new("lang.example"));
+        assert_eq!(lang.label(), "Example");
+        assert_ne!(Lang::Provider(lang), Lang::Rust);
     }
 }

@@ -25,10 +25,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
-      - run: cargo test
+      - run: cargo test --locked
 
   windows:
     runs-on: windows-latest
+    env:
+      CC: clang-cl
+      CXX: clang-cl
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,4 +42,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
-      - run: cargo test
+      - run: cargo test --locked

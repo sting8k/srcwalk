@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{ArgAction, Args, Parser};
+use clap::{ArgAction, Args, Parser, ValueEnum};
 use clap_complete::Shell;
 use srcwalk::ArtifactMode;
 
@@ -12,10 +12,10 @@ pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 
-    /// File path, path:line, symbol name, or text to search.
+    /// Exact file path, path:line, or path:start-end to read. Use `discover` for search.
     pub(crate) query: Option<String>,
 
-    /// Directory to search within or resolve relative paths against.
+    /// Directory to resolve relative paths against.
     #[arg(long, default_value = ".", action = ArgAction::Append)]
     pub(crate) scope: Vec<PathBuf>,
 
@@ -36,93 +36,9 @@ pub(crate) struct Cli {
     #[arg(long, hide = true)]
     pub(crate) full: bool,
 
-    /// Treat QUERY as an exact file path. Fails fast instead of falling back to search/glob.
-    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "deps", "map", "expand", "glob"])]
-    pub(crate) path_exact: bool,
-
-    /// Machine-readable JSON output.
-    #[arg(long, hide = true, conflicts_with = "map")]
-    pub(crate) json: bool,
-
-    /// Include JS/TS artifacts as artifact-level evidence; direct file reads supported.
+    /// Include JS/TS artifacts as artifact-level evidence; exact artifact file reads may auto-enable this.
     #[arg(long)]
     pub(crate) artifact: bool,
-
-    /// Show source context for top N matches/callers (default: 2 when flag present).
-    #[arg(long, hide = true, num_args = 0..=1, default_missing_value = "2", require_equals = true)]
-    pub(crate) expand: Option<usize>,
-
-    /// File pattern filter (e.g. "*.rs", "!*.test.ts", "*.{go,rs}").
-    #[arg(long, hide = true)]
-    pub(crate) glob: Option<String>,
-
-    /// Find direct callers as compact facts; use --expand[=N] for source context.
-    #[arg(long, hide = true, conflicts_with_all = ["callees", "deps", "map", "flow", "impact"])]
-    pub(crate) callers: bool,
-
-    /// Filter search results or call sites with field:value qualifiers (e.g. path:foo, kind:fn; callers also support args:3 receiver:mgr; flow/detailed callees support callee:NAME).
-    #[arg(long, hide = true, value_name = "QUALIFIERS", conflicts_with = "map")]
-    pub(crate) filter: Option<String>,
-
-    /// Count direct caller call sites by field: args, caller, receiver, path, or file.
-    #[arg(long, hide = true, requires = "callers", value_name = "FIELD")]
-    pub(crate) count_by: Option<String>,
-
-    /// Show what a symbol calls (forward call graph).
-    #[arg(long, hide = true, conflicts_with_all = ["callers", "deps", "map", "flow", "impact"])]
-    pub(crate) callees: bool,
-
-    /// Show ordered call sites with args and assignment context.
-    #[arg(long, hide = true, requires = "callees")]
-    pub(crate) detailed: bool,
-
-    /// Depth for --callers/--callees BFS or --map tree. Default map: auto; BFS capped at 5.
-    #[arg(long, hide = true, value_name = "N")]
-    pub(crate) depth: Option<usize>,
-
-    /// Max callers to expand per BFS hop (hub guard). Default: 50.
-    #[arg(long, hide = true, value_name = "K", requires = "callers")]
-    pub(crate) max_frontier: Option<usize>,
-
-    /// Max total edges across all BFS hops. Default: 500.
-    #[arg(long, hide = true, value_name = "M", requires = "callers")]
-    pub(crate) max_edges: Option<usize>,
-
-    /// Comma-separated symbols to skip as BFS frontier (hub guard).
-    /// Default: new,clone,from,into,to_string,drop,fmt,default.
-    /// Pass empty string "" to disable.
-    #[arg(long, hide = true, value_name = "CSV", requires = "callers")]
-    pub(crate) skip_hubs: Option<String>,
-
-    /// Analyze blast-radius dependencies of a file.
-    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "map", "flow", "impact"])]
-    pub(crate) deps: bool,
-
-    /// Summarize a known symbol's ordered calls, local resolves, and direct callers.
-    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "deps", "map", "impact", "expand", "section", "full"])]
-    pub(crate) flow: bool,
-
-    /// Summarize definitions, name-matched callers, and receiver/file groups.
-    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "deps", "map", "flow", "expand", "section", "full"])]
-    pub(crate) impact: bool,
-
-    /// Generate a source map with local dependency groups.
-    #[arg(long, hide = true, conflicts_with_all = ["callers", "callees", "deps", "flow", "impact", "expand", "section", "full"])]
-    pub(crate) map: bool,
-
-    /// Include symbol names in --map output.
-    #[arg(long, hide = true, requires = "map")]
-    pub(crate) symbols: bool,
-
-    /// Max results. Default: unlimited.
-    /// Applies to: symbol/content/regex/callers search and deps dependents.
-    /// NOTE: multi-symbol ("A,B,C") applies the limit per-query, not total.
-    #[arg(long, hide = true, value_name = "N")]
-    pub(crate) limit: Option<usize>,
-
-    /// Skip N results (for pagination). Use with --limit.
-    #[arg(long, hide = true, value_name = "N", default_value = "0")]
-    pub(crate) offset: usize,
 
     /// Print shell completions for the given shell.
     #[arg(long, value_name = "SHELL")]
@@ -130,7 +46,7 @@ pub(crate) struct Cli {
 }
 
 pub(crate) const ROOT_HELP: &str = "\
-Start here:\n  srcwalk guide               Full embedded, version-matched agent guide for agents\n\nCommon:\n  srcwalk <path>              Read a file smartly\n  srcwalk <path>:<line>       Read around a line\n  srcwalk find <query>        Find definitions/usages/text\n  srcwalk files <glob>        Find files by glob\n  srcwalk callers <symbol>    Show who calls a symbol\n  srcwalk callees <symbol>    Show what a symbol calls\n  srcwalk deps <file>         Show imports and dependents\n  srcwalk map                 Show repo orientation and dependency groups\n  srcwalk version             Show version; add --check for latest\n\nShortcuts:\n  srcwalk flow <symbol>       Compact caller/callee slice\n  srcwalk impact <symbol>     Heuristic blast-radius triage\n\nCompatibility:\n  Legacy flag syntax still works, e.g. `srcwalk Foo --callers`.";
+Start here:\n  srcwalk guide                         Full embedded, version-matched agent guide for agents\n\nCommon:\n  srcwalk overview                      Show repo orientation and dependency groups\n  srcwalk context <symbol-or-file:line> Understand one known target\n  srcwalk trace callers <symbol>        Show who calls a symbol\n  srcwalk trace callees <symbol>        Show what a symbol calls\n  srcwalk deps <file>                   Show imports and dependents\n  srcwalk assess <symbol>               Heuristic blast-radius triage\n  srcwalk review <range-or-staged>      Review a change set with Flow Map evidence\n  srcwalk compare <target-a> <target-b> Compare two known source targets structurally\n  srcwalk discover <query>              Find candidate symbols/usages/text\n  srcwalk discover <glob> --as file     Find files by glob\n  srcwalk show <path>:<line> -C 20      Read exact evidence with extra line context\n  srcwalk <path>                        Read a file smartly\n  srcwalk <path>:<line>                 Read around a line\n  srcwalk version                       Show version; add --check for latest";
 
 pub(crate) const GUIDE: &str = include_str!("../skills/srcwalk/GUIDE.md");
 
@@ -138,24 +54,32 @@ pub(crate) const GUIDE: &str = include_str!("../skills/srcwalk/GUIDE.md");
 pub(crate) enum Command {
     /// Show the full embedded, version-matched agent guide. Must use!
     Guide,
-    /// Show version, optionally checking the latest release.
-    Version(VersionCmd),
-    /// Find definitions, usages, text, or symbol-name glob matches.
-    Find(FindCmd),
-    /// Find files by glob pattern.
-    Files(FilesCmd),
-    /// Show who calls a symbol.
-    Callers(CallersCmd),
-    /// Show what a symbol calls.
-    Callees(CalleesCmd),
-    /// Compact caller/callee slice for a known symbol.
-    Flow(FlowCmd),
-    /// Heuristic blast-radius triage for a symbol.
-    Impact(ImpactCmd),
+    /// Show repo orientation and local dependency groups.
+    Overview(MapCmd),
+    /// Understand one known target with Flow Map and neighborhood evidence.
+    Context(ContextCmd),
+    /// Traverse call graph relations.
+    Trace(TraceCmd),
     /// Analyze imports and dependents for a file.
     Deps(DepsCmd),
-    /// Generate a source map with local dependency groups.
-    Map(MapCmd),
+    /// Heuristic blast-radius triage for a symbol.
+    Assess(AssessCmd),
+    /// Review a change set with bounded Flow Map evidence.
+    Review(ReviewCmd),
+    /// Compare two known source targets structurally.
+    Compare(CompareCmd),
+    /// Find candidate symbols, usages, text, field/member access, or files.
+    Discover(DiscoverCmd),
+    /// Read exact file, line, range, section, or comma-separated locations.
+    Show(ShowCmd),
+    /// Show version, optionally checking the latest release.
+    Version(VersionCmd),
+    /// Structural decision-flow compatibility primitive for review internals.
+    #[command(hide = true)]
+    DecisionFlow(DecisionFlowCmd),
+    /// Diff evidence compatibility primitive for review internals.
+    #[command(hide = true)]
+    Diff(DiffCmd),
 }
 
 #[derive(Args)]
@@ -165,18 +89,42 @@ pub(crate) struct VersionCmd {
     pub(crate) check: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum DiscoverAs {
+    Symbol,
+    File,
+    Text,
+    Access,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum MatchMode {
+    #[default]
+    Any,
+    All,
+}
+
 #[derive(Args)]
-pub(crate) struct FindCmd {
-    /// Symbol name, symbol-name glob, or text to search.
+pub(crate) struct DiscoverCmd {
+    /// Symbol name, field/member name, symbol-name glob, text, or file glob to discover.
     pub(crate) query: String,
     #[command(flatten)]
     pub(crate) common: CommonArgs,
+    /// Interpret the query as symbol, file, text, or field/member access.
+    #[arg(long = "as", value_enum)]
+    pub(crate) as_kind: Option<DiscoverAs>,
+    /// Query matching mode. Explicit `any` means comma-separated literal OR for text; `all` means same-file co-occurrence.
+    #[arg(long = "match", value_enum)]
+    pub(crate) match_mode: Option<MatchMode>,
     /// Show source context for top N matches (default: 2 when flag present).
     #[arg(long, num_args = 0..=1, default_missing_value = "2", require_equals = true)]
     pub(crate) expand: Option<usize>,
-    /// File pattern filter (e.g. "*.rs", "!*.test.ts", "*.{go,rs}").
-    #[arg(long)]
+    /// File pattern filter (legacy compatibility; prefer narrowing --scope when possible).
+    #[arg(long, hide = true)]
     pub(crate) glob: Option<String>,
+    /// Exclude files matching this pattern from discovery evidence.
+    #[arg(long, value_name = "PATTERN")]
+    pub(crate) exclude: Option<String>,
     /// Filter search results with field:value qualifiers.
     #[arg(long, value_name = "QUALIFIERS")]
     pub(crate) filter: Option<String>,
@@ -189,17 +137,34 @@ pub(crate) struct FindCmd {
 }
 
 #[derive(Args)]
-pub(crate) struct FilesCmd {
-    /// File glob pattern to list.
-    pub(crate) pattern: String,
+pub(crate) struct ShowCmd {
+    /// File path, path:line, path:start-end, or comma-separated exact locations.
+    pub(crate) target: String,
     #[command(flatten)]
     pub(crate) common: CommonArgs,
-    /// Max files.
-    #[arg(long, value_name = "N")]
-    pub(crate) limit: Option<usize>,
-    /// Skip N files.
-    #[arg(long, value_name = "N", default_value = "0")]
-    pub(crate) offset: usize,
+    /// Focus line, line range, markdown heading, symbol, or comma-separated sections.
+    #[arg(long)]
+    pub(crate) section: Option<String>,
+    /// Show explicit raw first page (capped at 200 lines / 5k tokens).
+    #[arg(long)]
+    pub(crate) full: bool,
+    /// Lines of context before and after a line target.
+    #[arg(short = 'C', long = "context-lines", value_name = "N")]
+    pub(crate) context_lines: Option<usize>,
+}
+
+#[derive(Args)]
+pub(crate) struct TraceCmd {
+    #[command(subcommand)]
+    pub(crate) relation: TraceRelation,
+}
+
+#[derive(clap::Subcommand)]
+pub(crate) enum TraceRelation {
+    /// Show who calls a symbol.
+    Callers(CallersCmd),
+    /// Show what a symbol calls.
+    Callees(CalleesCmd),
 }
 
 #[derive(Args)]
@@ -211,8 +176,8 @@ pub(crate) struct CallersCmd {
     /// Show source context for top N callers (default: 2 when flag present).
     #[arg(long, num_args = 0..=1, default_missing_value = "2", require_equals = true)]
     pub(crate) expand: Option<usize>,
-    /// File pattern filter.
-    #[arg(long)]
+    /// File pattern filter (legacy compatibility; prefer narrowing --scope when possible).
+    #[arg(long, hide = true)]
     pub(crate) glob: Option<String>,
     /// Filter call sites with field:value qualifiers.
     #[arg(long, value_name = "QUALIFIERS")]
@@ -258,21 +223,73 @@ pub(crate) struct CalleesCmd {
 }
 
 #[derive(Args)]
-pub(crate) struct FlowCmd {
-    /// Symbol to summarize.
+pub(crate) struct DiffCmd {
+    /// Explicit git revision range. Use REV^..REV for a single commit.
+    pub(crate) rev_range: Option<String>,
+    #[command(flatten)]
+    pub(crate) common: CommonArgs,
+    /// Show staged changes only.
+    #[arg(long)]
+    pub(crate) staged: bool,
+    /// Max changed files to render.
+    #[arg(long, value_name = "N")]
+    pub(crate) limit: Option<usize>,
+    /// Skip N changed files.
+    #[arg(long, value_name = "N", default_value = "0")]
+    pub(crate) offset: usize,
+}
+
+#[derive(Args)]
+pub(crate) struct CompareCmd {
+    /// First function/line target to compare.
+    pub(crate) target_a: String,
+    /// Second function/line target to compare.
+    pub(crate) target_b: String,
+    #[command(flatten)]
+    pub(crate) common: CommonArgs,
+}
+
+#[derive(Args)]
+pub(crate) struct ReviewCmd {
+    /// Function/line target, explicit revision range, or omitted for working tree changes.
+    pub(crate) target: Option<String>,
+    #[command(flatten)]
+    pub(crate) common: CommonArgs,
+    /// Review staged changes only.
+    #[arg(long)]
+    pub(crate) staged: bool,
+    /// Max changed files to render for change review.
+    #[arg(long, value_name = "N")]
+    pub(crate) limit: Option<usize>,
+    /// Skip N changed files for change review.
+    #[arg(long, value_name = "N", default_value = "0")]
+    pub(crate) offset: usize,
+}
+
+#[derive(Args)]
+pub(crate) struct DecisionFlowCmd {
+    /// Function symbol, file:symbol, file:line, or file:start-end target.
+    pub(crate) target: String,
+    #[command(flatten)]
+    pub(crate) common: CommonArgs,
+}
+
+#[derive(Args)]
+pub(crate) struct ContextCmd {
+    /// Symbol, file:symbol, file:line, or file:start-end target.
     pub(crate) symbol: String,
     #[command(flatten)]
     pub(crate) common: CommonArgs,
-    /// Optional depth for the compact flow slice.
+    /// Optional depth for the compact context slice.
     #[arg(long, value_name = "N")]
     pub(crate) depth: Option<usize>,
-    /// Filter flow facts with field:value qualifiers.
+    /// Filter context facts with field:value qualifiers.
     #[arg(long, value_name = "QUALIFIERS")]
     pub(crate) filter: Option<String>,
 }
 
 #[derive(Args)]
-pub(crate) struct ImpactCmd {
+pub(crate) struct AssessCmd {
     /// Symbol to summarize with heuristic blast-radius triage.
     pub(crate) symbol: String,
     #[command(flatten)]
@@ -297,20 +314,20 @@ pub(crate) struct DepsCmd {
 pub(crate) struct MapCmd {
     #[command(flatten)]
     pub(crate) common: MapCommonArgs,
-    /// Map tree depth. Default: auto.
+    /// Overview tree depth. Default: auto.
     #[arg(long, value_name = "N")]
     pub(crate) depth: Option<usize>,
-    /// File pattern filter.
-    #[arg(long)]
+    /// File pattern filter (legacy compatibility; prefer narrowing --scope when possible).
+    #[arg(long, hide = true)]
     pub(crate) glob: Option<String>,
-    /// Include symbol names in map output.
+    /// Include symbol names in overview output.
     #[arg(long)]
     pub(crate) symbols: bool,
 }
 
 #[derive(Args)]
 pub(crate) struct CommonArgs {
-    /// Directory to search within or resolve relative paths against.
+    /// Scope root for search and relative path resolution.
     #[arg(long, default_value = ".", action = ArgAction::Append)]
     pub(crate) scope: Vec<PathBuf>,
     /// Max tokens in response. Reduces detail to fit.
@@ -319,35 +336,79 @@ pub(crate) struct CommonArgs {
     /// Disable default budget cap.
     #[arg(long)]
     pub(crate) no_budget: bool,
-    /// Machine-readable JSON output.
-    #[arg(long)]
-    pub(crate) json: bool,
-    /// Include JS/TS artifacts as artifact-level evidence; relation modes are direct-only.
+    /// Include JS/TS artifacts as artifact-level evidence; exact artifact file scopes may auto-enable this; relation modes are direct-only.
     #[arg(long)]
     pub(crate) artifact: bool,
 }
 
 #[derive(Args)]
 pub(crate) struct MapCommonArgs {
-    /// Directory to map.
+    /// Directory to summarize.
     #[arg(long, default_value = ".", action = ArgAction::Append)]
     pub(crate) scope: Vec<PathBuf>,
     /// Include JS/TS artifacts as artifact-level evidence.
     #[arg(long)]
     pub(crate) artifact: bool,
+    /// Max tokens in response. Overview uses a fixed cap and rejects this flag.
+    #[arg(long, hide = true)]
+    pub(crate) budget: Option<u64>,
+    /// Disable default budget cap. Overview uses a fixed cap and rejects this flag.
+    #[arg(long, hide = true)]
+    pub(crate) no_budget: bool,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum Mode {
     Search,
-    PathExact,
-    Map,
+    Text,
+    MatchAll,
+    Show,
+    Overview,
     Files,
-    Flow,
-    Impact,
+    Context,
+    DecisionFlow,
+    Diff,
+    Review,
+    Compare,
+    Assess,
     Callers,
     Callees,
     Deps,
+}
+
+fn looks_like_text_or_discovery_query(query: &str) -> bool {
+    let terms = query
+        .split(',')
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
+    if !(2..=8).contains(&terms.len()) {
+        return false;
+    }
+
+    terms.iter().any(|term| !looks_like_plain_symbol_term(term))
+}
+
+fn looks_like_plain_symbol_term(term: &str) -> bool {
+    let mut chars = term.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || matches!(first, '_' | '$' | '@')) {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn looks_like_file_discovery_query(query: &str) -> bool {
+    let has_glob = query
+        .bytes()
+        .any(|b| matches!(b, b'*' | b'?' | b'[' | b'{'));
+    if !has_glob {
+        return false;
+    }
+
+    query.contains('/') || query.contains('\\') || PathBuf::from(query).extension().is_some()
 }
 
 pub(crate) struct RunConfig {
@@ -356,16 +417,22 @@ pub(crate) struct RunConfig {
     pub(crate) scopes: Vec<PathBuf>,
     pub(crate) allow_multi_scope: bool,
     pub(crate) section: Option<String>,
+    pub(crate) context_lines: Option<usize>,
+    pub(crate) discover_as: Option<DiscoverAs>,
+    pub(crate) match_explicit: bool,
+    pub(crate) inferred_text_or: bool,
     pub(crate) budget: Option<u64>,
     pub(crate) no_budget: bool,
     pub(crate) full: bool,
-    pub(crate) json: bool,
     pub(crate) artifact: ArtifactMode,
     pub(crate) expand: usize,
+    pub(crate) access: bool,
     pub(crate) glob: Option<String>,
+    pub(crate) exclude: Option<String>,
     pub(crate) filter: Option<String>,
     pub(crate) count_by: Option<String>,
     pub(crate) detailed: bool,
+    pub(crate) diff_staged: bool,
     pub(crate) depth: Option<usize>,
     pub(crate) max_frontier: Option<usize>,
     pub(crate) max_edges: Option<usize>,
@@ -373,73 +440,149 @@ pub(crate) struct RunConfig {
     pub(crate) symbols: bool,
     pub(crate) limit: Option<usize>,
     pub(crate) offset: usize,
+    pub(crate) compare_target_b: Option<String>,
 }
 
 impl RunConfig {
-    pub(crate) fn from_legacy(cli: Cli) -> Self {
-        let mode = if cli.map {
-            Mode::Map
-        } else if cli.path_exact {
-            Mode::PathExact
-        } else if cli.flow {
-            Mode::Flow
-        } else if cli.impact {
-            Mode::Impact
-        } else if cli.callers {
-            Mode::Callers
-        } else if cli.callees {
-            Mode::Callees
-        } else if cli.deps {
-            Mode::Deps
-        } else {
-            Mode::Search
-        };
+    pub(crate) fn from_root(cli: Cli) -> Self {
         Self {
-            mode,
+            mode: Mode::Show,
             query: cli.query,
             scopes: cli.scope,
             allow_multi_scope: false,
             section: cli.section,
+            context_lines: None,
+            discover_as: None,
+            match_explicit: false,
+            inferred_text_or: false,
             budget: cli.budget,
             no_budget: cli.no_budget,
             full: cli.full,
-            json: cli.json,
             artifact: ArtifactMode::from(cli.artifact),
-            expand: cli.expand.unwrap_or(0),
-            glob: cli.glob,
-            filter: cli.filter,
-            count_by: cli.count_by,
-            detailed: cli.detailed,
-            depth: cli.depth,
-            max_frontier: cli.max_frontier,
-            max_edges: cli.max_edges,
-            skip_hubs: cli.skip_hubs,
-            symbols: cli.symbols,
-            limit: cli.limit,
-            offset: cli.offset,
+            expand: 0,
+            access: false,
+            glob: None,
+            exclude: None,
+            filter: None,
+            count_by: None,
+            detailed: false,
+            diff_staged: false,
+            depth: None,
+            max_frontier: None,
+            max_edges: None,
+            skip_hubs: None,
+            symbols: false,
+            limit: None,
+            offset: 0,
+            compare_target_b: None,
         }
     }
 
     pub(crate) fn from_command(command: Command) -> Option<Self> {
         match command {
             Command::Guide | Command::Version(_) => None,
-            Command::Find(cmd) => Some(
-                Self::from_common(Mode::Search, cmd.query, cmd.common)
-                    .with_find(cmd.expand, cmd.glob, cmd.filter, cmd.limit, cmd.offset),
-            ),
-            Command::Files(cmd) => Some(
-                Self::from_common(Mode::Files, cmd.pattern, cmd.common)
-                    .with_pagination(cmd.limit, cmd.offset),
-            ),
-            Command::Callers(cmd) => Some(Self::from_callers(cmd)),
-            Command::Callees(cmd) => Some(Self::from_callees(cmd)),
-            Command::Flow(cmd) => Some(Self::from_flow(cmd)),
-            Command::Impact(cmd) => Some(Self::from_common(Mode::Impact, cmd.symbol, cmd.common)),
+            Command::Discover(cmd) => Some(Self::from_discover(cmd)),
+            Command::Show(cmd) => Some(Self::from_show(cmd)),
+            Command::Trace(cmd) => Some(Self::from_trace(cmd)),
+            Command::Context(cmd) => Some(Self::from_context(cmd)),
+            Command::DecisionFlow(cmd) => Some(Self::from_common(
+                Mode::DecisionFlow,
+                cmd.target,
+                cmd.common,
+            )),
+            Command::Diff(cmd) => Some(Self::from_diff(cmd)),
+            Command::Review(cmd) => Some(Self::from_review(cmd)),
+            Command::Compare(cmd) => Some(Self::from_compare(cmd)),
+            Command::Assess(cmd) => Some(Self::from_common(Mode::Assess, cmd.symbol, cmd.common)),
             Command::Deps(cmd) => Some(
                 Self::from_common(Mode::Deps, cmd.file, cmd.common)
                     .with_pagination(cmd.limit, cmd.offset),
             ),
-            Command::Map(cmd) => Some(Self::from_map(cmd)),
+            Command::Overview(cmd) => Some(Self::from_map(cmd)),
+        }
+    }
+
+    fn from_discover(cmd: DiscoverCmd) -> Self {
+        let match_explicit = cmd.match_mode.is_some();
+        let match_mode = cmd.match_mode.unwrap_or_default();
+        let inferred_file = cmd.as_kind.is_none() && looks_like_file_discovery_query(&cmd.query);
+        let inferred_text_or = cmd.as_kind.is_none()
+            && cmd.match_mode.is_none()
+            && looks_like_text_or_discovery_query(&cmd.query);
+        let mode =
+            match (match_mode, cmd.as_kind, inferred_file, inferred_text_or) {
+                (MatchMode::All, _, _, _) => Mode::MatchAll,
+                (MatchMode::Any, Some(DiscoverAs::File), _, _)
+                | (MatchMode::Any, None, true, _) => Mode::Files,
+                (MatchMode::Any, Some(DiscoverAs::Text), _, _)
+                | (MatchMode::Any, None, _, true) => Mode::Text,
+                (MatchMode::Any, _, _, _) => Mode::Search,
+            };
+        let mut config = Self::from_common(mode, cmd.query, cmd.common);
+        config.expand = cmd.expand.unwrap_or(0);
+        config.access = matches!(cmd.as_kind, Some(DiscoverAs::Access));
+        config.glob = cmd.glob;
+        config.exclude = cmd.exclude;
+        config.filter = cmd.filter;
+        config.limit = cmd.limit;
+        config.offset = cmd.offset;
+        config.allow_multi_scope = matches!(mode, Mode::Search);
+        config.discover_as = if inferred_file {
+            Some(DiscoverAs::File)
+        } else if inferred_text_or {
+            Some(DiscoverAs::Text)
+        } else {
+            cmd.as_kind
+        };
+        config.match_explicit = match_explicit;
+        config.inferred_text_or = inferred_text_or;
+        config
+    }
+
+    fn from_diff(cmd: DiffCmd) -> Self {
+        let mut config = Self::from_common(
+            Mode::Diff,
+            cmd.rev_range.clone().unwrap_or_default(),
+            cmd.common,
+        );
+        config.query = cmd.rev_range;
+        config.diff_staged = cmd.staged;
+        config.limit = cmd.limit;
+        config.offset = cmd.offset;
+        config
+    }
+
+    fn from_compare(cmd: CompareCmd) -> Self {
+        let mut config = Self::from_common(Mode::Compare, cmd.target_a, cmd.common);
+        config.compare_target_b = Some(cmd.target_b);
+        config
+    }
+
+    fn from_review(cmd: ReviewCmd) -> Self {
+        let mut config = Self::from_common(
+            Mode::Review,
+            cmd.target.clone().unwrap_or_default(),
+            cmd.common,
+        );
+        config.query = cmd.target;
+        config.diff_staged = cmd.staged;
+        config.limit = cmd.limit;
+        config.offset = cmd.offset;
+        config
+    }
+
+    fn from_show(cmd: ShowCmd) -> Self {
+        let mut config = Self::from_common(Mode::Show, cmd.target, cmd.common);
+        config.section = cmd.section;
+        config.full = cmd.full;
+        config.context_lines = cmd.context_lines;
+        config
+    }
+
+    fn from_trace(cmd: TraceCmd) -> Self {
+        match cmd.relation {
+            TraceRelation::Callers(cmd) => Self::from_callers(cmd),
+            TraceRelation::Callees(cmd) => Self::from_callees(cmd),
         }
     }
 
@@ -450,16 +593,22 @@ impl RunConfig {
             scopes: common.scope,
             allow_multi_scope: matches!(mode, Mode::Search),
             section: None,
+            context_lines: None,
+            discover_as: None,
+            match_explicit: false,
+            inferred_text_or: false,
             budget: common.budget,
             no_budget: common.no_budget,
             full: false,
-            json: common.json,
             artifact: ArtifactMode::from(common.artifact),
             expand: 0,
+            access: false,
             glob: None,
+            exclude: None,
             filter: None,
             count_by: None,
             detailed: false,
+            diff_staged: false,
             depth: None,
             max_frontier: None,
             max_edges: None,
@@ -467,56 +616,49 @@ impl RunConfig {
             symbols: false,
             limit: None,
             offset: 0,
+            compare_target_b: None,
         }
     }
 
     fn from_map(cmd: MapCmd) -> Self {
         Self {
-            mode: Mode::Map,
+            mode: Mode::Overview,
             query: None,
             scopes: cmd.common.scope,
             allow_multi_scope: false,
             section: None,
-            budget: None,
-            no_budget: false,
+            context_lines: None,
+            discover_as: None,
+            match_explicit: false,
+            inferred_text_or: false,
+            budget: cmd.common.budget,
+            no_budget: cmd.common.no_budget,
             full: false,
-            json: false,
             artifact: ArtifactMode::from(cmd.common.artifact),
             expand: 0,
+            access: false,
             glob: cmd.glob,
+            exclude: None,
             filter: None,
             count_by: None,
             detailed: false,
+            diff_staged: false,
             depth: cmd.depth,
             max_frontier: None,
             max_edges: None,
             skip_hubs: None,
             symbols: cmd.symbols,
             limit: None,
+            compare_target_b: None,
             offset: 0,
         }
-    }
-
-    fn with_find(
-        mut self,
-        expand: Option<usize>,
-        glob: Option<String>,
-        filter: Option<String>,
-        limit: Option<usize>,
-        offset: usize,
-    ) -> Self {
-        self.expand = expand.unwrap_or(0);
-        self.glob = glob;
-        self.filter = filter;
-        self.limit = limit;
-        self.offset = offset;
-        self
     }
 
     fn from_callers(cmd: CallersCmd) -> Self {
         let mut config = Self::from_common(Mode::Callers, cmd.symbol, cmd.common);
         config.expand = cmd.expand.unwrap_or(0);
         config.glob = cmd.glob;
+        config.exclude = None;
         config.filter = cmd.filter;
         config.count_by = cmd.count_by;
         config.depth = cmd.depth;
@@ -536,8 +678,8 @@ impl RunConfig {
         config
     }
 
-    fn from_flow(cmd: FlowCmd) -> Self {
-        let mut config = Self::from_common(Mode::Flow, cmd.symbol, cmd.common);
+    fn from_context(cmd: ContextCmd) -> Self {
+        let mut config = Self::from_common(Mode::Context, cmd.symbol, cmd.common);
         config.depth = cmd.depth;
         config.filter = cmd.filter;
         config

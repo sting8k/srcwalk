@@ -8,13 +8,17 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
+use crate::evidence::{
+    render_next_actions, Anchor, EvidenceAtom, EvidenceKind, EvidenceRole, EvidenceSource,
+    NextAction,
+};
 use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
 use crate::lang::outline::{extract_import_source, get_outline_entries};
 use crate::read::imports::{is_external, is_import_line, resolve_related_files_with_content};
 use crate::search::callees::{extract_callee_names, resolve_callees};
 use crate::search::callers::find_callers_batch;
-use crate::types::{FileType, OutlineKind};
+use crate::types::{Lang, OutlineKind};
 
 /// Maximum number of exported symbols to search for in the reverse direction.
 const MAX_EXPORTED_SYMBOLS: usize = 25;
@@ -41,12 +45,41 @@ pub struct LocalDep {
     pub symbols: Vec<String>,
 }
 
+impl LocalDep {
+    fn to_evidence_atom(&self) -> EvidenceAtom {
+        let source = if self.symbols.is_empty() {
+            EvidenceSource::Text
+        } else {
+            EvidenceSource::Ast
+        };
+        EvidenceAtom::new(
+            EvidenceKind::Dependency,
+            Some(EvidenceRole::LocalDependency),
+            Anchor::file(&self.path),
+            self.symbols.join(", "),
+            source,
+        )
+    }
+}
+
 /// A file that depends on the target, with symbol-level call detail.
 pub struct Dependent {
     pub path: PathBuf,
     /// (`calling_function`, `called_symbol`, `line`) triples.
     pub symbols: Vec<(String, String, u32)>,
     pub is_test: bool,
+}
+
+impl Dependent {
+    fn to_evidence_atom(&self, line: u32, symbols: &[String]) -> EvidenceAtom {
+        EvidenceAtom::new(
+            EvidenceKind::Dependency,
+            Some(EvidenceRole::Dependent),
+            Anchor::line(&self.path, line),
+            symbols.join(", "),
+            EvidenceSource::Text,
+        )
+    }
 }
 
 /// Analyse the dependency graph for `path` within `scope`.
@@ -74,8 +107,9 @@ pub fn analyze_deps(
         source: e,
     })?;
 
-    let FileType::Code(lang) = detect_file_type(path) else {
-        // Non-code file: return empty deps gracefully.
+    let file_type = detect_file_type(path);
+    let Some(lang) = file_type.structural_lang() else {
+        // Non-structural file: return empty deps gracefully.
         return Ok(DepsResult {
             target: path.clone(),
             uses_local: Vec::new(),
@@ -86,6 +120,7 @@ pub fn analyze_deps(
             searched_count: 0,
         });
     };
+    let is_document = crate::lang::document::is_document_lang(lang);
 
     // ── Phase 1: Extract exported symbols ────────────────────────────────────
 
@@ -93,18 +128,26 @@ pub fn analyze_deps(
     let _ = cache; // available for future caching
 
     let mut candidates: HashMap<String, ReverseCandidate> = HashMap::new();
-    for entry in &entries {
-        collect_reverse_candidates(entry, &mut candidates, None, true);
+    if !crate::lang::css::is_stylesheet_lang(lang) && !is_document {
+        for entry in &entries {
+            collect_reverse_candidates(entry, &mut candidates, None, true);
+        }
     }
     candidates.retain(|name, _| !is_placeholder_name(name));
 
     let mut all_names: Vec<String> = candidates.keys().cloned().collect();
     all_names.sort();
     let exported_count = all_names.len();
+    let all_defined_names = all_names.clone();
 
     // Cap reverse-dependent searches, preferring strong file/type symbols before
     // owner-gated members, then longer (more specific) names.
-    let mut searched_candidates: Vec<ReverseCandidate> = candidates.values().cloned().collect();
+    let mut searched_candidates: Vec<ReverseCandidate> =
+        if let Some(targets) = crate::capabilities::reverse_search_targets(lang, &entries) {
+            targets.into_iter().map(ReverseCandidate::strong).collect()
+        } else {
+            candidates.values().cloned().collect()
+        };
     searched_candidates.sort_by(|a, b| {
         b.is_strong()
             .cmp(&a.is_strong())
@@ -126,9 +169,17 @@ pub fn analyze_deps(
 
     // ── Phase 2: Forward dependencies ────────────────────────────────────────
 
-    // Local deps via callee resolution
-    let callee_names = extract_callee_names(&content, lang, None);
-    let resolved = resolve_callees(&callee_names, path, &content, cache, bloom);
+    // Local deps via callee resolution. Document files have links/assets, not call edges.
+    let callee_names = if file_type.is_code() {
+        extract_callee_names(&content, lang, None)
+    } else {
+        Vec::new()
+    };
+    let resolved = if file_type.is_code() {
+        resolve_callees(&callee_names, path, &content, cache, bloom)
+    } else {
+        Vec::new()
+    };
 
     // Group resolved callees by file
     let mut local_by_file: HashMap<PathBuf, Vec<String>> = HashMap::new();
@@ -140,6 +191,10 @@ pub fn analyze_deps(
                 .or_default()
                 .push(callee.name);
         }
+    }
+
+    for (dep_path, symbol) in crate::capabilities::local_deps(lang, path, &content) {
+        local_by_file.entry(dep_path).or_default().push(symbol);
     }
 
     // Merge in import-resolved files (may not have resolved callees if symbols
@@ -164,28 +219,57 @@ pub fn analyze_deps(
         .collect();
     uses_local.sort_by(|a, b| a.path.cmp(&b.path));
 
-    // External deps via line-level import parsing
+    // External deps via explicit imports/resource references.
     let mut external_set: HashSet<String> = HashSet::new();
-    for line in content.lines() {
-        if !is_import_line(line, lang) {
-            continue;
+    if crate::lang::css::is_stylesheet_lang(lang) || is_document {
+        let sources = if crate::lang::css::is_stylesheet_lang(lang) {
+            crate::lang::css::dependency_sources(&content, lang)
+        } else {
+            crate::lang::document::dependency_sources(&content, lang)
+        };
+        for source in sources {
+            if is_external(&source, lang) && !source.contains(' ') {
+                external_set.insert(source.clone());
+            }
         }
-        let source = extract_import_source(line, Some(lang));
-        if source.is_empty() {
-            continue;
-        }
-        if is_external(&source, lang) && !is_stdlib(&source, lang) && is_valid_module_path(&source)
-        {
-            external_set.insert(source.clone());
+    } else {
+        for line in content.lines() {
+            if !is_import_line(line, lang) {
+                continue;
+            }
+            let source = extract_import_source(line, Some(lang));
+            if source.is_empty() {
+                continue;
+            }
+            if is_external(&source, lang)
+                && !is_stdlib(&source, lang)
+                && is_valid_module_path(&source)
+            {
+                external_set.insert(source.clone());
+            }
         }
     }
+    let local_symbols: HashSet<String> = uses_local
+        .iter()
+        .flat_map(|dep| dep.symbols.iter().cloned())
+        .collect();
+    external_set.extend(crate::capabilities::external_symbols(
+        lang,
+        &content,
+        &callee_names,
+        &all_defined_names,
+        &local_symbols,
+    ));
 
     let mut uses_external: Vec<String> = external_set.into_iter().collect();
     uses_external.sort();
 
     // ── Phase 3: Reverse dependencies ────────────────────────────────────────
 
-    let used_by = if searched_count > 0 {
+    let descriptor_dependent_targets =
+        crate::capabilities::descriptor_dependent_targets(lang, &entries).unwrap_or_default();
+
+    let used_by = if searched_count > 0 || !descriptor_dependent_targets.is_empty() {
         let mut by_file: HashMap<PathBuf, Vec<(String, String, u32)>> = HashMap::new();
 
         if searched_count > 0 {
@@ -209,6 +293,16 @@ pub fn analyze_deps(
                     caller_match.line,
                 ));
             }
+        }
+
+        if !descriptor_dependent_targets.is_empty() {
+            merge_descriptor_dependents(
+                path,
+                scope,
+                lang,
+                &descriptor_dependent_targets,
+                &mut by_file,
+            )?;
         }
 
         // Build Dependent list
@@ -295,9 +389,13 @@ pub fn format_deps(
     );
 
     let uses_local_section = format_uses_local(&result.uses_local, scope, true);
-    let uses_external_section = format_uses_external(&result.uses_external);
+    let uses_external_section = format_uses_external(&result.uses_external, &result.target);
     let used_by_section = format_used_by(&prod_deps, scope, "## Used by");
-    let used_by_tests_section = format_used_by(&test_deps, scope, "## Used by (tests)");
+    let used_by_tests_section = if test_deps.is_empty() {
+        String::new()
+    } else {
+        format_used_by(&test_deps, scope, "## Used by (tests)")
+    };
 
     let barrel_note = if result.exported_count > MAX_EXPORTED_SYMBOLS {
         format!(
@@ -356,10 +454,15 @@ pub fn format_deps(
     let token_est = crate::types::estimate_tokens(output.len() as u64);
     let mut rendered = format!("{output}\n\n[~{token_est} tokens]");
     if omitted > 0 {
-        let _ = write!(
-            rendered,
-            "\n\n> Next: {omitted} more dependents available. Continue with --offset {page_end} --limit {page_limit}."
-        );
+        let next = render_next_actions(&[NextAction::metadata(
+            format!("{omitted} more dependents available. Continue with --offset {page_end} --limit {page_limit}."),
+            "dependent pagination",
+            10,
+        )]);
+        if !next.is_empty() {
+            rendered.push_str("\n\n");
+            rendered.push_str(&next);
+        }
     } else if offset > 0 {
         let _ = write!(
             rendered,
@@ -425,23 +528,29 @@ fn collect_reverse_candidates(
         return;
     }
 
-    if top_level || is_type_identity(entry.kind) {
-        out.insert(
-            entry.name.clone(),
-            ReverseCandidate::strong(entry.name.clone()),
-        );
-    } else if is_member_identity(entry.kind) {
-        if let Some(owner) = owner.filter(|owner| !is_placeholder_name(owner)) {
-            let candidate = out
-                .entry(entry.name.clone())
-                .or_insert_with(|| ReverseCandidate::member(entry.name.clone()));
-            if !candidate.is_strong() {
-                candidate.owners.insert(owner.to_string());
+    if entry.kind != OutlineKind::Section {
+        if top_level || is_type_identity(entry.kind) {
+            out.insert(
+                entry.name.clone(),
+                ReverseCandidate::strong(entry.name.clone()),
+            );
+        } else if is_member_identity(entry.kind) {
+            if let Some(owner) = owner.filter(|owner| !is_placeholder_name(owner)) {
+                let candidate = out
+                    .entry(entry.name.clone())
+                    .or_insert_with(|| ReverseCandidate::member(entry.name.clone()));
+                if !candidate.is_strong() {
+                    candidate.owners.insert(owner.to_string());
+                }
             }
         }
     }
 
-    let normalized_owner = owner_name(entry).or(owner);
+    let normalized_owner = if entry.kind == OutlineKind::Section {
+        owner
+    } else {
+        owner_name(entry).or(owner)
+    };
     for child in &entry.children {
         collect_reverse_candidates(child, out, normalized_owner, false);
     }
@@ -479,6 +588,92 @@ fn owner_name(entry: &crate::types::OutlineEntry) -> Option<&str> {
         .strip_prefix("impl ")
         .or(Some(entry.name.as_str()))
         .filter(|name| !is_placeholder_name(name))
+}
+
+fn merge_descriptor_dependents(
+    target_path: &Path,
+    scope: &Path,
+    lang: Lang,
+    targets: &[String],
+    by_file: &mut HashMap<PathBuf, Vec<(String, String, u32)>>,
+) -> Result<(), SrcwalkError> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let targets: HashSet<String> = targets.iter().cloned().collect();
+
+    let found = std::sync::Mutex::new(Vec::<(PathBuf, String, String, u32)>::new());
+    let walker = crate::search::walker(scope, None)?;
+    walker.run(|| {
+        let targets = &targets;
+        let found = &found;
+        Box::new(move |entry| {
+            let Ok(entry) = entry else {
+                return ignore::WalkState::Continue;
+            };
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                return ignore::WalkState::Continue;
+            }
+            let path = entry.path();
+            let is_target = path == target_path
+                || path
+                    .canonicalize()
+                    .is_ok_and(|canonical| canonical == target_path);
+            if is_target {
+                return ignore::WalkState::Continue;
+            }
+            if !crate::capabilities::matches_file_type(lang, detect_file_type(path)) {
+                return ignore::WalkState::Continue;
+            }
+            let Ok(content) = fs::read_to_string(path) else {
+                return ignore::WalkState::Continue;
+            };
+            if !targets.iter().any(|target| content.contains(target)) {
+                return ignore::WalkState::Continue;
+            }
+
+            let refs: Vec<_> = crate::capabilities::descriptor_refs_for_lang(lang, &content, None)
+                .into_iter()
+                .filter(|reference| targets.contains(&reference.target))
+                .map(|reference| {
+                    (
+                        path.to_path_buf(),
+                        reference.caller,
+                        reference.target,
+                        reference.line,
+                    )
+                })
+                .collect();
+            if !refs.is_empty() {
+                found
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend(refs);
+            }
+            ignore::WalkState::Continue
+        })
+    });
+
+    let mut deduped = HashMap::<(PathBuf, String, String), u32>::new();
+    for (path, caller, target, line) in found
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        let key = (path, caller, target);
+        deduped
+            .entry(key)
+            .and_modify(|existing| *existing = (*existing).min(line))
+            .or_insert(line);
+    }
+
+    for ((path, caller, target), line) in deduped {
+        by_file
+            .entry(path)
+            .or_default()
+            .push((caller, target, line));
+    }
+
+    Ok(())
 }
 
 /// Returns true if the name is a noise/placeholder that should be excluded
@@ -543,6 +738,8 @@ fn is_stdlib(source: &str, lang: crate::types::Lang) -> bool {
     }
 }
 
+/// Returns true if the string looks like a valid module/package path.
+/// Filters out garbage from string literals that pass `is_import_line`.
 fn is_valid_module_path(source: &str) -> bool {
     // Must not contain spaces (real module paths don't)
     if source.contains(' ') {
@@ -560,7 +757,7 @@ use crate::types::is_test_file;
 /// Format the "Uses (local)" section.
 fn format_uses_local(deps: &[LocalDep], scope: &Path, with_symbols: bool) -> String {
     if deps.is_empty() {
-        return String::new();
+        return "## Uses (local)\n(none)".to_string();
     }
 
     let mut by_dir: BTreeMap<String, Vec<(String, &LocalDep)>> = BTreeMap::new();
@@ -575,8 +772,9 @@ fn format_uses_local(deps: &[LocalDep], scope: &Path, with_symbols: bool) -> Str
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         let _ = write!(out, "\n{dir}");
         for (file, dep) in rows {
-            if with_symbols && !dep.symbols.is_empty() {
-                let _ = write!(out, "\n  {:<28} {}", file, dep.symbols.join(", "));
+            let atom = dep.to_evidence_atom();
+            if with_symbols && !atom.snippet().is_empty() {
+                let _ = write!(out, "\n  {:<28} {}", file, atom.snippet());
             } else {
                 let _ = write!(out, "\n  {file}");
             }
@@ -593,13 +791,20 @@ fn split_rel_dir_file(rel: &str) -> (String, &str) {
 }
 
 /// Format the "Uses (external)" section.
-fn format_uses_external(externals: &[String]) -> String {
+fn format_uses_external(externals: &[String], target: &Path) -> String {
     if externals.is_empty() {
-        return String::new();
+        return "## Uses (external)\n(none)".to_string();
     }
     let mut out = String::from("## Uses (external)");
     for ext in externals {
-        let _ = write!(out, "\n{ext}");
+        let atom = EvidenceAtom::new(
+            EvidenceKind::Dependency,
+            Some(EvidenceRole::ExternalDependency),
+            Anchor::file(target),
+            ext.as_str(),
+            EvidenceSource::Text,
+        );
+        let _ = write!(out, "\n{}", atom.snippet());
     }
     out
 }
@@ -608,15 +813,14 @@ fn format_uses_external(externals: &[String]) -> String {
 struct UsedByRow {
     dir: String,
     file: String,
-    line: u32,
     caller: String,
-    symbols: Vec<String>,
+    atom: EvidenceAtom,
 }
 
 /// Format a "Used by" section from a slice of dependents.
 fn format_used_by(deps: &[&Dependent], scope: &Path, heading: &str) -> String {
     if deps.is_empty() {
-        return String::new();
+        return format!("{heading}\n(none)");
     }
 
     let mut rows = Vec::new();
@@ -638,12 +842,12 @@ fn format_used_by(deps: &[&Dependent], scope: &Path, heading: &str) -> String {
         }
 
         for (caller, (line, syms)) in by_caller {
+            let symbols: Vec<String> = syms.into_iter().map(str::to_string).collect();
             rows.push(UsedByRow {
                 dir: dir.clone(),
                 file: file.clone(),
-                line,
                 caller: caller.to_string(),
-                symbols: syms.into_iter().map(str::to_string).collect(),
+                atom: dep.to_evidence_atom(line, &symbols),
             });
         }
     }
@@ -652,7 +856,12 @@ fn format_used_by(deps: &[&Dependent], scope: &Path, heading: &str) -> String {
         a.dir
             .cmp(&b.dir)
             .then_with(|| a.file.cmp(&b.file))
-            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| {
+                a.atom
+                    .anchor()
+                    .start_line()
+                    .cmp(&b.atom.anchor().start_line())
+            })
             .then_with(|| a.caller.cmp(&b.caller))
     });
 
@@ -663,8 +872,8 @@ fn format_used_by(deps: &[&Dependent], scope: &Path, heading: &str) -> String {
             current_dir.clone_from(&row.dir);
             let _ = write!(out, "\n{current_dir}");
         }
-        let loc = format!("{}:{}", row.file, row.line);
-        let joined = row.symbols.join(", ");
+        let loc = format!("{}:{}", row.file, row.atom.anchor().start_line());
+        let joined = row.atom.snippet();
         let _ = write!(out, "\n  {loc:<28} {:<20} → {joined}", row.caller);
     }
     out
@@ -756,4 +965,43 @@ fn assemble(parts: &[&str]) -> String {
         .copied()
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_only_local_dep_uses_text_source() {
+        let dep = LocalDep {
+            path: PathBuf::from("dep.rs"),
+            symbols: Vec::new(),
+        };
+
+        assert_eq!(dep.to_evidence_atom().source(), EvidenceSource::Text);
+    }
+
+    #[test]
+    fn symbol_local_dep_keeps_ast_source() {
+        let dep = LocalDep {
+            path: PathBuf::from("dep.rs"),
+            symbols: vec!["render".to_string()],
+        };
+
+        assert_eq!(dep.to_evidence_atom().source(), EvidenceSource::Ast);
+    }
+
+    #[test]
+    fn dependent_evidence_uses_text_source() {
+        let dep = Dependent {
+            path: PathBuf::from("caller.rs"),
+            symbols: Vec::new(),
+            is_test: false,
+        };
+
+        assert_eq!(
+            dep.to_evidence_atom(12, &["render".to_string()]).source(),
+            EvidenceSource::Text
+        );
+    }
 }

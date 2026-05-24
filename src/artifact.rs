@@ -2,6 +2,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::error::SrcwalkError;
+use crate::evidence::{evidence_packet_label_for, render_next_actions, EvidenceSource, NextAction};
 use crate::lang::outline::outline_language;
 use crate::lang::treesitter::is_iife_function;
 use crate::types::{estimate_tokens, FileType, Lang, ViewMode};
@@ -17,10 +18,31 @@ pub(crate) fn is_artifact_js_ts_file(path: &Path) -> bool {
 }
 
 pub(crate) fn is_artifact_search_file(path: &Path) -> bool {
+    let file_type = crate::lang::detect_file_type(path);
     matches!(
-        crate::lang::detect_file_type(path),
+        file_type,
         FileType::Code(Lang::JavaScript | Lang::TypeScript | Lang::Tsx)
-    )
+    ) || crate::capabilities::supports_artifact_search(file_type)
+}
+
+pub(crate) fn should_auto_artifact_file(path: &Path) -> bool {
+    if !is_artifact_js_ts_file(path) {
+        return false;
+    }
+    if crate::search::io::is_minified_filename(path) {
+        return true;
+    }
+
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() < crate::search::io::MINIFIED_CHECK_THRESHOLD {
+        return false;
+    }
+    let Some(bytes) = crate::search::io::read_file_bytes(path, meta.len()) else {
+        return false;
+    };
+    crate::search::io::looks_minified(&bytes)
 }
 
 pub(crate) fn read_js_ts_symbol_section(
@@ -186,7 +208,12 @@ fn render_artifact_byte_section(
 
     let mut out = String::new();
     let _ = writeln!(out, "{header}\n");
-    let _ = writeln!(out, "## artifact bytes: {start_byte}-{end_byte}\n");
+    let _ = writeln!(out, "## artifact bytes: {start_byte}-{end_byte}");
+    let _ = writeln!(
+        out,
+        "{}\n",
+        evidence_packet_label_for(EvidenceSource::Artifact, "byte-span")
+    );
     let _ = writeln!(out, "```{fence}");
     out.push_str(snippet.trim());
     let _ = writeln!(out, "\n```");
@@ -196,9 +223,17 @@ fn render_artifact_byte_section(
             "\n> Caveat: byte section truncated ~{tok_est}/{} tokens; byte span preserved.",
             budget.unwrap_or(1_500)
         );
-        out.push_str("> Next: raise --budget <N> or narrow `bytes:start-end`.");
+        out.push_str(&render_next_actions(&[NextAction::guidance(
+            "raise --budget <N> or narrow `bytes:start-end`.",
+            "artifact byte section budget drilldown",
+            20,
+        )]));
     } else {
-        out.push_str("> Next: use callers/callees --artifact for relations, or --full for raw artifact text.");
+        out.push_str(&render_next_actions(&[NextAction::guidance(
+            "use `srcwalk trace callers <symbol> --artifact` or `srcwalk trace callees <symbol> --artifact` for relations, or --full for raw artifact text.",
+            "artifact relation drilldown",
+            20,
+        )]));
     }
     out
 }
@@ -223,13 +258,18 @@ fn render_artifact_symbol_section(
     let _ = writeln!(out, "{header}\n");
     let _ = writeln!(
         out,
-        "## artifact section: {symbol} [line {}:{}-{}:{}, bytes {}-{}]\n",
+        "## artifact section: {symbol} [line {}:{}-{}:{}, bytes {}-{}]",
         span.start_line,
         span.start_col,
         span.end_line,
         span.end_col,
         span.start_byte,
         span.end_byte
+    );
+    let _ = writeln!(
+        out,
+        "{}\n",
+        evidence_packet_label_for(EvidenceSource::Artifact, "symbol-span")
     );
     let _ = writeln!(out, "```{fence}");
     out.push_str(snippet.trim());
@@ -240,9 +280,17 @@ fn render_artifact_symbol_section(
             "\n> Caveat: artifact section truncated ~{tok_est}/{} tokens; AST byte span preserved.",
             budget.unwrap_or(1_500)
         );
-        out.push_str("> Next: use callers/callees --artifact or raise --budget <N>.");
+        out.push_str(&render_next_actions(&[NextAction::guidance(
+            "use `srcwalk trace callers <symbol> --artifact`, `srcwalk trace callees <symbol> --artifact`, or raise --budget <N>.",
+            "artifact symbol section budget drilldown",
+            20,
+        )]));
     } else {
-        out.push_str("> Next: use callers/callees --artifact for relations, or --full for raw artifact text.");
+        out.push_str(&render_next_actions(&[NextAction::guidance(
+            "use `srcwalk trace callers <symbol> --artifact` or `srcwalk trace callees <symbol> --artifact` for relations, or --full for raw artifact text.",
+            "artifact relation drilldown",
+            20,
+        )]));
     }
     out
 }

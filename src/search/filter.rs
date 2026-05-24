@@ -14,6 +14,27 @@ struct GeneralFilter {
     value: String,
 }
 
+fn parse_line_range_value(value: &str) -> Option<(u32, u32)> {
+    if let Ok(line) = value.parse::<u32>() {
+        return (line > 0).then_some((line, line));
+    }
+
+    let (start, end) = value.split_once('-')?;
+    let start = start.parse::<u32>().ok()?;
+    let end = end.parse::<u32>().ok()?;
+    (start > 0 && end >= start).then_some((start, end))
+}
+
+pub(super) fn parse_line_range_filter(
+    value: &str,
+    query: &str,
+) -> Result<(u32, u32), SrcwalkError> {
+    parse_line_range_value(value).ok_or_else(|| SrcwalkError::InvalidQuery {
+        query: query.to_string(),
+        reason: "line filter must be a positive line number or start-end range".to_string(),
+    })
+}
+
 fn parse_general_filters(filter: Option<&str>) -> Result<Vec<GeneralFilter>, SrcwalkError> {
     let Some(filter) = filter else {
         return Ok(Vec::new());
@@ -36,17 +57,28 @@ fn parse_general_filters(filter: Option<&str>) -> Result<Vec<GeneralFilter>, Src
         }
         match field.as_str() {
             "path" | "file" | "text" | "kind" => filters.push(GeneralFilter { field, value }),
+            "line" => {
+                parse_line_range_filter(&value, filter)?;
+                filters.push(GeneralFilter { field, value });
+            }
+            "access" => {
+                return Err(SrcwalkError::InvalidQuery {
+                    query: filter.to_string(),
+                    reason: "filter qualifier `access` only applies with discover --as access"
+                        .to_string(),
+                });
+            }
             "args" | "receiver" | "recv" | "caller" => {
                 return Err(SrcwalkError::InvalidQuery {
                     query: filter.to_string(),
-                    reason: format!("filter qualifier `{field}` only applies with --callers"),
+                    reason: format!("filter qualifier `{field}` only applies with trace callers"),
                 });
             }
             _ => {
                 return Err(SrcwalkError::InvalidQuery {
                     query: filter.to_string(),
                     reason: format!(
-                        "unsupported filter field `{field}`; use path, file, text, or kind"
+                        "unsupported filter field `{field}`; use path, file, text, kind, or line"
                     ),
                 });
             }
@@ -88,6 +120,8 @@ impl GeneralFilter {
                 .is_some_and(|name| name.contains(&self.value)),
             "text" => m.text.contains(&self.value),
             "kind" => display::match_kind_label(m, cache).is_some_and(|kind| kind == self.value),
+            "line" => parse_line_range_value(&self.value)
+                .is_some_and(|(start, end)| start <= m.line && m.line <= end),
             _ => false,
         }
     }

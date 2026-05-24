@@ -1,3 +1,4 @@
+pub mod access;
 mod artifact_snippet;
 pub mod callees;
 pub mod callers;
@@ -21,6 +22,7 @@ use std::path::Path;
 
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
+use crate::evidence::{render_next_actions, NextAction};
 use crate::format;
 use crate::format::rel;
 use crate::session::Session;
@@ -28,7 +30,10 @@ use crate::types::SearchResult;
 use crate::ArtifactMode;
 
 pub use self::artifact_snippet::compact_artifact_snippets;
-pub use self::display::{format_raw_result, format_raw_result_with_header, search_files_glob};
+pub use self::display::{
+    format_raw_result, format_raw_result_with_header, search_files_glob,
+    search_files_glob_with_exclude, search_files_glob_with_scope_filter,
+};
 pub use self::filter::apply_general_filter;
 pub(crate) use self::io::{file_metadata, read_file_bytes};
 use self::io::{parse_pattern, walker};
@@ -47,13 +52,13 @@ fn append_did_you_mean(
     scope: &Path,
     glob: Option<&str>,
     filter: Option<&str>,
-) {
+) -> bool {
     if !result.matches.is_empty() {
-        return;
+        return false;
     }
     let suggestions = symbol::suggest(&result.query, scope, glob, 3);
     if suggestions.is_empty() {
-        return;
+        return false;
     }
     let _ = write!(out, "\n\n> Did you mean: ");
     for (i, (spelling, path, line)) in suggestions.iter().enumerate() {
@@ -77,6 +82,25 @@ fn append_did_you_mean(
             "\n> Note: kind filters only match symbols inside --scope; broaden --scope for imported/out-of-scope definitions.",
         );
     }
+    true
+}
+
+fn append_exact_symbol_miss_guidance(
+    out: &mut String,
+    result: &SearchResult,
+    scope: &Path,
+    did_suggest: bool,
+) {
+    if !result.matches.is_empty() || did_suggest {
+        return;
+    }
+
+    let query = &result.query;
+    let scope = format::display_path(scope);
+    let _ = write!(
+        out,
+        "\n\n> No exact symbol named `{query}`.\n> Try: `srcwalk discover '{query}*' --scope {scope}` for prefix symbols; `srcwalk discover '*{query}*' --as file --scope {scope}` for file names; or `srcwalk discover '{query}' --as text --scope {scope}` for content."
+    );
 }
 
 fn has_kind_filter(filter: Option<&str>) -> bool {
@@ -124,13 +148,28 @@ pub fn search_symbol_with_artifact(
     compact_artifact_snippets(&mut result, artifact);
     let bloom = crate::index::bloom::BloomFilterCache::new();
     let mut out = format_search_result(&result, cache, None, &bloom, 0, None)?;
-    append_did_you_mean(&mut out, &result, scope, glob, filter);
+    let did_suggest = append_did_you_mean(&mut out, &result, scope, glob, filter);
+    append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest);
     // Contextual hints
+    let mut actions = Vec::new();
     if result.definitions > 0 {
-        out.push_str("\n\n> Next: use --expand to inline definition source");
+        actions.push(NextAction::guidance(
+            "use --expand to inline definition source",
+            "definition expansion drilldown",
+            40,
+        ));
     }
     if result.usages >= 5 {
-        out.push_str("\n> Next: for precise call sites use `srcwalk callers <symbol>` instead of text-based usages");
+        actions.push(NextAction::guidance(
+            "for precise call sites use `srcwalk trace callers <symbol>` instead of text-based usages",
+            "precise caller drilldown",
+            50,
+        ));
+    }
+    let rendered = render_next_actions(&actions);
+    if !rendered.is_empty() {
+        let prefix = if result.definitions > 0 { "\n\n" } else { "\n" };
+        let _ = write!(out, "{prefix}{rendered}");
     }
     Ok(out)
 }
@@ -244,7 +283,8 @@ pub fn search_symbol_expanded(
     paginate(&mut result, limit, offset);
     let mut out =
         format_search_result(&result, cache, Some(session), bloom, expand, budget_tokens)?;
-    append_did_you_mean(&mut out, &result, scope, glob, filter);
+    let did_suggest = append_did_you_mean(&mut out, &result, scope, glob, filter);
+    append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest);
     Ok(out)
 }
 
@@ -311,15 +351,29 @@ pub fn search_multi_symbol_expanded(
             let omitted = result.total_found - result.matches.len();
             let next_offset = result.offset + result.matches.len();
             let page_size = result.matches.len().max(1);
-            let _ = write!(
-                out,
-                "\n\n> Next: {omitted} more matches available. Continue with --offset {next_offset} --limit {page_size}."
-            );
+            let rendered = render_next_actions(&[NextAction::metadata(
+                format!(
+                    "{omitted} more matches available. Continue with --offset {next_offset} --limit {page_size}."
+                ),
+                "expanded search pagination",
+                20,
+            )]);
+            if !rendered.is_empty() {
+                let _ = write!(out, "\n\n{rendered}");
+            }
         }
         if smart_truncated {
-            out.push_str("\n\n> Caveat: expanded source truncated.\n> Next: use shown line range with --section <start-end>.");
+            out.push_str("\n\n> Caveat: expanded source truncated.");
+            let rendered = render_next_actions(&[NextAction::guidance(
+                "use shown line range with --section <start-end>.",
+                "expanded search source drilldown",
+                20,
+            )]);
+            if !rendered.is_empty() {
+                let _ = write!(out, "\n{rendered}");
+            }
         }
-        append_did_you_mean(&mut out, &result, scope, glob, filter);
+        let _ = append_did_you_mean(&mut out, &result, scope, glob, filter);
         sections.push(out);
     }
     let mut out = sections.join("\n\n---\n");

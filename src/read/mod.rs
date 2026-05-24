@@ -13,11 +13,12 @@ use memmap2::Mmap;
 
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
+use crate::evidence::{evidence_packet_label_for, render_next_actions, EvidenceSource, NextAction};
 use crate::format;
 use crate::lang::detect_file_type;
 use crate::types::{FileType, ViewMode};
 
-pub use full::read_file_with_budget;
+pub use full::{read_file_with_budget, read_file_with_budget_and_context};
 pub(crate) use suggest::edit_distance;
 pub use suggest::suggest_similar_file;
 
@@ -27,6 +28,11 @@ use crate::types::estimate_tokens;
 use section::{read_section, resolve_heading, suggest_symbols};
 
 pub(crate) const RAW_TOKEN_CAP: u64 = 5_000;
+
+pub(super) fn document_packet_for_file_type(file_type: FileType, kind: &str) -> Option<String> {
+    matches!(file_type, FileType::Document(_))
+        .then(|| evidence_packet_label_for(EvidenceSource::Document, kind))
+}
 const RAW_LINE_CAP: u32 = 200;
 const FILE_SIZE_CAP: u64 = 500_000; // 500KB
 
@@ -85,6 +91,12 @@ pub fn read_file(
     })?;
     let buf = &mmap[..];
 
+    if crate::capabilities::is_binary_artifact_path(path) {
+        if let Some(output) = crate::capabilities::render_binary_artifact(path, buf) {
+            return Ok(output);
+        }
+    }
+
     if crate::lang::detection::is_binary(buf) {
         let mime = full::mime_from_ext(path);
         return Ok(format::binary_header(path, byte_len, mime));
@@ -139,9 +151,24 @@ pub fn read_file(
         _ => ViewMode::Outline,
     };
     let header = format::file_header(path, byte_len, line_count, mode);
-    Ok(format!(
-        "{header}\n\n{outline}\n\n> Next: drill into a symbol with --section <name> or a line range\n> Next: need raw file text? retry with --full, or use --section <range> for a smaller slice."
-    ))
+    let packet = document_packet_for_file_type(file_type, "outline");
+    let next = render_next_actions(&[
+        NextAction::guidance(
+            "drill into a symbol with --section <name> or a line range",
+            "read outline drilldown",
+            40,
+        ),
+        NextAction::guidance(
+            "need raw file text? retry with --full, or use --section <range> for a smaller slice.",
+            "read raw or range slice",
+            50,
+        ),
+    ]);
+    let body = match packet {
+        Some(packet) => format!("{header}\n\n{packet}\n\n{outline}"),
+        None => format!("{header}\n\n{outline}"),
+    };
+    Ok(format!("{body}\n\n{next}"))
 }
 
 /// Would this file produce an outline (rather than full content) in default read mode?

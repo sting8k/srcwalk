@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::error::SrcwalkError;
+use crate::lang::detect_file_type;
 use crate::types::Match;
 use crate::ArtifactMode;
 use grep_regex::RegexMatcher;
@@ -56,12 +57,15 @@ pub(super) fn find_usages_with_artifact(
 
             // Skip oversized files
             if let Ok(meta) = std::fs::metadata(path) {
-                if meta.len()
-                    > if is_artifact {
-                        MAX_ARTIFACT_FILE_SIZE
-                    } else {
-                        500_000
-                    }
+                let is_provider_text_file =
+                    crate::capabilities::is_private_text_file_type(detect_file_type(path));
+                if !is_provider_text_file
+                    && meta.len()
+                        > if is_artifact {
+                            MAX_ARTIFACT_FILE_SIZE
+                        } else {
+                            500_000
+                        }
                 {
                     return ignore::WalkState::Continue;
                 }

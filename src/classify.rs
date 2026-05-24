@@ -15,8 +15,8 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         return QueryType::FilePathSection(path, section);
     }
 
-    // 2. Glob characters in find now mean symbol-name glob unless the pattern
-    //    looks file/path-like. File globs live under `srcwalk files <glob>`.
+    // 2. Glob characters in discover mean symbol-name glob unless the pattern
+    //    looks file/path-like. File globs live under `srcwalk discover <glob> --as file`.
     if !query.contains(' ') && has_glob_chars(query) {
         if looks_like_file_glob(query) {
             return QueryType::Glob(query.into());
@@ -24,7 +24,7 @@ pub fn classify(query: &str, scope: &Path) -> QueryType {
         return QueryType::SymbolGlob(query.into());
     }
 
-    // 4. File path — contains separator or starts with ./ ../.
+    // 3. File path — contains separator or starts with ./ ../.
     //    Spaces are valid in real paths; filesystem existence is the tie-breaker
     //    that keeps prose like "TODO: fix this/that" from becoming a path.
     if looks_like_path_with_separator(query) {
@@ -339,7 +339,6 @@ mod tests {
         assert!(matches!(classify("$ref", &scope), QueryType::Symbol(_)));
         assert!(matches!(classify("@types", &scope), QueryType::Symbol(_)));
     }
-
     #[test]
     fn content_queries() {
         let scope = PathBuf::from(".");

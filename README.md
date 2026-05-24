@@ -5,27 +5,32 @@
 [![Discord](https://img.shields.io/discord/1401062214831575060?label=discord)](https://discord.gg/p7gj6BPb)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Agent's code navigator CLI** — target-first file reading, action-first code analysis, one binary, zero config.
+**Code navigation for AI agents** — exact reads, structural discovery, evidence packets,
+one binary, zero config.
 
-> Tree-sitter outlines · symbol search · caller/callee graphs · context/review packets · deps · overview
-
-File reads default to structural views, not raw full-file dumps. Use target-first reads for files (`srcwalk <path>`, `<path>:<line>`, `--section`) and action-first commands for analysis (`discover`, `review`, `callers`, `callees`, `deps`, `overview`).
-
-> Originally forked from [jahala/tilth](https://github.com/jahala/tilth), now developed independently.
+> Tree-sitter outlines · symbol/search discovery · callers/callees · deps ·
+  context/review/diff packets · overview
 
 ## What it does
 
-- **Read** — structural outline by default; `--section` and capped `--full` for explicit raw pages
-- **Find** — tree-sitter definitions first, usages, smart literal OR defaults, field/member access grouping, confirmed context next targets, and optional inline source
-- **Callers** — single-hop or multi-hop BFS (up to 5 hops), hub guard, collision warnings
-- **Callees** — forward call graph, resolved + unresolved, with depth support
-- **Deps** — blast-radius: imports, document links/assets, and dependents of a file
-- **Context** — one-target understanding packets with Flow Maps, compact call/read evidence, bounded call neighborhood summaries, and exact `> Next:` commands
-- **Review** — Review Packets for git changes, with bounded Flow Maps for changed targets, changed evidence, and exact `> Next:` footer commands
-- **Compare** — structural shared/only evidence for two known source targets without equivalence or verdict claims
-- **Overview** — token-annotated directory skeleton, respects `.gitignore`, `.ignore`, git excludes, and parent ignores
+- **Show** — read files, line ranges, symbols, headings, and capped raw pages.
+- **Discover** — find definitions, usages, files, text, comments, and
+  field/member access evidence.
+- **Trace** — inspect callers and callees with bounded depth, hub guards, and
+  unresolved-call labels.
+- **Context** — build one-target packets with Flow Maps, local evidence, call
+  neighborhoods, and exact next commands.
+- **Review & diff** — turn Git changes into bounded evidence packets for changed
+  files, symbols, and untracked files.
+- **Compare & assess** — compare two known targets structurally, or scan blast
+  radius before changing a symbol.
+- **Deps & overview** — inspect imports, links/assets, dependents, and a
+  token-aware project skeleton.
 
-Structural support covers Rust, TypeScript, TSX, JavaScript, Python, Go, Java, Scala, C, C++, Ruby, PHP, C#, Swift, Elixir, Kotlin, CSS (`.css`), SCSS (`.scss`), and Less (`.less`). Document navigation support covers HTML (`.html`, `.htm`) and Markdown-style files (`.md`, `.mdx`; `.rst` uses the same document fallback) with sections/elements/code blocks and explicit links/assets. Stylesheet support covers selectors, at-rules, heading-like comment sections, variables/properties, mixins/functions where the language has them, and explicit import/`url(...)` deps; call graph commands remain for executable code. Unsupported files still get smart text/outline reads.
+Structural support covers Rust, TypeScript/TSX, JavaScript, Python, Go,
+Java/Scala/Kotlin, C/C++, Ruby, PHP, C#, Swift, Elixir, CSS, SCSS, and Less.
+Document navigation covers HTML, Markdown-style files, and `.rst` fallback.
+Unsupported files still get smart text/outline reads.
 
 ## Install
 

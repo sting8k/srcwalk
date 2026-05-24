@@ -11,7 +11,7 @@ use crate::lang::treesitter::{
     extract_definition_name, extract_elixir_definition_name, extract_impl_trait, extract_impl_type,
     extract_implemented_interfaces, is_elixir_definition, DEFINITION_KINDS,
 };
-use crate::types::{FileType, Match, OutlineKind};
+use crate::types::{Lang, Match, OutlineEntry, OutlineKind};
 use crate::ArtifactMode;
 
 use super::super::{file_metadata, read_file_bytes, walker};
@@ -23,8 +23,14 @@ pub(super) fn outline_def_weight(kind: OutlineKind) -> u16 {
             100
         }
         OutlineKind::Function => 90,
-        OutlineKind::TypeAlias => 80,
+        OutlineKind::Provider(kind) => kind.definition_weight(),
+        OutlineKind::TypeAlias
+        | OutlineKind::Selector
+        | OutlineKind::AtRule
+        | OutlineKind::Section => 80,
+        OutlineKind::Element => 70,
         OutlineKind::Constant | OutlineKind::Variable | OutlineKind::ImmutableVariable => 60,
+        OutlineKind::CodeBlock => 50,
         _ => 40,
     }
 }
@@ -84,7 +90,9 @@ pub(super) fn find_definitions_with_artifact(
                     } else {
                         500_000
                     };
-                    if meta.len() > max_size {
+                    if !crate::capabilities::is_private_text_file_type(detect_file_type(path))
+                        && meta.len() > max_size
+                    {
                         return ignore::WalkState::Continue;
                     }
                     meta.len()
@@ -110,7 +118,8 @@ pub(super) fn find_definitions_with_artifact(
 
             // Content-based minified detection for large files that slipped
             // through filename check (e.g. `app.js` actually minified).
-            if !is_artifact
+            if !crate::capabilities::is_private_text_file_type(detect_file_type(path))
+                && !is_artifact
                 && file_size >= super::super::io::MINIFIED_CHECK_THRESHOLD
                 && super::super::io::looks_minified(&bytes)
             {
@@ -125,16 +134,23 @@ pub(super) fn find_definitions_with_artifact(
             // Get file metadata once per file
             let (file_lines, mtime) = file_metadata(path);
 
-            // Try tree-sitter structural detection
+            // Try structural detection from parser-backed or document outline entries.
             let file_type = detect_file_type(path);
-            let lang = match file_type {
-                FileType::Code(l) => Some(l),
-                _ => None,
+            let lang = file_type.structural_lang();
+            let is_document = lang.is_some_and(crate::lang::document::is_document_lang);
+            let ts_language = if is_document {
+                None
+            } else {
+                lang.and_then(outline_language)
             };
 
-            let ts_language = lang.and_then(outline_language);
-
-            let mut file_defs = if let Some(ref ts_lang) = ts_language {
+            let has_provider_outline =
+                lang.is_some_and(crate::capabilities::provides_outline_entries);
+            let mut file_defs = if let Some(lang) =
+                lang.filter(|lang| crate::lang::document::is_document_lang(*lang))
+            {
+                find_defs_from_outline(path, query, content, file_lines, mtime, lang)
+            } else if let Some(ref ts_lang) = ts_language {
                 find_defs_treesitter_with_depth(
                     path,
                     query,
@@ -150,6 +166,9 @@ pub(super) fn find_definitions_with_artifact(
                         MAX_DEFINITION_DEPTH
                     },
                 )
+            } else if has_provider_outline {
+                let lang = lang.expect("checked provider outline above");
+                find_defs_from_outline(path, query, content, file_lines, mtime, lang)
             } else {
                 Vec::new()
             };
@@ -160,8 +179,12 @@ pub(super) fn find_definitions_with_artifact(
                 ));
             }
 
-            // Fallback: keyword heuristic for files without grammars
-            if file_defs.is_empty() && ts_language.is_none() {
+            // Fallback: keyword heuristic for files without grammars.
+            if file_defs.is_empty()
+                && ts_language.is_none()
+                && !is_document
+                && !has_provider_outline
+            {
                 file_defs = find_defs_heuristic_buf(path, query, content, file_lines, mtime);
             }
 
@@ -218,6 +241,10 @@ fn find_defs_treesitter_with_depth(
     cache: Option<&crate::cache::OutlineCache>,
     max_depth: usize,
 ) -> Vec<Match> {
+    if let Some(lang) = lang.filter(|lang| crate::lang::css::is_stylesheet_lang(*lang)) {
+        return find_defs_from_outline(path, query, content, file_lines, mtime, lang);
+    }
+
     let tree = if let Some(c) = cache {
         let Some(tree) = c.get_or_parse(path, mtime, content, ts_lang) else {
             return Vec::new();
@@ -243,6 +270,70 @@ fn find_defs_treesitter_with_depth(
     );
 
     defs
+}
+
+pub(super) fn find_defs_from_outline(
+    path: &Path,
+    query: &str,
+    content: &str,
+    file_lines: u32,
+    mtime: SystemTime,
+    lang: Lang,
+) -> Vec<Match> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut defs = Vec::new();
+    collect_outline_defs(
+        &crate::lang::outline::get_outline_entries(content, lang),
+        query,
+        path,
+        &lines,
+        file_lines,
+        mtime,
+        &mut defs,
+    );
+    defs
+}
+
+fn outline_entry_matches_query(entry: &OutlineEntry, query: &str) -> bool {
+    entry.name == query
+        || entry.signature.as_deref() == Some(query)
+        || crate::lang::css::outline_name_matches(entry.kind, &entry.name, query)
+        || crate::lang::document::outline_name_matches(entry.kind, &entry.name, query)
+}
+
+fn collect_outline_defs(
+    entries: &[OutlineEntry],
+    query: &str,
+    path: &Path,
+    lines: &[&str],
+    file_lines: u32,
+    mtime: SystemTime,
+    defs: &mut Vec<Match>,
+) {
+    for entry in entries {
+        if outline_entry_matches_query(entry, query) {
+            defs.push(Match {
+                path: path.to_path_buf(),
+                line: entry.start_line,
+                text: lines
+                    .get(entry.start_line.saturating_sub(1) as usize)
+                    .unwrap_or(&"")
+                    .trim_end()
+                    .to_string(),
+                is_definition: true,
+                exact: true,
+                file_lines,
+                mtime,
+                def_range: Some((entry.start_line, entry.end_line)),
+                def_name: Some(query.to_string()),
+                def_weight: outline_def_weight(entry.kind),
+                impl_target: None,
+                base_target: None,
+                in_comment: false,
+            });
+        }
+        collect_outline_defs(&entry.children, query, path, lines, file_lines, mtime, defs);
+    }
 }
 
 /// Recursively walk AST nodes looking for definitions of the queried symbol.

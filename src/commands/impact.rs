@@ -4,6 +4,7 @@ use crate::cache::OutlineCache;
 use crate::commands::context::{apply_optional_budget, ArtifactMode};
 use crate::commands::flow::is_test_path;
 use crate::error::SrcwalkError;
+use crate::evidence::{render_next_actions, NextAction};
 use crate::{format, index, search};
 
 /// Lab: compact upstream blast-radius slice for changing a symbol.
@@ -39,7 +40,7 @@ fn run_artifact_impact(
         .collect();
     defs.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
 
-    let mut out = format!("# Slice: {target} — artifact impact\n\n[symbol] {target}\n");
+    let mut out = format!("# Assess: {target} — artifact\n\n[symbol] {target}\n");
     if defs.is_empty() {
         out.push_str("= definitions\n  (none)\n");
     } else {
@@ -122,7 +123,15 @@ fn run_artifact_impact(
     if total_callers == 0 {
         out.push_str("\n> Note: no direct name-matched calls found in artifact scope; this is not proof of no runtime callers.");
     }
-    out.push_str("\n> Next: use `srcwalk callers <symbol> --artifact --expand=1`, `srcwalk find <api|string> --artifact`, or `srcwalk <path> --artifact --section bytes:<start>-<end>`.");
+    let rendered = render_next_actions(&[NextAction::guidance(
+        "use `srcwalk trace callers <symbol> --artifact --expand=1`, `srcwalk discover <api|string> --artifact`, or `srcwalk <path> --artifact --section bytes:<start>-<end>`.",
+        "artifact impact drilldown",
+        40,
+    )]);
+    if !rendered.is_empty() {
+        out.push('\n');
+        out.push_str(&rendered);
+    }
     if let Some(note) = artifact.callees_note() {
         out.push_str("\n> ");
         out.push_str(note);
@@ -326,7 +335,7 @@ pub(crate) fn run_impact(
         .collect();
     defs.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
 
-    let mut out = format!("# Slice: {target} — impact\n\n[symbol] {target}\n");
+    let mut out = format!("# Assess: {target}\n\n[symbol] {target}\n");
     if defs.is_empty() {
         out.push_str("= definitions\n  (none)\n");
     } else {
@@ -400,14 +409,23 @@ pub(crate) fn run_impact(
         out.push_str("\n> Warning: no definitions found; showing name-matched call sites only.");
     }
     if defs.len() > BROAD_DEFINITION_THRESHOLD || total_callers > BROAD_CALLSITE_THRESHOLD {
-        out.push_str("\n> Warning: broad symbol name; impact is name-matched and may include unrelated receivers.");
+        out.push_str("\n> Warning: broad symbol name; assess is name-matched and may include unrelated receivers.");
     }
 
     let _ = write!(
         out,
-        "\n> Caveat: {total_callers} direct name-matched call site{} found; impact output capped.\n> Next: use `srcwalk callers <symbol> --depth 2` or `srcwalk callers <symbol> --count-by receiver|file`.",
+        "\n> Caveat: {total_callers} direct name-matched call site{} found; heuristic assess output capped.",
         if total_callers == 1 { "" } else { "s" }
     );
+    let rendered = render_next_actions(&[NextAction::guidance(
+        "use `srcwalk trace callers <symbol> --depth 2` or `srcwalk trace callers <symbol> --count-by receiver|file`.",
+        "impact caller drilldown",
+        40,
+    )]);
+    if !rendered.is_empty() {
+        out.push('\n');
+        out.push_str(&rendered);
+    }
     if total_callers == 0 {
         out.push_str("\n> Note: no direct name-matched calls found in scope; this is not proof of no runtime callers.");
     }

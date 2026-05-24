@@ -3,7 +3,9 @@ use std::fmt::Write;
 use std::path::Path;
 
 use crate::error::SrcwalkError;
-use crate::format::rel_nonempty;
+use crate::evidence::{
+    render_next_actions, Anchor, EvidenceAtom, EvidenceKind, EvidenceSource, NextAction,
+};
 use crate::search::glob;
 
 fn append_grouped_files(out: &mut String, files: &[glob::GlobFileEntry], scope: &Path) {
@@ -11,17 +13,22 @@ fn append_grouped_files(out: &mut String, files: &[glob::GlobFileEntry], scope: 
         return;
     }
 
-    let mut groups: BTreeMap<String, Vec<(String, Option<&str>)>> = BTreeMap::new();
+    let mut groups: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
     for file in files {
-        let display = rel_nonempty(&file.path, scope);
+        let atom = EvidenceAtom::new(
+            EvidenceKind::File,
+            None,
+            Anchor::file(&file.path),
+            file.preview.clone().unwrap_or_default(),
+            EvidenceSource::Text,
+        );
+        let display = atom.anchor().display_relative_to(scope);
+        let preview = (!atom.snippet().is_empty()).then(|| atom.snippet().to_string());
         let (dir, name) = match display.rsplit_once('/') {
             Some((dir, name)) if !dir.is_empty() => (format!("{dir}/"), name.to_string()),
             _ => ("./".to_string(), display),
         };
-        groups
-            .entry(dir)
-            .or_default()
-            .push((name, file.preview.as_deref()));
+        groups.entry(dir).or_default().push((name, preview));
     }
 
     for (dir, entries) in groups {
@@ -65,11 +72,17 @@ pub(super) fn format_glob_result(
     let shown_end = result.offset + result.files.len();
     if result.total_found > shown_end {
         let omitted = result.total_found - shown_end;
-        let _ = write!(
-            out,
-            "\n\n> Next: {omitted} more files available. Continue with --offset {shown_end} --limit {limit}.",
-            limit = result.limit,
-        );
+        let rendered = render_next_actions(&[NextAction::metadata(
+            format!(
+                "{omitted} more files available. Continue with --offset {shown_end} --limit {limit}.",
+                limit = result.limit,
+            ),
+            "file pagination",
+            20,
+        )]);
+        if !rendered.is_empty() {
+            let _ = write!(out, "\n\n{rendered}");
+        }
     } else if result.offset > 0 {
         let _ = write!(out, "\n> Note: end of results.");
     }

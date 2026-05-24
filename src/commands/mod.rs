@@ -1,11 +1,15 @@
 pub(crate) mod call_format;
 pub(crate) mod callees;
 pub(crate) mod callers;
+pub(crate) mod compare;
 pub(crate) mod context;
+pub(crate) mod decision_flow;
 pub(crate) mod deps;
+pub(crate) mod diff;
 pub(crate) mod find;
 pub(crate) mod flow;
 pub(crate) mod impact;
 pub(crate) mod multi_scope;
 pub(crate) mod path;
+pub(crate) mod review;
 pub(crate) mod section_disambiguation;

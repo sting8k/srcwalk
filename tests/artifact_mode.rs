@@ -20,7 +20,7 @@ fn temp_repo(name: &str) -> PathBuf {
 }
 
 fn norm_path_separators(s: &str) -> String {
-    s.replace('\\', "/")
+    s.replace("\r\n", "\n").replace('\\', "/")
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn artifact_flag_includes_minified_js_symbol_evidence() {
     .unwrap();
 
     let default = srcwalk()
-        .args(["login", "--scope"])
+        .args(["discover", "login", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -44,7 +44,7 @@ fn artifact_flag_includes_minified_js_symbol_evidence() {
     );
 
     let artifact = srcwalk()
-        .args(["login", "--artifact", "--scope"])
+        .args(["discover", "login", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -55,6 +55,14 @@ fn artifact_flag_includes_minified_js_symbol_evidence() {
     );
     let stdout = String::from_utf8_lossy(&artifact.stdout);
     assert!(stdout.contains("bundle.min.js"), "{stdout}");
+    assert!(
+        stdout.contains("source: artifact · kind: definition · confidence: artifact-level"),
+        "artifact discover hits should be labeled artifact-level evidence:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("> Caveat: artifact evidence is artifact-level unless a provider proves source-level semantics."),
+        "artifact search output should carry an artifact-level caveat:\n{stdout}"
+    );
     assert!(stdout.contains("Artifact mode:"), "{stdout}");
     assert!(stdout.contains("AST cap 25MB"), "{stdout}");
 }
@@ -81,6 +89,14 @@ fn artifact_path_read_labels_artifact_level_output() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("[artifact outline]"), "{stdout}");
+    assert!(
+        stdout.contains("source: artifact · kind: outline · confidence: artifact-level"),
+        "artifact outline reads should have packet labels:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("caveat: artifact evidence is artifact-level unless a provider proves source-level semantics."),
+        "artifact outline reads should have a packet caveat:\n{stdout}"
+    );
     assert!(stdout.contains("Artifact mode:"), "{stdout}");
     assert!(stdout.contains("AST cap 25MB"), "{stdout}");
     assert!(stdout.contains("drill into artifact symbols"), "{stdout}");
@@ -88,6 +104,55 @@ fn artifact_path_read_labels_artifact_level_output() {
         !stdout.contains("srcwalk deps <file>"),
         "artifact reads should not suggest source deps:\n{stdout}"
     );
+}
+
+#[test]
+fn artifact_byte_and_symbol_sections_include_packet_labels() {
+    let dir = temp_repo("artifact_js_sections");
+    let file = dir.join("bundle.min.js");
+    fs::write(
+        &file,
+        "function login(){return fetch('/api/login')}function boot(){return login()}",
+    )
+    .unwrap();
+
+    let byte_output = srcwalk()
+        .arg(file.to_string_lossy().as_ref())
+        .args(["--artifact", "--section", "bytes:0-20"])
+        .output()
+        .unwrap();
+    assert!(
+        byte_output.status.success(),
+        "artifact byte section failed:\n{}",
+        String::from_utf8_lossy(&byte_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&byte_output.stdout);
+    assert!(
+        stdout.contains("source: artifact · kind: byte-span · confidence: artifact-level"),
+        "artifact byte section should have packet labels:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("caveat: artifact evidence is artifact-level unless a provider proves source-level semantics."),
+        "artifact byte section should have packet caveat:\n{stdout}"
+    );
+
+    let symbol_output = srcwalk()
+        .arg(file.to_string_lossy().as_ref())
+        .args(["--artifact", "--section", "login"])
+        .output()
+        .unwrap();
+    assert!(
+        symbol_output.status.success(),
+        "artifact symbol section failed:\n{}",
+        String::from_utf8_lossy(&symbol_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&symbol_output.stdout);
+    assert!(
+        stdout.contains("source: artifact · kind: symbol-span · confidence: artifact-level"),
+        "artifact symbol section should have packet labels:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -188,7 +253,7 @@ fn artifact_find_surfaces_export_anchor_results() {
     .unwrap();
 
     let default = srcwalk()
-        .args(["find", "bootstrap", "--scope"])
+        .args(["discover", "bootstrap", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -199,7 +264,7 @@ fn artifact_find_surfaces_export_anchor_results() {
     );
 
     let artifact = srcwalk()
-        .args(["find", "bootstrap", "--artifact", "--scope"])
+        .args(["discover", "bootstrap", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -224,7 +289,7 @@ fn artifact_find_surfaces_amd_module_anchor_results() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["find", "ace/lib/lang", "--artifact", "--scope"])
+        .args(["discover", "ace/lib/lang", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -249,7 +314,7 @@ fn artifact_callers_include_minified_js_bundle_calls() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["callers", "login", "--artifact", "--scope"])
+        .args(["trace", "callers", "login", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -277,7 +342,7 @@ fn artifact_callers_group_repeated_same_caller_line() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["callers", "target", "--artifact", "--scope"])
+        .args(["trace", "callers", "target", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -309,7 +374,7 @@ fn artifact_callees_include_same_file_minified_js_calls() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["callees", "boot", "--artifact", "--scope"])
+        .args(["trace", "callees", "boot", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -337,7 +402,7 @@ fn artifact_callees_resolve_nested_umd_functions_by_byte_range() {
     .unwrap();
 
     let find = srcwalk()
-        .args(["find", "login", "--artifact", "--scope"])
+        .args(["discover", "login", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -354,7 +419,7 @@ fn artifact_callees_resolve_nested_umd_functions_by_byte_range() {
     );
 
     let callees = srcwalk()
-        .args(["callees", "boot", "--artifact", "--scope"])
+        .args(["trace", "callees", "boot", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -371,7 +436,14 @@ fn artifact_callees_resolve_nested_umd_functions_by_byte_range() {
     );
 
     let detailed = srcwalk()
-        .args(["callees", "boot", "--artifact", "--detailed", "--scope"])
+        .args([
+            "trace",
+            "callees",
+            "boot",
+            "--artifact",
+            "--detailed",
+            "--scope",
+        ])
         .arg(&dir)
         .output()
         .unwrap();
@@ -401,7 +473,7 @@ fn artifact_search_centers_long_one_line_usage_snippets() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["find", "targetCall", "--artifact", "--scope"])
+        .args(["discover", "targetCall", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -559,7 +631,14 @@ fn artifact_callers_expand_uses_byte_window() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["callers", "login", "--artifact", "--expand=1", "--scope"])
+        .args([
+            "trace",
+            "callers",
+            "login",
+            "--artifact",
+            "--expand=1",
+            "--scope",
+        ])
         .arg(&dir)
         .output()
         .unwrap();
@@ -598,7 +677,14 @@ fn artifact_callees_detailed_uses_byte_window_and_bytes_section_hint() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["callees", "boot", "--artifact", "--detailed", "--scope"])
+        .args([
+            "trace",
+            "callees",
+            "boot",
+            "--artifact",
+            "--detailed",
+            "--scope",
+        ])
         .arg(&dir)
         .output()
         .unwrap();
@@ -623,7 +709,7 @@ fn artifact_callees_detailed_uses_byte_window_and_bytes_section_hint() {
 #[test]
 fn artifact_relation_depth_is_rejected_until_supported() {
     let output = srcwalk()
-        .args(["callers", "login", "--artifact", "--depth", "2"])
+        .args(["trace", "callers", "login", "--artifact", "--depth", "2"])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -641,7 +727,7 @@ fn artifact_search_skips_non_js_text_even_with_artifact_flag() {
     fs::write(&file, content).unwrap();
 
     let default = srcwalk()
-        .args(["Bun", "--scope"])
+        .args(["discover", "Bun", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -652,7 +738,7 @@ fn artifact_search_skips_non_js_text_even_with_artifact_flag() {
     );
 
     let artifact = srcwalk()
-        .args(["Bun", "--artifact", "--scope"])
+        .args(["discover", "Bun", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -677,7 +763,7 @@ fn artifact_search_enters_dist_dirs_when_explicitly_enabled() {
     .unwrap();
 
     let default = srcwalk()
-        .args(["distOnlyTarget", "--scope"])
+        .args(["discover", "distOnlyTarget", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -688,7 +774,7 @@ fn artifact_search_enters_dist_dirs_when_explicitly_enabled() {
     );
 
     let artifact = srcwalk()
-        .args(["distOnlyTarget", "--artifact", "--scope"])
+        .args(["discover", "distOnlyTarget", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -717,7 +803,7 @@ fn artifact_search_includes_large_minified_js_under_artifact_cap() {
     fs::write(&file, content).unwrap();
 
     let artifact = srcwalk()
-        .args(["liveLargeTarget", "--artifact", "--scope"])
+        .args(["discover", "liveLargeTarget", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -731,7 +817,13 @@ fn artifact_search_includes_large_minified_js_under_artifact_cap() {
     assert!(stdout.contains("Artifact mode:"), "{stdout}");
 
     let callees = srcwalk()
-        .args(["callees", "liveLargeTarget", "--artifact", "--scope"])
+        .args([
+            "trace",
+            "callees",
+            "liveLargeTarget",
+            "--artifact",
+            "--scope",
+        ])
         .arg(&dir)
         .output()
         .unwrap();
@@ -758,7 +850,7 @@ fn artifact_search_skips_raw_binary_even_with_text_extension() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["Bun", "--artifact", "--scope"])
+        .args(["discover", "Bun", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -778,7 +870,7 @@ fn artifact_symbol_search_does_not_return_source_definitions() {
     fs::write(src_dir.join("cache.rs"), "pub struct OutlineCache;\n").unwrap();
 
     let output = srcwalk()
-        .args(["find", "OutlineCache", "--artifact", "--scope"])
+        .args(["discover", "OutlineCache", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -803,7 +895,7 @@ fn artifact_name_glob_search_includes_synthetic_export_anchors() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["find", "My*", "--artifact", "--scope"])
+        .args(["discover", "My*", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -839,13 +931,13 @@ fn artifact_mode_reenables_only_artifact_output_dirs() {
     .unwrap();
 
     let map = srcwalk()
-        .args(["map", "--artifact", "--scope"])
+        .args(["overview", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
     assert!(
         map.status.success(),
-        "artifact map failed:\n{}",
+        "artifact overview failed:\n{}",
         String::from_utf8_lossy(&map.stderr)
     );
     let stdout = String::from_utf8_lossy(&map.stdout);
@@ -853,11 +945,11 @@ fn artifact_mode_reenables_only_artifact_output_dirs() {
     assert!(stdout.contains("export AppBundle"), "{stdout}");
     assert!(
         !stdout.contains("node_modules") && !stdout.contains("DependencyBundle"),
-        "artifact map should not re-enable dependency trees:\n{stdout}"
+        "artifact overview should not re-enable dependency trees:\n{stdout}"
     );
 
     let search = srcwalk()
-        .args(["find", "DependencyBundle", "--artifact", "--scope"])
+        .args(["discover", "DependencyBundle", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -882,7 +974,7 @@ fn artifact_find_usage_shows_byte_drilldown() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["find", "localStorage", "--artifact", "--scope"])
+        .args(["discover", "localStorage", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -914,7 +1006,7 @@ fn artifact_flow_shows_calls_callers_and_byte_drilldowns() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["flow", "target", "--artifact", "--scope"])
+        .args(["context", "target", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -924,10 +1016,7 @@ fn artifact_flow_shows_calls_callers_and_byte_drilldowns() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("# Slice: target — artifact flow"),
-        "{stdout}"
-    );
+    assert!(stdout.contains("# Context: target — artifact"), "{stdout}");
     assert!(stdout.contains("-> calls (artifact)"), "{stdout}");
     assert!(stdout.contains("helper"), "{stdout}");
     assert!(stdout.contains("<- callers (artifact)"), "{stdout}");
@@ -945,7 +1034,7 @@ fn artifact_impact_shows_byte_level_blast_radius() {
     .unwrap();
 
     let output = srcwalk()
-        .args(["impact", "target", "--artifact", "--scope"])
+        .args(["assess", "target", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -955,10 +1044,7 @@ fn artifact_impact_shows_byte_level_blast_radius() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("# Slice: target — artifact impact"),
-        "{stdout}"
-    );
+    assert!(stdout.contains("# Assess: target — artifact"), "{stdout}");
     assert!(stdout.contains("= definitions"), "{stdout}");
     assert!(
         stdout.contains("<- artifact name-matched calls from"),
@@ -967,4 +1053,99 @@ fn artifact_impact_shows_byte_level_blast_radius() {
     assert!(stdout.contains("  bundle.min.js\n"), "{stdout}");
     assert!(stdout.contains("bytes:"), "{stdout}");
     assert!(stdout.contains("not source-level blast radius"), "{stdout}");
+}
+
+#[test]
+fn exact_minified_artifact_read_auto_enables_artifact_mode() {
+    let dir = temp_repo("artifact_auto_read");
+    let file = dir.join("bundle.min.js");
+    fs::write(
+        &file,
+        "function login(){return fetch('/api/login')}function boot(){return login()}",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .arg(file.to_string_lossy().as_ref())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "auto artifact read failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[artifact outline]"), "{stdout}");
+    assert!(stdout.contains("Artifact mode:"), "{stdout}");
+    assert!(stdout.contains("drill into artifact symbols"), "{stdout}");
+}
+
+#[test]
+fn explicit_artifact_exact_scope_accepts_plain_js_file() {
+    let dir = temp_repo("explicit_artifact_plain_scope");
+    let file = dir.join("plain.js");
+    fs::write(
+        &file,
+        r"function login() {
+    return fetch('/api/login');
+}
+function boot() {
+    return login();
+}",
+    )
+    .unwrap();
+
+    let callers = srcwalk()
+        .args(["trace", "callers", "login", "--artifact", "--scope"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(
+        callers.status.success(),
+        "explicit artifact exact-scope callers failed:\n{}",
+        String::from_utf8_lossy(&callers.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&callers.stdout);
+    assert!(stdout.contains("boot"), "{stdout}");
+    assert!(stdout.contains("Artifact mode:"), "{stdout}");
+}
+
+#[test]
+fn exact_minified_artifact_scope_auto_enables_discovery_and_trace() {
+    let dir = temp_repo("artifact_auto_scope");
+    let file = dir.join("bundle.min.js");
+    fs::write(
+        &file,
+        "function login(){return fetch('/api/login')}function boot(){return login()}",
+    )
+    .unwrap();
+
+    let discover = srcwalk()
+        .args(["discover", "login", "--scope"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(
+        discover.status.success(),
+        "auto artifact exact-scope discover failed:\n{}",
+        String::from_utf8_lossy(&discover.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&discover.stdout);
+    assert!(stdout.contains("bundle.min.js"), "{stdout}");
+    assert!(stdout.contains("Artifact mode:"), "{stdout}");
+
+    let callers = srcwalk()
+        .args(["trace", "callers", "login", "--scope"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(
+        callers.status.success(),
+        "auto artifact exact-scope callers failed:\n{}",
+        String::from_utf8_lossy(&callers.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&callers.stdout);
+    assert!(stdout.contains("boot"), "{stdout}");
+    assert!(stdout.contains("Artifact mode:"), "{stdout}");
+    assert!(stdout.contains("direct calls"), "{stdout}");
 }

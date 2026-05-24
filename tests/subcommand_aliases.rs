@@ -21,28 +21,8 @@ fn temp_repo(name: &str) -> PathBuf {
     dir
 }
 
-fn assert_same_stdout(mut left: Command, mut right: Command) {
-    let left = left.output().unwrap();
-    let right = right.output().unwrap();
-
-    assert!(
-        left.status.success(),
-        "left command failed:\n{}",
-        String::from_utf8_lossy(&left.stderr)
-    );
-    assert!(
-        right.status.success(),
-        "right command failed:\n{}",
-        String::from_utf8_lossy(&right.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&left.stdout),
-        String::from_utf8_lossy(&right.stdout)
-    );
-}
-
 #[test]
-fn root_help_surfaces_guide_entry_point() {
+fn root_help_surfaces_guide_entry_point_and_intent_inventory() {
     let output = srcwalk().arg("--help").output().unwrap();
 
     assert!(
@@ -53,10 +33,46 @@ fn root_help_surfaces_guide_entry_point() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Start here:"));
     assert!(stdout.contains("srcwalk guide"));
-    assert!(stdout.contains("Full embedded, version-matched agent guide"));
+    assert!(stdout.contains("srcwalk discover <query>"));
+    assert!(stdout.contains("srcwalk trace callers <symbol>"));
+    assert!(stdout.contains("srcwalk context <symbol-or-file:line>"));
+    assert!(stdout.contains("srcwalk review <range-or-staged>"));
+    assert!(stdout.contains("srcwalk assess <symbol>"));
     assert!(stdout.contains("srcwalk version"));
-    assert!(stdout.contains("Show version; add --check for latest"));
-    assert!(!stdout.contains("overview"));
+    let common = stdout.split("Common:").nth(1).expect("Common block");
+    let overview = common.find("srcwalk overview").expect("overview example");
+    let context = common.find("srcwalk context").expect("context example");
+    let discover = common.find("srcwalk discover").expect("discover example");
+    let show = common.find("srcwalk show").expect("show example");
+    assert!(
+        overview < discover,
+        "overview should precede discover in Common block"
+    );
+    assert!(
+        context < show,
+        "context should precede show in Common block"
+    );
+    let commands = stdout
+        .split("Commands:")
+        .nth(1)
+        .and_then(|tail| tail.split("Arguments:").next())
+        .expect("Commands block");
+    let command_overview = commands.find("overview").expect("overview command");
+    let command_context = commands.find("context").expect("context command");
+    let command_discover = commands.find("discover").expect("discover command");
+    let command_show = commands.find("show").expect("show command");
+    assert!(
+        command_overview < command_discover,
+        "overview command should precede discover"
+    );
+    assert!(
+        command_context < command_show,
+        "context command should precede show"
+    );
+    assert!(!stdout.contains("Compatibility:"));
+    assert!(!stdout.contains("srcwalk find <query>"));
+    assert!(!stdout.contains("srcwalk decision-flow"));
+    assert!(!stdout.contains("srcwalk diff"));
 }
 
 #[test]
@@ -70,31 +86,38 @@ fn artifact_help_is_discoverable_on_root_and_relation_commands() {
     let root_stdout = String::from_utf8_lossy(&root.stdout);
     assert!(root_stdout.contains("--artifact"), "{root_stdout}");
     assert!(
-        root_stdout.contains("direct file reads supported"),
+        root_stdout.contains("exact artifact file reads may auto-enable this"),
         "{root_stdout}"
     );
 
-    for command in ["find", "callers", "callees"] {
-        let output = srcwalk().args([command, "--help"]).output().unwrap();
+    for args in [
+        ["discover", "--help"].as_slice(),
+        ["trace", "callers", "--help"].as_slice(),
+        ["trace", "callees", "--help"].as_slice(),
+    ] {
+        let output = srcwalk().args(args).output().unwrap();
         assert!(
             output.status.success(),
-            "{command} help failed:\n{}",
+            "help failed for {args:?}:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("--artifact"), "{stdout}");
         assert!(
             stdout.contains("artifact-level evidence"),
-            "{command} help should label artifact evidence:\n{stdout}"
+            "help should label artifact evidence:\n{stdout}"
         );
     }
 
-    for command in ["callers", "callees"] {
-        let output = srcwalk().args([command, "--help"]).output().unwrap();
+    for args in [
+        ["trace", "callers", "--help"].as_slice(),
+        ["trace", "callees", "--help"].as_slice(),
+    ] {
+        let output = srcwalk().args(args).output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             stdout.contains("direct-only"),
-            "{command} help should name artifact relation limits:\n{stdout}"
+            "relation help should name artifact relation limits:\n{stdout}"
         );
     }
 }
@@ -151,161 +174,99 @@ fn skill_entry_points_to_embedded_guide() {
 }
 
 #[test]
-fn find_subcommand_matches_legacy_query_search() {
-    let dir = temp_repo("find_alias");
+fn root_level_options_before_subcommands_are_rejected() {
+    for args in [
+        ["--scope", "src", "discover", "RunConfig"].as_slice(),
+        ["--budget", "100", "discover", "RunConfig"].as_slice(),
+        ["--artifact", "trace", "callers", "RunConfig"].as_slice(),
+    ] {
+        let output = srcwalk().args(args).output().unwrap();
+        assert!(
+            !output.status.success(),
+            "root-level option before subcommand should fail: {args:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("root-level options do not apply to subcommands")
+                && stderr.contains("put options after the subcommand"),
+            "expected root-option placement error, got:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn discover_command_searches_candidates() {
+    let dir = temp_repo("discover_command");
     fs::write(
         dir.join("lib.rs"),
         "fn alpha() {}\nfn beta() { alpha(); }\n",
     )
     .unwrap();
 
-    let mut legacy = srcwalk();
-    legacy
+    let output = srcwalk()
+        .arg("discover")
         .arg("alpha")
         .arg("--scope")
         .arg(&dir)
         .arg("--limit")
-        .arg("1");
+        .arg("1")
+        .output()
+        .unwrap();
 
-    let mut command = srcwalk();
-    command
-        .arg("find")
-        .arg("alpha")
-        .arg("--scope")
-        .arg(&dir)
-        .arg("--limit")
-        .arg("1");
-
-    assert_same_stdout(legacy, command);
+    assert!(
+        output.status.success(),
+        "discover failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("alpha"));
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn callers_subcommand_matches_legacy_flag() {
-    let dir = temp_repo("callers_alias");
-    fs::write(
-        dir.join("lib.rs"),
-        "fn alpha() {}\nfn beta() { alpha(); }\n",
-    )
-    .unwrap();
-
-    let mut legacy = srcwalk();
-    legacy
-        .arg("alpha")
-        .arg("--callers")
-        .arg("--scope")
-        .arg(&dir);
-
-    let mut command = srcwalk();
-    command.arg("callers").arg("alpha").arg("--scope").arg(&dir);
-
-    assert_same_stdout(legacy, command);
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn callees_subcommand_matches_legacy_flag() {
-    let dir = temp_repo("callees_alias");
-    fs::write(
-        dir.join("lib.rs"),
-        "fn alpha() {}\nfn beta() { alpha(); }\n",
-    )
-    .unwrap();
-
-    let mut legacy = srcwalk();
-    legacy.arg("beta").arg("--callees").arg("--scope").arg(&dir);
-
-    let mut command = srcwalk();
-    command.arg("callees").arg("beta").arg("--scope").arg(&dir);
-
-    assert_same_stdout(legacy, command);
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn flow_subcommand_matches_legacy_flag() {
-    let dir = temp_repo("flow_alias");
-    fs::write(
-        dir.join("lib.rs"),
-        "fn alpha() {}\nfn beta() { alpha(); }\n",
-    )
-    .unwrap();
-
-    let mut legacy = srcwalk();
-    legacy.arg("beta").arg("--flow").arg("--scope").arg(&dir);
-
-    let mut command = srcwalk();
-    command.arg("flow").arg("beta").arg("--scope").arg(&dir);
-
-    assert_same_stdout(legacy, command);
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn impact_subcommand_matches_legacy_flag() {
-    let dir = temp_repo("impact_alias");
-    fs::write(
-        dir.join("lib.rs"),
-        "fn alpha() {}\nfn beta() { alpha(); }\n",
-    )
-    .unwrap();
-
-    let mut legacy = srcwalk();
-    legacy.arg("alpha").arg("--impact").arg("--scope").arg(&dir);
-
-    let mut command = srcwalk();
-    command.arg("impact").arg("alpha").arg("--scope").arg(&dir);
-
-    assert_same_stdout(legacy, command);
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn deps_subcommand_matches_legacy_flag() {
-    let dir = temp_repo("deps_alias");
+fn intent_commands_route_to_existing_capabilities() {
+    let dir = temp_repo("intent_commands");
     fs::create_dir_all(dir.join("src")).unwrap();
-    fs::write(dir.join("src/lib.rs"), "mod helper;\nfn alpha() {}\n").unwrap();
+    fs::write(
+        dir.join("src/lib.rs"),
+        "mod helper;\nfn alpha() {}\nfn beta() { alpha(); }\n",
+    )
+    .unwrap();
     fs::write(dir.join("src/helper.rs"), "pub fn helper() {}\n").unwrap();
 
-    let mut legacy = srcwalk();
-    legacy
-        .arg("src/lib.rs")
-        .arg("--deps")
-        .arg("--scope")
-        .arg(&dir);
+    for args in [
+        ["trace", "callers", "alpha", "--scope"].as_slice(),
+        ["trace", "callees", "beta", "--scope"].as_slice(),
+        ["context", "beta", "--scope"].as_slice(),
+        ["assess", "alpha", "--scope"].as_slice(),
+        ["deps", "src/lib.rs", "--scope"].as_slice(),
+        ["overview", "--scope"].as_slice(),
+    ] {
+        let output = srcwalk().args(args).arg(&dir).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?} failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
-    let mut command = srcwalk();
-    command
-        .arg("deps")
-        .arg("src/lib.rs")
-        .arg("--scope")
-        .arg(&dir);
-
-    assert_same_stdout(legacy, command);
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn map_subcommand_matches_legacy_flag() {
-    let dir = temp_repo("map_alias");
-    fs::write(dir.join("lib.rs"), "fn alpha() {}\n").unwrap();
-
-    let mut legacy = srcwalk();
-    legacy
-        .arg("--map")
-        .arg("--scope")
-        .arg(&dir)
-        .arg("--depth")
-        .arg("1");
-
-    let mut command = srcwalk();
-    command
-        .arg("map")
-        .arg("--scope")
-        .arg(&dir)
-        .arg("--depth")
-        .arg("1");
-
-    assert_same_stdout(legacy, command);
-    let _ = fs::remove_dir_all(&dir);
+fn removed_action_first_commands_fail() {
+    for args in [
+        ["find", "alpha"].as_slice(),
+        ["files", "*.rs"].as_slice(),
+        ["callers", "alpha"].as_slice(),
+        ["callees", "alpha"].as_slice(),
+        ["flow", "alpha"].as_slice(),
+        ["impact", "alpha"].as_slice(),
+        ["alpha", "--callers"].as_slice(),
+    ] {
+        let output = srcwalk().args(args).output().unwrap();
+        assert!(
+            !output.status.success(),
+            "removed surface should fail: {args:?}"
+        );
+    }
 }

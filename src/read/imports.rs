@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::lang::detect_file_type;
-use crate::types::{FileType, Lang};
+use crate::types::Lang;
 
 const MAX_SUGGESTIONS: usize = 8;
 
@@ -35,7 +35,7 @@ fn resolve_related_files_with_limit(
     content: &str,
     limit: Option<usize>,
 ) -> Vec<PathBuf> {
-    let FileType::Code(lang) = detect_file_type(file_path) else {
+    let Some(lang) = detect_file_type(file_path).structural_lang() else {
         return Vec::new();
     };
 
@@ -44,6 +44,28 @@ fn resolve_related_files_with_limit(
     };
 
     let mut results = Vec::new();
+    if crate::lang::css::is_stylesheet_lang(lang) || crate::lang::document::is_document_lang(lang) {
+        let sources = if crate::lang::css::is_stylesheet_lang(lang) {
+            crate::lang::css::dependency_sources(content, lang)
+        } else {
+            crate::lang::document::dependency_sources(content, lang)
+        };
+        for source in sources {
+            if limit.is_some_and(|cap| results.len() >= cap) {
+                break;
+            }
+            if source.is_empty() || is_external(&source, lang) {
+                continue;
+            }
+            if let Some(path) = resolve(dir, &source, lang) {
+                if !results.contains(&path) {
+                    results.push(path);
+                }
+            }
+        }
+        return results;
+    }
+
     for line in content.lines() {
         if limit.is_some_and(|cap| results.len() >= cap) {
             break;
@@ -72,6 +94,9 @@ pub(crate) fn is_import_line(line: &str, lang: Lang) -> bool {
         Lang::Python => trimmed.starts_with("import ") || trimmed.starts_with("from "),
         Lang::Go | Lang::Java | Lang::Scala | Lang::Kotlin => trimmed.starts_with("import "),
         Lang::C | Lang::Cpp => trimmed.starts_with("#include"),
+        Lang::Css | Lang::Scss | Lang::Less => {
+            crate::lang::css::import_source(trimmed, lang).is_some()
+        }
         Lang::Elixir => {
             trimmed.starts_with("alias ")
                 || trimmed.starts_with("import ")
@@ -174,6 +199,15 @@ pub(crate) fn is_external(source: &str, lang: Lang) -> bool {
         }
         Lang::Python => !source.starts_with('.'),
         Lang::C | Lang::Cpp => !source.starts_with('"'),
+        lang if matches!(
+            crate::capabilities::import_path_style(lang),
+            Some(crate::capabilities::ImportPathStyle::CInclude)
+        ) =>
+        {
+            !source.starts_with('"')
+        }
+        Lang::Css | Lang::Scss | Lang::Less => crate::lang::css::is_external_source(source),
+        Lang::Html | Lang::Markdown => crate::lang::document::is_external_source(source),
         // Elixir, Go, Java, Scala, Kotlin — can't resolve without build system knowledge.
         _ => true,
     }
@@ -185,6 +219,15 @@ fn resolve(dir: &Path, source: &str, lang: Lang) -> Option<PathBuf> {
         Lang::TypeScript | Lang::Tsx | Lang::JavaScript => resolve_js(dir, source),
         Lang::Python => resolve_python(dir, source),
         Lang::C | Lang::Cpp => resolve_c_include(dir, source),
+        lang if matches!(
+            crate::capabilities::import_path_style(lang),
+            Some(crate::capabilities::ImportPathStyle::CInclude)
+        ) =>
+        {
+            resolve_c_include(dir, source)
+        }
+        Lang::Css | Lang::Scss | Lang::Less => crate::lang::css::resolve_source(dir, source, lang),
+        Lang::Html | Lang::Markdown => crate::lang::document::resolve_source(dir, source, lang),
         // Elixir, Go, Java, etc. — module-to-file mapping requires build system conventions.
         _ => None,
     }

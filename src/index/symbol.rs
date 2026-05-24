@@ -95,9 +95,11 @@ impl SymbolIndex {
                     return None;
                 }
                 let path = entry.into_path();
-                // Only index code files that have tree-sitter grammars
+                // Only index code files that have tree-sitter grammars or provider outlines.
                 if let FileType::Code(lang) = detect_file_type(&path) {
-                    if outline_language(lang).is_some() {
+                    if outline_language(lang).is_some()
+                        || crate::capabilities::provides_outline_entries(lang)
+                    {
                         // Skip oversized files
                         if let Ok(meta) = fs::metadata(&path) {
                             if meta.len() <= MAX_FILE_SIZE {
@@ -245,7 +247,7 @@ fn extract_symbols(path: &Path, content: &str) -> Vec<(Arc<str>, u32, bool)> {
     };
 
     let Some(ts_lang) = outline_language(lang) else {
-        return Vec::new();
+        return extract_provider_outline_symbols(lang, content);
     };
 
     let mut parser = tree_sitter::Parser::new();
@@ -263,6 +265,28 @@ fn extract_symbols(path: &Path, content: &str) -> Vec<(Arc<str>, u32, bool)> {
     walk_definitions(tree.root_node(), &lines, &mut symbols, lang, 0);
 
     symbols
+}
+
+fn extract_provider_outline_symbols(
+    lang: crate::types::Lang,
+    content: &str,
+) -> Vec<(Arc<str>, u32, bool)> {
+    let Some(entries) = crate::capabilities::outline_entries(lang, content) else {
+        return Vec::new();
+    };
+    let mut symbols = Vec::new();
+    collect_provider_outline_symbols(&entries, &mut symbols);
+    symbols
+}
+
+fn collect_provider_outline_symbols(
+    entries: &[crate::types::OutlineEntry],
+    symbols: &mut Vec<(Arc<str>, u32, bool)>,
+) {
+    for entry in entries {
+        symbols.push((Arc::from(entry.name.as_str()), entry.start_line, true));
+        collect_provider_outline_symbols(&entry.children, symbols);
+    }
 }
 
 /// Recursively walk tree-sitter AST nodes to find all definitions.

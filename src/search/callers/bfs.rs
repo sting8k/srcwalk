@@ -24,7 +24,7 @@ pub struct BfsEdge {
     pub from_file: PathBuf,
     pub from_line: u32,
     pub to: String,
-    /// Call-site source text (single line). Matches legacy `--callers` output:
+    /// Call-site source text (single line). Matches `trace callers` output:
     /// for a call spanning multiple lines, the first line is kept. Empty only
     /// when the underlying `CallerMatch.call_text` was empty.
     pub call_text: String,
@@ -42,15 +42,7 @@ pub struct BfsStats {
     pub hubs_skipped: Vec<String>, // hub symbols dropped from frontier (user override)
     pub auto_hubs_skipped: Vec<String>, // auto-promoted hub drops on later hops
     pub auto_hubs_promoted: Vec<(String, usize)>, // (symbol, edge_count) promoted this run
-    pub per_hop: Vec<HopStats>,
     pub elapsed_ms: u128,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct HopStats {
-    pub hop: usize,
-    pub frontier_size: usize, // after hub-skip + cap
-    pub edges: usize,
 }
 
 /// Hops where most edges land outside directories seen in the previous hop —
@@ -153,8 +145,6 @@ pub fn search_callers_bfs(
     max_edges: usize,
     glob: Option<&str>,
     skip_hubs: Option<&str>,
-    json: bool,
-    budget_tokens: Option<usize>,
 ) -> Result<String, SrcwalkError> {
     let t_start = std::time::Instant::now();
     let user_hubs = parse_hubs(skip_hubs);
@@ -203,7 +193,6 @@ pub fn search_callers_bfs(
             frontier_vec.truncate(max_frontier);
         }
         let frontier_this_hop: HashSet<String> = frontier_vec.into_iter().collect();
-        let frontier_size = frontier_this_hop.len();
 
         if frontier_this_hop.is_empty() {
             break;
@@ -224,7 +213,6 @@ pub fn search_callers_bfs(
 
         let mut next_frontier: HashSet<String> = HashSet::new();
         let mut hit_targets_this_hop: HashSet<String> = HashSet::new();
-        let edges_before_hop = edges.len();
         // Count edges per callee in this hop — used for auto-hub promotion.
         let mut per_callee_count: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
@@ -250,7 +238,7 @@ pub fn search_callers_bfs(
             }
 
             // Reduce call_text to a single line — multi-line calls collapse to
-            // their first line. Mirrors legacy --callers convention; bounds
+            // their first line. Mirrors trace callers convention; bounds
             // per-edge token cost without truncating mid-token.
             let call_text = m.call_text.lines().next().unwrap_or("").trim().to_string();
 
@@ -266,11 +254,6 @@ pub fn search_callers_bfs(
             if edges.len() >= max_edges {
                 stats.edges_cut_at_hop = Some(hop);
                 stats.depth_reached = hop;
-                stats.per_hop.push(HopStats {
-                    hop,
-                    frontier_size,
-                    edges: edges.len() - edges_before_hop,
-                });
                 break 'outer;
             }
         }
@@ -290,11 +273,6 @@ pub fn search_callers_bfs(
             }
         }
 
-        stats.per_hop.push(HopStats {
-            hop,
-            frontier_size,
-            edges: edges.len() - edges_before_hop,
-        });
         stats.depth_reached = hop;
         frontier = next_frontier;
     }
@@ -312,18 +290,7 @@ pub fn search_callers_bfs(
             .then_with(|| a.from.cmp(&b.from))
     });
 
-    if json {
-        Ok(format_bfs_json(
-            target,
-            scope,
-            &edges,
-            &stats,
-            max_depth,
-            budget_tokens,
-        ))
-    } else {
-        Ok(format_bfs(target, scope, &edges, &stats, max_depth))
-    }
+    Ok(format_bfs(target, scope, &edges, &stats, max_depth))
 }
 
 /// Deterministic sort + pretty-print BFS edges grouped by hop.
@@ -381,7 +348,7 @@ fn format_bfs(
         );
         for e in list {
             let rel = crate::format::rel_nonempty(&e.from_file, scope);
-            // Match legacy `--callers` convention: payload is the call-site
+            // Match trace callers convention: payload is the call-site
             // source text, not the bare callee symbol. Fall back to the
             // symbol only when call_text is unavailable.
             let payload = if e.call_text.is_empty() {
@@ -495,117 +462,6 @@ fn format_bfs(
     };
     let _ = write!(out, "\n({token_str} tokens)");
     out
-}
-
-/// Emit the BFS result as JSON (edge-list schema compatible with GraphWalks-style consumers).
-fn format_bfs_json(
-    target: &str,
-    scope: &Path,
-    edges: &[BfsEdge],
-    stats: &BfsStats,
-    max_depth: usize,
-    budget_tokens: Option<usize>,
-) -> String {
-    let all_edges_json: Vec<serde_json::Value> = edges
-        .iter()
-        .map(|e| {
-            let rel = crate::format::rel_nonempty(&e.from_file, scope);
-            serde_json::json!({
-                "hop": e.hop,
-                "from": e.from,
-                "from_file": rel,
-                "from_line": e.from_line,
-                "to": e.to,
-                "call_text": e.call_text,
-            })
-        })
-        .collect();
-
-    // Budget enforcement: estimate ~30 tokens per edge (JSON field names + values).
-    // If budget given, cap the edges array and note how many were elided.
-    let tokens_per_edge: usize = 30;
-    let overhead_tokens: usize = 200; // stats, metadata, etc.
-    let (edges_json, edges_budget_elided) = match budget_tokens {
-        Some(b) if b > overhead_tokens => {
-            let max_edges_by_budget = (b - overhead_tokens) / tokens_per_edge;
-            if all_edges_json.len() > max_edges_by_budget {
-                let elided = all_edges_json.len() - max_edges_by_budget;
-                (all_edges_json[..max_edges_by_budget].to_vec(), Some(elided))
-            } else {
-                (all_edges_json, None)
-            }
-        }
-        _ => (all_edges_json, None),
-    };
-
-    let per_hop: Vec<serde_json::Value> = stats
-        .per_hop
-        .iter()
-        .map(|h| {
-            serde_json::json!({
-                "hop": h.hop,
-                "frontier_size": h.frontier_size,
-                "edges": h.edges,
-            })
-        })
-        .collect();
-
-    let frontier_cuts: Vec<serde_json::Value> = stats
-        .frontier_cut_hops
-        .iter()
-        .map(|(h, n)| serde_json::json!({"hop": h, "frontier_size_before_cut": n}))
-        .collect();
-
-    let mut hubs_sorted: Vec<String> = stats.hubs_skipped.clone();
-    hubs_sorted.sort();
-    hubs_sorted.dedup();
-
-    let auto_hubs_json: Vec<serde_json::Value> = stats
-        .auto_hubs_promoted
-        .iter()
-        .map(|(s, c)| serde_json::json!({"symbol": s, "edges": c}))
-        .collect();
-
-    let suspicious_json: Vec<serde_json::Value> = compute_suspicious_hops(edges)
-        .into_iter()
-        .map(|s| {
-            serde_json::json!({
-                "hop": s.hop,
-                "total_edges": s.total_edges,
-                "related_edges": s.related_edges,
-                "reason": "name_collision",
-            })
-        })
-        .collect();
-
-    let payload = serde_json::json!({
-        "query": format!("callers {} --depth {}", target, max_depth),
-        "root": target,
-        "scope": crate::format::display_path(scope),
-        "max_depth": max_depth,
-        "depth_reached": stats.depth_reached,
-        "edges_total": stats.edges_total,
-        "edges_returned": edges_json.len(),
-        "elapsed_ms": stats.elapsed_ms,
-        "edges": edges_json,
-        "stats": {
-            "per_hop": per_hop,
-            "top_level_terminal": stats.top_level_terminal,
-            "unresolved_symbols": stats.unresolved_symbols,
-            "suspicious_hops": suspicious_json,
-        },
-        "elided": {
-            "edges_cut_at_hop": stats.edges_cut_at_hop,
-            "edges_budget_elided": edges_budget_elided,
-            "frontier_cuts": frontier_cuts,
-            "hubs_skipped": hubs_sorted,
-            "auto_hubs_promoted": auto_hubs_json,
-            "auto_hub_threshold": AUTO_HUB_THRESHOLD,
-        },
-        "disclaimer": "Static by-name call graph only. May miss indirect dispatch, reflection, macros, and calls from files > 500KB or from languages without a tree-sitter call query.",
-    });
-
-    serde_json::to_string_pretty(&payload).expect("serde_json::Value is always serializable")
 }
 
 #[cfg(test)]

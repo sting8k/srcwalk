@@ -1,9 +1,12 @@
 use std::path::Path;
 use std::process::Command;
+use std::sync::Once;
 
 fn srcwalk() -> Command {
     Command::new(env!("CARGO_BIN_EXE_srcwalk"))
 }
+
+static SETUP_FIXTURES: Once = Once::new();
 
 fn fixture_dir() -> &'static Path {
     Path::new(concat!(
@@ -14,12 +17,13 @@ fn fixture_dir() -> &'static Path {
 
 /// Set up a minimal fixture with known call structure.
 fn setup_fixtures() {
-    let dir = fixture_dir();
-    std::fs::create_dir_all(dir).unwrap();
+    SETUP_FIXTURES.call_once(|| {
+        let dir = fixture_dir();
+        std::fs::create_dir_all(dir).unwrap();
 
-    std::fs::write(
-        dir.join("main.rs"),
-        r#"fn greet(name: &str) -> String {
+        std::fs::write(
+            dir.join("main.rs"),
+            r#"fn greet(name: &str) -> String {
     let msg = format!("hello {}", name);
     println!("{}", msg);
     msg
@@ -35,12 +39,12 @@ fn send(data: &str) {
     println!("sending: {}", data);
 }
 "#,
-    )
-    .unwrap();
+        )
+        .unwrap();
 
-    std::fs::write(
-        dir.join("helper.py"),
-        r#"def compute(x, y):
+        std::fs::write(
+            dir.join("helper.py"),
+            r#"def compute(x, y):
     total = add(x, y)
     result = multiply(total, 2)
     return result
@@ -51,15 +55,16 @@ def add(a, b):
 def multiply(a, b):
     return a * b
 "#,
-    )
-    .unwrap();
+        )
+        .unwrap();
+    });
 }
 
 #[test]
 fn callees_default_shows_footer() {
     setup_fixtures();
     let out = srcwalk()
-        .args(["--callees", "process", "--scope"])
+        .args(["trace", "callees", "process", "--scope"])
         .arg(fixture_dir())
         .output()
         .unwrap();
@@ -74,7 +79,7 @@ fn callees_default_shows_footer() {
 fn callees_budget_truncation_keeps_footer() {
     setup_fixtures();
     let out = srcwalk()
-        .args(["--callees", "process", "--scope"])
+        .args(["trace", "callees", "process", "--scope"])
         .arg(fixture_dir())
         .args(["--budget", "30"])
         .output()
@@ -90,7 +95,7 @@ fn callees_budget_truncation_keeps_footer() {
 fn callees_detailed_has_own_budget_caveat() {
     setup_fixtures();
     let out = srcwalk()
-        .args(["--callees", "process", "--scope"])
+        .args(["trace", "callees", "process", "--scope"])
         .arg(fixture_dir())
         .arg("--detailed")
         .output()
@@ -107,7 +112,7 @@ fn callees_detailed_has_own_budget_caveat() {
 fn callees_detailed_shows_assignments() {
     setup_fixtures();
     let out = srcwalk()
-        .args(["--callees", "process", "--detailed", "--scope"])
+        .args(["trace", "callees", "process", "--detailed", "--scope"])
         .arg(fixture_dir())
         .output()
         .unwrap();
@@ -123,7 +128,7 @@ fn callees_detailed_shows_assignments() {
 fn callees_detailed_shows_return() {
     setup_fixtures();
     let out = srcwalk()
-        .args(["--callees", "greet", "--detailed", "--scope"])
+        .args(["trace", "callees", "greet", "--detailed", "--scope"])
         .arg(fixture_dir())
         .output()
         .unwrap();
@@ -140,7 +145,7 @@ fn callees_detailed_shows_return() {
 fn callees_default_lists_resolved() {
     setup_fixtures();
     let out = srcwalk()
-        .args(["--callees", "process", "--scope"])
+        .args(["trace", "callees", "process", "--scope"])
         .arg(fixture_dir())
         .output()
         .unwrap();
@@ -156,7 +161,7 @@ fn callees_default_lists_resolved() {
 fn callees_python_detailed() {
     setup_fixtures();
     let out = srcwalk()
-        .args(["--callees", "compute", "--detailed", "--scope"])
+        .args(["trace", "callees", "compute", "--detailed", "--scope"])
         .arg(fixture_dir())
         .output()
         .unwrap();

@@ -33,7 +33,9 @@ fn caller_c() { needle(); }
 fn search_pagination_next_step_is_footer_and_survives_budget() {
     let dir = fixture_dir("many_matches");
     let out = srcwalk()
-        .args(["needle", "--limit", "1", "--budget", "10", "--scope"])
+        .args([
+            "discover", "needle", "--limit", "1", "--budget", "10", "--scope",
+        ])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -57,7 +59,9 @@ fn search_pagination_next_step_is_footer_and_survives_budget() {
 fn glob_pagination_next_step_is_footer() {
     let dir = fixture_dir("glob");
     let out = srcwalk()
-        .args(["files", "*.rs", "--limit", "1", "--scope"])
+        .args([
+            "discover", "*.rs", "--as", "file", "--limit", "1", "--scope",
+        ])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -73,7 +77,7 @@ fn glob_pagination_next_step_is_footer() {
 fn callers_pagination_next_step_is_footer() {
     let dir = fixture_dir("many_matches");
     let out = srcwalk()
-        .args(["needle", "--callers", "--limit", "1", "--scope"])
+        .args(["trace", "callers", "needle", "--limit", "1", "--scope"])
         .arg(dir.path())
         .output()
         .unwrap();
@@ -90,8 +94,9 @@ fn bfs_cap_prints_caveat_footer() {
     let dir = fixture_dir("many_matches");
     let out = srcwalk()
         .args([
+            "trace",
+            "callers",
             "needle",
-            "--callers",
             "--depth",
             "2",
             "--max-edges",
@@ -121,8 +126,9 @@ fn deps_budget_compaction_caveat_is_footer() {
     std::fs::write(root.join("target.js"), target).unwrap();
 
     let out = srcwalk()
+        .arg("deps")
         .arg(root.join("target.js"))
-        .args(["--deps", "--budget", "20", "--scope"])
+        .args(["--budget", "20", "--scope"])
         .arg(root)
         .output()
         .unwrap();
@@ -160,8 +166,9 @@ fn deps_used_by_groups_rows_by_directory_but_keeps_line_anchors() {
     std::fs::write(root.join("src/b/three.rs"), "fn three() { exported(); }\n").unwrap();
 
     let out = srcwalk()
+        .arg("deps")
         .arg(root.join("src/target.rs"))
-        .args(["--deps", "--scope"])
+        .args(["--scope"])
         .arg(root)
         .output()
         .unwrap();
@@ -197,8 +204,9 @@ fn deps_uses_local_groups_rows_by_directory() {
     std::fs::write(root.join("src/util/c.ts"), "export const c = 1;\n").unwrap();
 
     let out = srcwalk()
+        .arg("deps")
         .arg(root.join("src/app/main.ts"))
-        .args(["--deps", "--scope"])
+        .args(["--scope"])
         .arg(root)
         .output()
         .unwrap();
@@ -228,8 +236,9 @@ fn deps_used_by_ignores_bare_child_member_names() {
     std::fs::write(root.join("src/noise.rs"), "fn unrelated() { run(); }\n").unwrap();
 
     let out = srcwalk()
+        .arg("deps")
         .arg(root.join("src/target.rs"))
-        .args(["--deps", "--scope"])
+        .args(["--scope"])
         .arg(root)
         .output()
         .unwrap();
@@ -258,8 +267,9 @@ fn deps_used_by_keeps_member_names_with_owner_context() {
     .unwrap();
 
     let out = srcwalk()
+        .arg("deps")
         .arg(root.join("src/target.rs"))
-        .args(["--deps", "--scope"])
+        .args(["--scope"])
         .arg(root)
         .output()
         .unwrap();
@@ -276,8 +286,9 @@ fn deps_dependents_default_page_has_continuation_next_step() {
     let dir = deps_pagination_fixture();
     let root = dir.path();
     let out = srcwalk()
+        .arg("deps")
         .arg(root.join("target.rs"))
-        .args(["--deps", "--scope"])
+        .args(["--scope"])
         .arg(root)
         .output()
         .unwrap();
@@ -290,6 +301,13 @@ fn deps_dependents_default_page_has_continuation_next_step() {
             ),
         "expected dependent pagination footer next-step:\n{stdout}"
     );
+    assert_eq!(
+        stdout
+            .matches("> Next: 5 more dependents available. Continue with --offset 15 --limit 15.")
+            .count(),
+        1,
+        "deps continuation next action should be deduplicated:\n{stdout}"
+    );
 }
 
 #[test]
@@ -297,8 +315,9 @@ fn deps_dependents_limit_offset_page_and_end_note() {
     let dir = deps_pagination_fixture();
     let root = dir.path();
     let page = srcwalk()
+        .arg("deps")
         .arg(root.join("target.rs"))
-        .args(["--deps", "--limit", "7", "--offset", "7", "--scope"])
+        .args(["--limit", "7", "--offset", "7", "--scope"])
         .arg(root)
         .output()
         .unwrap();
@@ -310,10 +329,17 @@ fn deps_dependents_limit_offset_page_and_end_note() {
             ),
         "expected second deps page continuation next-step:\n{page_stdout}"
     );
-
+    assert_eq!(
+        page_stdout
+            .matches("> Next: 6 more dependents available. Continue with --offset 14 --limit 7.")
+            .count(),
+        1,
+        "deps paginated next action should be deduplicated:\n{page_stdout}"
+    );
     let end = srcwalk()
+        .arg("deps")
         .arg(root.join("target.rs"))
-        .args(["--deps", "--limit", "7", "--offset", "21", "--scope"])
+        .args(["--limit", "7", "--offset", "21", "--scope"])
         .arg(root)
         .output()
         .unwrap();
@@ -394,6 +420,7 @@ fn expanded_output_omits_bodies_to_fit_budget() {
     std::fs::write(path, body).unwrap();
 
     let out = srcwalk()
+        .arg("discover")
         .arg("target_0,target_1,target_2,target_3,target_4")
         .arg("--expand=5")
         .arg("--budget")
@@ -429,6 +456,7 @@ fn expanded_smart_truncate_caveat_is_footer() {
     std::fs::write(path, body).unwrap();
 
     let out = srcwalk()
+        .arg("discover")
         .arg("huge")
         .arg("--expand=1")
         .arg("--no-budget")
@@ -441,10 +469,36 @@ fn expanded_smart_truncate_caveat_is_footer() {
     assert!(
         stdout.contains("lines omitted")
             && stdout.contains("> Caveat: expanded source truncated")
-            && stdout.contains("> Next: use shown line range with --section <start-end>"),
+            && stdout
+                .contains("> Next: use shown line range with `srcwalk show <path>:<start-end>`"),
         "expected smart-truncate footer caveat:\n{stdout}"
     );
 }
 fn norm_path_separators(s: &str) -> String {
     s.replace('\\', "/")
+}
+
+#[test]
+fn deps_default_packet_shows_both_directions_even_when_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("solo.ts"), "export const solo = 1;\n").unwrap();
+
+    let out = srcwalk()
+        .arg("deps")
+        .arg(root.join("solo.ts"))
+        .args(["--scope"])
+        .arg(root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "deps failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(stdout.contains("## Uses (local)\n(none)"), "{stdout}");
+    assert!(stdout.contains("## Uses (external)\n(none)"), "{stdout}");
+    assert!(stdout.contains("## Used by\n(none)"), "{stdout}");
 }

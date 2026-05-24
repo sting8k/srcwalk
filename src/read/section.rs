@@ -6,6 +6,7 @@ use memmap2::Mmap;
 
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
+use crate::evidence::{render_next_actions, NextAction};
 use crate::format;
 use crate::lang::detect_file_type;
 use crate::lang::outline::get_outline_entries as lang_get_outline_entries;
@@ -175,7 +176,17 @@ pub(super) fn read_section(
     path: &Path,
     range: &str,
     budget: Option<u64>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    read_section_with_context(path, range, budget, cache, None)
+}
+
+pub(super) fn read_section_with_context(
+    path: &Path,
+    range: &str,
+    budget: Option<u64>,
     _cache: &OutlineCache,
+    context_lines: Option<usize>,
 ) -> Result<String, SrcwalkError> {
     let file = fs::File::open(path).map_err(|e| SrcwalkError::IoError {
         path: path.to_path_buf(),
@@ -189,6 +200,13 @@ pub(super) fn read_section(
 
     // Resolve section address: line range, focused line, heading, symbol name,
     // or a comma-separated list of those addresses.
+    if context_lines.is_some() && parse_focused_line(range).is_none() {
+        return Err(SrcwalkError::InvalidQuery {
+            query: range.to_string(),
+            reason: "--context-lines applies only to a single line target".to_string(),
+        });
+    }
+
     let mut focus_line = None;
     let (start, end) = if range.starts_with('#') {
         // Markdown heading. Try the full heading first so headings containing
@@ -214,6 +232,10 @@ pub(super) fn read_section(
         }
     } else if range.contains(',') {
         return read_multi_section(path, buf, range, budget);
+    } else if let Some(line) = parse_focused_line(range).filter(|_| context_lines.is_some()) {
+        let context = context_lines.expect("checked context_lines above");
+        focus_line = Some(line);
+        (line.saturating_sub(context).max(1), line + context)
     } else if let Some((start, end, focus)) = parse_range(range) {
         // Line range like "45-89" or focused line like "45"
         focus_line = focus;
@@ -265,45 +287,67 @@ pub(super) fn read_section(
     let tok_est = estimate_tokens(byte_len);
     let limit = section_token_limit(budget);
 
+    let file_type = detect_file_type(path);
+
     if tok_est > limit {
         // Degrade: render outline entries within the section range
-        let file_type = detect_file_type(path);
         let content = String::from_utf8_lossy(buf);
         let header = format::file_header(path, byte_len, line_count, ViewMode::SectionOutline);
 
         let start32 = start as u32;
         let end32 = end as u32;
 
-        if let crate::types::FileType::Code(lang) = file_type {
+        if let Some(lang) = file_type.structural_lang() {
             let entries = lang_get_outline_entries(&content, lang);
             let filtered = filter_entries_in_range(&entries, start32, end32);
             if !filtered.is_empty() {
                 let body = format_section_outline(&filtered);
-                let next = section_over_limit_next_step(path, range, line_count, file_type);
+                let next = render_next_actions(&[NextAction::guidance(
+                    section_over_limit_next_step(path, range, line_count, file_type),
+                    "section over-limit drilldown",
+                    20,
+                )]);
+                let body = match super::document_packet_for_file_type(file_type, "section") {
+                    Some(packet) => format!("{packet}\n\n{body}"),
+                    None => body,
+                };
                 return Ok(format!(
                     "{header}\n\n{body}\n\n\
                      > Caveat: section cap ~{tok_est}/{limit} tokens; lines {line_count}; outline {start}-{end}.\n\
-                     > Next: {next}"
+                     {next}"
                 ));
             }
         }
 
         // Fallback: no structured outline available — return header + advice only
-        let next = section_over_limit_next_step(path, range, line_count, file_type);
+        let next = render_next_actions(&[NextAction::guidance(
+            section_over_limit_next_step(path, range, line_count, file_type),
+            "section over-limit fallback",
+            20,
+        )]);
+        let packet = super::document_packet_for_file_type(file_type, "section");
+        let body = match packet {
+            Some(packet) => format!("{header}\n\n{packet}"),
+            None => header,
+        };
         return Ok(format!(
-            "{header}\n\n\
+            "{body}\n\n\
              > Caveat: section cap ~{tok_est}/{limit} tokens; lines {line_count}.\n\
-             > Next: {next}"
+             {next}"
         ));
     }
 
     let header = format::file_header(path, byte_len, line_count, ViewMode::Section);
+    let packet = super::document_packet_for_file_type(file_type, "section");
     let formatted = if let Some(focus) = focus_line {
         format_focused_lines(&selected, start as u32, focus)
     } else {
         format::number_lines(&selected, start as u32)
     };
-    Ok(format!("{header}\n\n{formatted}"))
+    match packet {
+        Some(packet) => Ok(format!("{header}\n\n{packet}\n\n{formatted}")),
+        None => Ok(format!("{header}\n\n{formatted}")),
+    }
 }
 
 fn section_over_limit_next_step(
@@ -527,10 +571,20 @@ fn read_multi_section(
                 &format!("[{section_count} {plural}, compact (over limit)]"),
             );
         let body = compact_parts.join("\n\n---\n\n");
+        let next = render_next_actions(&[NextAction::guidance(
+            "narrow --section or raise --budget.",
+            "compact section drilldown",
+            20,
+        )]);
+        let packet = super::document_packet_for_file_type(detect_file_type(path), "section");
+        let body_with_packet = match packet {
+            Some(packet) => format!("{header}\n\n{packet}\n\n{body}"),
+            None => format!("{header}\n\n{body}"),
+        };
         let mut output = format!(
-            "{header}\n\n{body}\n\n\
+            "{body_with_packet}\n\n\
              > Caveat: compacted ~{tok_est}/{limit} tokens; shown {section_count} {plural}.\n\
-             > Next: narrow --section or raise --budget."
+             {next}"
         );
         if !errors.is_empty() {
             let missing = errors.join("\n  ");
@@ -559,8 +613,14 @@ fn read_multi_section(
     let header = header.replace("[section]", &format!("[{section_count} {plural}, section]"));
     let body = parts.join("\n\n---\n\n");
 
+    let body_with_packet =
+        match super::document_packet_for_file_type(detect_file_type(path), "section") {
+            Some(packet) => format!("{header}\n\n{packet}\n\n{body}"),
+            None => format!("{header}\n\n{body}"),
+        };
+
     if errors.is_empty() {
-        Ok(format!("{header}\n\n{body}"))
+        Ok(body_with_packet)
     } else {
         let missing = errors.join("\n  ");
         let missing_label = if all_symbol_names {
@@ -569,7 +629,7 @@ fn read_multi_section(
             "Missing sections"
         };
         Ok(format!(
-            "{header}\n\n{body}\n\n> {missing_label}:\n>   {missing}"
+            "{body_with_packet}\n\n> {missing_label}:\n>   {missing}"
         ))
     }
 }
@@ -723,6 +783,14 @@ fn format_section_outline(entries: &[&OutlineEntry]) -> String {
     lines.join("\n")
 }
 
+fn parse_focused_line(s: &str) -> Option<usize> {
+    if s.contains('-') {
+        return None;
+    }
+    let line: usize = s.trim().parse().ok()?;
+    (line > 0).then_some(line)
+}
+
 /// Parse "45-89" or focused line "45". 1-indexed.
 fn parse_range(s: &str) -> Option<(usize, usize, Option<usize>)> {
     if !s.contains('-') {
@@ -746,9 +814,7 @@ fn parse_range(s: &str) -> Option<(usize, usize, Option<usize>)> {
 /// Returns (`start_line`, `end_line`) if found.
 fn resolve_symbol(buf: &[u8], path: &Path, symbol: &str) -> Option<(usize, usize)> {
     let content = std::str::from_utf8(buf).ok()?;
-    let FileType::Code(lang) = detect_file_type(path) else {
-        return None;
-    };
+    let lang = detect_file_type(path).structural_lang()?;
     let entries = lang_get_outline_entries(content, lang);
     find_symbol_in_entries(&entries, symbol)
 }
@@ -759,7 +825,7 @@ pub(super) fn suggest_symbols(buf: &[u8], path: &Path, query: &str, top_n: usize
     let Ok(content) = std::str::from_utf8(buf) else {
         return Vec::new();
     };
-    let FileType::Code(lang) = detect_file_type(path) else {
+    let Some(lang) = detect_file_type(path).structural_lang() else {
         return Vec::new();
     };
     let entries = lang_get_outline_entries(content, lang);
@@ -803,7 +869,11 @@ fn collect_symbol_names<'a>(entries: &'a [OutlineEntry], out: &mut Vec<(&'a str,
 /// Recursively search for a symbol in outline entries.
 fn find_symbol_in_entries(entries: &[OutlineEntry], symbol: &str) -> Option<(usize, usize)> {
     for entry in entries {
-        if entry.name == symbol || entry.signature.as_deref() == Some(symbol) {
+        if entry.name == symbol
+            || entry.signature.as_deref() == Some(symbol)
+            || crate::lang::css::outline_name_matches(entry.kind, &entry.name, symbol)
+            || crate::lang::document::outline_name_matches(entry.kind, &entry.name, symbol)
+        {
             return Some((entry.start_line as usize, entry.end_line as usize));
         }
         // Search children (methods inside class, etc.)

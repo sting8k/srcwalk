@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::cache::OutlineCache;
 use crate::commands::context::ArtifactMode;
 use crate::error::SrcwalkError;
+use crate::evidence::{render_next_actions, NextAction};
 use crate::{budget, format, index, lang, search, types};
 
 use crate::commands::call_format::format_call_site;
@@ -62,6 +63,7 @@ pub(crate) fn run_callees_with_artifact(
             query: target.to_string(),
             scope: scope.to_path_buf(),
             suggestion: symbol_or_file_suggestion(scope, target, None),
+            guidance: None,
         })?;
 
     let content = std::fs::read_to_string(&def_match.path).map_err(|e| SrcwalkError::IoError {
@@ -118,7 +120,14 @@ pub(crate) fn run_callees_with_artifact(
                 total_sites
             );
         } else if js_ts_artifact {
-            out.push_str("\n\n> Next: drill into call evidence with `srcwalk <path> --artifact --section bytes:<start>-<end>`, or omit --detailed for resolved callee summaries.");
+            let rendered = render_next_actions(&[NextAction::guidance(
+                "drill into call evidence with `srcwalk <path> --artifact --section bytes:<start>-<end>`, or omit --detailed for resolved callee summaries.",
+                "artifact callee evidence drilldown",
+                40,
+            )]);
+            if !rendered.is_empty() {
+                let _ = write!(out, "\n\n{rendered}");
+            }
         } else {
             out.push_str("\n\n> Caveat: detailed call sites can be long. Retry with --budget <N>, or omit --detailed for resolved callee summaries.");
         }
@@ -231,7 +240,14 @@ pub(crate) fn run_callees_with_artifact(
         );
     }
 
-    out.push_str("\n\n> Next: use --detailed for ordered call sites with args and assignments");
+    let rendered = render_next_actions(&[NextAction::guidance(
+        "use --detailed for ordered call sites with args and assignments",
+        "callee call-site drilldown",
+        40,
+    )]);
+    if !rendered.is_empty() {
+        let _ = write!(out, "\n\n{rendered}");
+    }
     if let Some(note) = artifact.callees_note() {
         out.push_str("\n> ");
         out.push_str(note);

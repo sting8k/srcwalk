@@ -1,4 +1,4 @@
-use std::{io, process};
+use std::{io, path::Path, process};
 
 // mimalloc: faster than system allocator for parallel walker workloads
 // where many small Strings/Vecs are allocated across rayon threads.
@@ -33,6 +33,39 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
+fn root_scope_was_overridden(cli: &Cli) -> bool {
+    cli.scope.len() != 1
+        || cli
+            .scope
+            .first()
+            .is_some_and(|scope| scope != Path::new("."))
+}
+
+fn reject_root_options_before_subcommand(cli: &Cli) {
+    if cli.command.is_none() {
+        return;
+    }
+
+    let has_root_only_option = cli.query.is_some()
+        || root_scope_was_overridden(cli)
+        || cli.section.is_some()
+        || cli.budget.is_some()
+        || cli.no_budget
+        || cli.full
+        || cli.artifact;
+    if !has_root_only_option {
+        return;
+    }
+
+    eprintln!(
+        "error: root-level options do not apply to subcommands; put options after the subcommand"
+    );
+    eprintln!(
+        "hint: use `srcwalk discover QUERY --scope DIR`, not `srcwalk --scope DIR discover QUERY`"
+    );
+    process::exit(2);
+}
+
 fn main() {
     reset_sigpipe();
     configure_thread_pools();
@@ -44,6 +77,16 @@ fn main() {
         return;
     }
 
+    if matches!(cli.command, Some(Command::Overview(_))) && (cli.budget.is_some() || cli.no_budget)
+    {
+        eprintln!(
+            "error: overview has a fixed 15k token cap; narrow --scope or lower --depth instead"
+        );
+        process::exit(2);
+    }
+
+    reject_root_options_before_subcommand(&cli);
+
     match &cli.command {
         Some(Command::Guide) => {
             print!("{GUIDE}");
@@ -53,18 +96,12 @@ fn main() {
             version::run_version(cmd.check);
             return;
         }
-        Some(Command::Map(_)) if cli.budget.is_some() || cli.no_budget => {
-            eprintln!(
-                "error: map has a fixed 15k token cap; narrow --scope or lower --depth instead"
-            );
-            process::exit(2);
-        }
         _ => {}
     }
 
     let config = match cli.command {
         Some(command) => RunConfig::from_command(command).expect("non-run command handled above"),
-        None => RunConfig::from_legacy(cli),
+        None => RunConfig::from_root(cli),
     };
     cli_run::run(config);
 }

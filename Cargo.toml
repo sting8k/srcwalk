@@ -11,6 +11,9 @@ keywords = ["code-search", "tree-sitter", "developer-tools", "ai-agents", "code-
 categories = ["command-line-utilities", "development-tools"]
 authors = ["sting8k"]
 
+[features]
+default = []
+
 [[bin]]
 name = "srcwalk"
 path = "src/main.rs"
@@ -65,6 +68,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 indexmap = "2.14.0"
+tree-sitter-css = "0.25.0"
+tree-sitter-scss = "1.0.0"
+tree-sitter-less = "1.0.0"
+tree-sitter-html = "0.23.2"
 
 
 [dev-dependencies]

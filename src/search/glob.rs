@@ -39,20 +39,52 @@ pub fn search(
     limit: Option<usize>,
     offset: usize,
 ) -> Result<GlobResult, SrcwalkError> {
+    search_with_exclude(pattern, scope, limit, offset, None)
+}
+
+pub fn search_with_exclude(
+    pattern: &str,
+    scope: &Path,
+    limit: Option<usize>,
+    offset: usize,
+    exclude: Option<&str>,
+) -> Result<GlobResult, SrcwalkError> {
+    search_with_scope_glob(pattern, scope, None, limit, offset, exclude)
+}
+
+pub fn search_with_scope_glob(
+    pattern: &str,
+    scope: &Path,
+    scope_glob: Option<&str>,
+    limit: Option<usize>,
+    offset: usize,
+    exclude: Option<&str>,
+) -> Result<GlobResult, SrcwalkError> {
     let glob = Glob::new(pattern).map_err(|e| SrcwalkError::InvalidQuery {
         query: pattern.to_string(),
         reason: e.to_string(),
     })?;
     let matcher = glob.compile_matcher();
+    let exclude_matcher = exclude
+        .map(|pattern| {
+            Glob::new(pattern)
+                .map_err(|e| SrcwalkError::InvalidQuery {
+                    query: pattern.to_string(),
+                    reason: e.to_string(),
+                })
+                .map(|glob| glob.compile_matcher())
+        })
+        .transpose()?;
 
     let collected: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
     let total_found = std::sync::atomic::AtomicUsize::new(0);
     let extensions: std::sync::Mutex<HashSet<String>> = std::sync::Mutex::new(HashSet::new());
 
-    let walker = super::walker(scope, None)?;
+    let walker = super::walker(scope, scope_glob)?;
 
     walker.run(|| {
         let matcher = &matcher;
+        let exclude_matcher = &exclude_matcher;
         let collected = &collected;
         let total_found = &total_found;
         let extensions = &extensions;
@@ -79,6 +111,14 @@ pub fn search(
             // Match against filename or relative path
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let rel = path.strip_prefix(scope).unwrap_or(path);
+            if let Some(exclude_matcher) = exclude_matcher {
+                if exclude_matcher.is_match(path)
+                    || exclude_matcher.is_match(rel)
+                    || exclude_matcher.is_match(name)
+                {
+                    return ignore::WalkState::Continue;
+                }
+            }
 
             if matcher.is_match(name) || matcher.is_match(rel) {
                 total_found.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

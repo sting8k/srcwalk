@@ -68,7 +68,7 @@ fn search_header_and_hits_are_pwd_relative_and_drillable() {
 
     let out = srcwalk()
         .current_dir(&dir)
-        .args(["find", "target_fn", "--scope", "src"])
+        .args(["discover", "target_fn", "--scope", "src"])
         .output()
         .unwrap();
 
@@ -110,7 +110,7 @@ fn find_long_line_content_hit_is_centered_and_capped() {
 
     let out = srcwalk()
         .current_dir(&dir)
-        .args(["find", "NEEDLE", "--scope", "."])
+        .args(["discover", "NEEDLE", "--scope", "."])
         .output()
         .unwrap();
     assert!(out.status.success(), "expected find to succeed");
@@ -139,7 +139,7 @@ fn find_slash_route_query_searches_content_not_missing_path() {
 
     let out = srcwalk()
         .current_dir(&dir)
-        .args(["find", "api/gold", "--scope", "."])
+        .args(["discover", "api/gold", "--scope", "."])
         .output()
         .unwrap();
     assert!(
@@ -153,7 +153,7 @@ fn find_slash_route_query_searches_content_not_missing_path() {
 
     let out = srcwalk()
         .current_dir(&dir)
-        .args(["find", "/api/gold", "--scope", "."])
+        .args(["discover", "/api/gold", "--scope", "."])
         .output()
         .unwrap();
     assert!(
@@ -172,7 +172,7 @@ fn find_explicit_relative_missing_path_still_fails_as_path() {
 
     let out = srcwalk()
         .current_dir(&dir)
-        .args(["find", "./missing.js", "--scope", "."])
+        .args(["discover", "./missing.js", "--scope", "."])
         .output()
         .unwrap();
     assert!(!out.status.success(), "missing explicit path should fail");
@@ -206,7 +206,7 @@ pi.registerTool({ name: "read_more" });
 
     let out = srcwalk()
         .current_dir(&dir)
-        .args(["find", "pi.", "--scope", "."])
+        .args(["discover", "pi.", "--scope", "."])
         .output()
         .unwrap();
 
@@ -238,14 +238,14 @@ fn map_header_prefers_pwd_relative_scope() {
 
     let out = srcwalk()
         .current_dir(&dir)
-        .args(["map", "--scope", "src", "--depth", "1"])
+        .args(["overview", "--scope", "src", "--depth", "1"])
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.starts_with("# Map: src (depth 1"),
+        stdout.starts_with("# Overview: src (depth 1"),
         "expected pwd-relative map header, got:\n{stdout}"
     );
     assert!(

@@ -204,6 +204,13 @@ pub fn extract_callee_names(
     lang: Lang,
     def_range: Option<(u32, u32)>,
 ) -> Vec<String> {
+    if let Some(calls) = crate::capabilities::direct_calls(lang, content, def_range) {
+        let mut names: Vec<String> = calls.into_iter().map(|call| call.target).collect();
+        names.sort();
+        names.dedup();
+        return names;
+    }
+
     let Some(ts_lang) = outline_language(lang) else {
         return Vec::new();
     };
@@ -299,6 +306,22 @@ fn extract_call_sites_scoped(
     def_range: Option<(u32, u32)>,
     byte_range: Option<(usize, usize)>,
 ) -> Vec<CallSite> {
+    if let Some(calls) = crate::capabilities::direct_calls(lang, content, def_range) {
+        return calls
+            .into_iter()
+            .map(|call| CallSite {
+                line: call.line,
+                callee: call.target,
+                call_text: call.call_text,
+                call_prefix: Some(call.mnemonic),
+                args: Vec::new(),
+                return_var: None,
+                is_return: false,
+                call_byte_range: None,
+            })
+            .collect();
+    }
+
     let Some(ts_lang) = outline_language(lang) else {
         return Vec::new();
     };

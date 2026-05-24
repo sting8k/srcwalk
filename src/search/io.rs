@@ -180,17 +180,19 @@ fn walker_with_options(
             true
         });
 
-    if let Some(pattern) = glob {
-        if !pattern.is_empty() {
+    if let Some(patterns) = glob {
+        if !patterns.is_empty() {
             let mut overrides = ignore::overrides::OverrideBuilder::new(scope);
-            overrides
-                .add(pattern)
-                .map_err(|e| SrcwalkError::InvalidQuery {
-                    query: pattern.to_string(),
-                    reason: format!("invalid glob: {e}"),
-                })?;
+            for pattern in patterns.lines().filter(|pattern| !pattern.is_empty()) {
+                overrides
+                    .add(pattern)
+                    .map_err(|e| SrcwalkError::InvalidQuery {
+                        query: pattern.to_string(),
+                        reason: format!("invalid glob: {e}"),
+                    })?;
+            }
             builder.overrides(overrides.build().map_err(|e| SrcwalkError::InvalidQuery {
-                query: pattern.to_string(),
+                query: patterns.to_string(),
                 reason: format!("invalid glob: {e}"),
             })?);
         }
@@ -199,13 +201,9 @@ fn walker_with_options(
     Ok(builder.build_parallel())
 }
 
-/// Parse `/pattern/` regex syntax. Returns (pattern, `is_regex`).
-pub(crate) fn parse_pattern(query: &str) -> (&str, bool) {
-    if query.starts_with('/') && query.ends_with('/') && query.len() > 2 {
-        (&query[1..query.len() - 1], true)
-    } else {
-        (query, false)
-    }
+/// Text search is literal. Raw regex grep belongs to `rg`, not srcwalk.
+pub(crate) const fn parse_pattern(query: &str) -> (&str, bool) {
+    (query, false)
 }
 
 /// Get `file_lines` estimate and mtime from metadata. One `stat()` per file.

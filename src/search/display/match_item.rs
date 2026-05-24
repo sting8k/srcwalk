@@ -28,15 +28,21 @@ pub(super) fn format_single_match(
     if m.is_definition {
         semantic::format_definition_semantic_match(m, scope, cache, out);
     } else {
+        let atom = m.to_evidence_atom();
         let kind = non_definition_label(m);
         let _ = write!(
             out,
-            "\n\n## {}:{} [{kind}]",
-            rel_nonempty(&m.path, scope),
-            m.line
+            "\n\n## {} [{kind}]",
+            atom.anchor().display_relative_to(scope),
         );
 
-        let _ = write!(out, "\n→ [{}]   {}", m.line, m.text);
+        super::append_match_provenance(m, out, "");
+        let _ = write!(
+            out,
+            "\n→ [{}]   {}",
+            atom.anchor().start_line(),
+            atom.snippet()
+        );
 
         // Artifact byte snippets are already centered evidence; do not replace them with outline context.
         if crate::artifact::is_artifact_js_ts_file(&m.path) && m.text.contains("--section bytes:") {
@@ -60,14 +66,13 @@ pub(super) fn format_single_match(
             && session.is_some_and(|s| s.is_expanded(&m.path, m.line));
 
         if deduped {
-            if let Some((start, end)) = m.def_range {
+            if m.def_range.is_some() {
+                let atom = m.to_evidence_atom();
                 let _ = write!(
                     out,
-                    "\n\n[shown earlier] {}:{}-{} {}",
-                    rel_nonempty(&m.path, scope),
-                    start,
-                    end,
-                    m.text
+                    "\n\n[shown earlier] {} {}",
+                    atom.anchor().display_relative_to(scope),
+                    atom.snippet()
                 );
             }
         } else {

@@ -48,7 +48,7 @@ fn csharp_nested_methods_are_symbol_definitions() {
     write_nested_csharp_fixture(&dir);
 
     let out = srcwalk()
-        .args(["ReadCore", "--scope"])
+        .args(["discover", "ReadCore", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -79,7 +79,7 @@ fn flow_works_for_csharp_nested_method_targets() {
     write_nested_csharp_fixture(&dir);
 
     let out = srcwalk()
-        .args(["ReadCore", "--flow", "--scope"])
+        .args(["context", "ReadCore", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -91,11 +91,11 @@ fn flow_works_for_csharp_nested_method_targets() {
         "flow should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("[symbol] ReadCore"),
-        "expected flow symbol header, got:\n{stdout}"
+        stdout.contains("# Context Packet: ReadCore") && stdout.contains("## Flow Map"),
+        "expected context packet flow map, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("<- callers"),
+        stdout.contains("### Callers"),
         "expected callers section, got:\n{stdout}"
     );
     assert!(

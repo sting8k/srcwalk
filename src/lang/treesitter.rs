@@ -13,7 +13,10 @@ pub(crate) const DEFINITION_KINDS: &[&str] = &[
     // Classes, structs & Kotlin objects
     "class_declaration",
     "class_definition",
+    "class_specifier",
     "struct_item",
+    "struct_specifier",
+    "union_specifier",
     "object_declaration",
     // Interfaces & types (TS)
     "interface_declaration",
@@ -23,6 +26,7 @@ pub(crate) const DEFINITION_KINDS: &[&str] = &[
     // Enums
     "enum_item",
     "enum_declaration",
+    "enum_specifier",
     // Variables, constants & properties (Kotlin, C#, Swift)
     "lexical_declaration",
     "variable_declaration",
@@ -49,6 +53,10 @@ pub(crate) const DEFINITION_KINDS: &[&str] = &[
 /// Walks standard field names (`name`, `identifier`, `declarator`) and handles
 /// nested declarators and export statements.
 pub(crate) fn extract_definition_name(node: tree_sitter::Node, lines: &[&str]) -> Option<String> {
+    if is_named_type_specifier(node.kind()) {
+        return extract_named_type_specifier_name(node, lines);
+    }
+
     // Try standard field names
     for field in &["name", "identifier", "declarator"] {
         if let Some(child) = node.child_by_field_name(field) {
@@ -97,6 +105,41 @@ pub(crate) fn extract_definition_name(node: tree_sitter::Node, lines: &[&str]) -
     }
 
     None
+}
+
+pub(crate) fn is_named_type_specifier(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier"
+    )
+}
+
+fn named_type_specifier_has_body(node: tree_sitter::Node) -> bool {
+    if node.child_by_field_name("body").is_some() {
+        return true;
+    }
+
+    let mut cursor = node.walk();
+    let has_body = node.children(&mut cursor).any(|child| {
+        matches!(
+            child.kind(),
+            "field_declaration_list" | "declaration_list" | "enumerator_list"
+        )
+    });
+    has_body
+}
+
+pub(crate) fn extract_named_type_specifier_name(
+    node: tree_sitter::Node,
+    lines: &[&str],
+) -> Option<String> {
+    if !named_type_specifier_has_body(node) {
+        return None;
+    }
+
+    let name = node.child_by_field_name("name")?;
+    let text = node_text_simple(name, lines);
+    (!text.is_empty()).then_some(text)
 }
 
 pub(crate) fn extract_variable_declarator_name(
@@ -504,12 +547,16 @@ pub(crate) fn definition_weight(kind: &str) -> u16 {
         | "method_declaration"
         | "class_declaration"
         | "class_definition"
+        | "class_specifier"
         | "struct_item"
+        | "struct_specifier"
+        | "union_specifier"
         | "interface_declaration"
         | "trait_declaration"
         | "trait_item"
         | "enum_item"
         | "enum_declaration"
+        | "enum_specifier"
         | "type_item"
         | "type_declaration"
         | "decorated_definition" => 100,

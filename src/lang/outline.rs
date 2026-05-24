@@ -1,10 +1,17 @@
 use crate::lang::treesitter::{
-    extract_definition_name, find_iife_function, js_function_context_name,
+    extract_definition_name, extract_named_type_specifier_name, find_iife_function,
+    is_named_type_specifier, js_function_context_name,
 };
 use crate::types::{Lang, OutlineEntry, OutlineKind};
 
 /// Get the tree-sitter Language for a given Lang variant.
 pub fn outline_language(lang: Lang) -> Option<tree_sitter::Language> {
+    if lang == Lang::Scss {
+        return Some(tree_sitter_scss::language());
+    }
+    if lang == Lang::Less {
+        return Some(tree_sitter_less::language());
+    }
     let lang = match lang {
         Lang::Rust => tree_sitter_rust::LANGUAGE,
         Lang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -23,7 +30,13 @@ pub fn outline_language(lang: Lang) -> Option<tree_sitter::Language> {
         Lang::Swift => tree_sitter_swift::LANGUAGE,
         Lang::Kotlin => tree_sitter_kotlin_ng::LANGUAGE,
         Lang::Elixir => tree_sitter_elixir::LANGUAGE,
-        Lang::Dockerfile | Lang::Make => {
+        Lang::Css => tree_sitter_css::LANGUAGE,
+        Lang::Provider(provider) => {
+            debug_assert!(!provider.id().is_empty());
+            let _ = provider.label();
+            return None;
+        }
+        Lang::Scss | Lang::Less | Lang::Html | Lang::Markdown | Lang::Dockerfile | Lang::Make => {
             return None;
         }
     };
@@ -36,16 +49,47 @@ pub(crate) fn walk_top_level(
     lines: &[&str],
     lang: Lang,
 ) -> Vec<OutlineEntry> {
+    if crate::lang::css::is_stylesheet_lang(lang) {
+        return crate::lang::css::walk_top_level(root, lines, lang);
+    }
+
     let mut entries = Vec::new();
     let mut cursor = root.walk();
 
     for child in root.children(&mut cursor) {
         if let Some(entry) = node_to_entry(child, lines, lang, 0) {
             entries.push(entry);
+        } else if is_transparent_outline_container(child.kind(), lang) {
+            collect_transparent_outline_entries(child, lines, lang, 0, &mut entries);
         }
     }
 
     entries
+}
+
+fn is_transparent_outline_container(kind: &str, lang: Lang) -> bool {
+    matches!(lang, Lang::C | Lang::Cpp)
+        && matches!(
+            kind,
+            "preproc_if" | "preproc_ifdef" | "preproc_ifndef" | "preproc_elif" | "preproc_else"
+        )
+}
+
+fn collect_transparent_outline_entries(
+    node: tree_sitter::Node,
+    lines: &[&str],
+    lang: Lang,
+    depth: usize,
+    entries: &mut Vec<OutlineEntry>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(entry) = node_to_entry(child, lines, lang, depth) {
+            entries.push(entry);
+        } else if is_transparent_outline_container(child.kind(), lang) {
+            collect_transparent_outline_entries(child, lines, lang, depth, entries);
+        }
+    }
 }
 
 /// Convert a tree-sitter node to an `OutlineEntry` based on its kind.
@@ -71,6 +115,17 @@ fn node_to_entry(
                 children: Vec::new(),
                 doc: extract_doc(node, lines),
             });
+        }
+    }
+
+    if matches!(lang, Lang::C | Lang::Cpp) {
+        if is_named_type_specifier(kind_str) {
+            return named_type_specifier_entry(node, lines);
+        }
+        if kind_str == "declaration" {
+            if let Some(entry) = named_type_specifier_child_entry(node, lines) {
+                return Some(entry);
+            }
         }
     }
 
@@ -134,7 +189,9 @@ fn node_to_entry(
             (OutlineKind::Interface, name, None)
         }
         "type_item" | "type_definition" | "typealias_declaration" => {
-            let name = find_child_text(node, "name", lines).unwrap_or_else(|| "<anonymous>".into());
+            let name = extract_definition_name(node, lines)
+                .or_else(|| find_child_text(node, "name", lines))
+                .unwrap_or_else(|| "<anonymous>".into());
             (OutlineKind::TypeAlias, name, None)
         }
 
@@ -254,6 +311,38 @@ fn node_to_entry(
         children,
         doc,
     })
+}
+
+fn named_type_specifier_entry(node: tree_sitter::Node, lines: &[&str]) -> Option<OutlineEntry> {
+    let name = extract_named_type_specifier_name(node, lines)?;
+    let kind = match node.kind() {
+        "class_specifier" => OutlineKind::Class,
+        "enum_specifier" => OutlineKind::Enum,
+        "struct_specifier" | "union_specifier" => OutlineKind::Struct,
+        _ => return None,
+    };
+
+    Some(OutlineEntry {
+        kind,
+        name,
+        start_line: node.start_position().row as u32 + 1,
+        end_line: node.end_position().row as u32 + 1,
+        signature: None,
+        children: Vec::new(),
+        doc: extract_doc(node, lines),
+    })
+}
+
+fn named_type_specifier_child_entry(
+    node: tree_sitter::Node,
+    lines: &[&str],
+) -> Option<OutlineEntry> {
+    let mut cursor = node.walk();
+    let entry = node
+        .children(&mut cursor)
+        .find(|child| is_named_type_specifier(child.kind()))
+        .and_then(|child| named_type_specifier_entry(child, lines));
+    entry
 }
 
 /// Collect child entries from a class/struct/impl body.
@@ -739,6 +828,25 @@ pub(crate) fn extract_import_source(text: &str, lang: Option<crate::types::Lang>
         return trimmed.to_string();
     }
 
+    if let Some(lang) = lang {
+        if let Some(source) = crate::capabilities::import_source(lang, trimmed) {
+            return source;
+        }
+    }
+
+    // Stylesheets: `@import "theme.css"`, Sass `@use "tokens"`, or `url(...)`.
+    if lang.is_some_and(crate::lang::css::is_stylesheet_lang) {
+        if let Some(source) = crate::lang::css::import_source(trimmed, lang.unwrap()) {
+            return source;
+        }
+        return trimmed.to_string();
+    }
+
+    // Documents store extracted link/asset targets directly in import entries.
+    if lang.is_some_and(crate::lang::document::is_document_lang) {
+        return trimmed.to_string();
+    }
+
     // Rust: `use foo::bar` → `foo::bar`
     if let Some(rest) = trimmed.strip_prefix("use ") {
         return rest
@@ -874,6 +982,13 @@ fn first_quoted(text: &str) -> Option<String> {
 
 /// Get structured outline entries for file content.
 pub fn get_outline_entries(content: &str, lang: Lang) -> Vec<OutlineEntry> {
+    if let Some(entries) = crate::capabilities::outline_entries(lang, content) {
+        return entries;
+    }
+    if crate::lang::document::is_document_lang(lang) {
+        return crate::lang::document::outline_entries(content, lang);
+    }
+
     let Some(ts_lang) = outline_language(lang) else {
         return Vec::new();
     };
@@ -920,5 +1035,35 @@ static int rust_demangle_callback(data, len)
             !names.contains(&"<anonymous>"),
             "C declarator functions should not be anonymous: {names:?}"
         );
+    }
+    #[test]
+    fn c_named_struct_body_is_not_anonymous() {
+        let code = r#"
+typedef struct ngx_http_core_loc_conf_s  ngx_http_core_loc_conf_t;
+
+struct ngx_http_core_loc_conf_s {
+    int value;
+};
+"#;
+
+        let entries = get_outline_entries(code, Lang::C);
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert!(
+            names.contains(&"ngx_http_core_loc_conf_t")
+                && names.contains(&"ngx_http_core_loc_conf_s"),
+            "expected typedef alias and named struct body: {entries:?}"
+        );
+        assert!(
+            !names.contains(&"<anonymous>"),
+            "C named type outlines should not be anonymous: {entries:?}"
+        );
+
+        let struct_entry = entries
+            .iter()
+            .find(|entry| entry.name == "ngx_http_core_loc_conf_s")
+            .expect("named struct body entry");
+        assert_eq!(struct_entry.kind, OutlineKind::Struct);
+        assert_eq!(struct_entry.start_line, 4);
+        assert_eq!(struct_entry.end_line, 6);
     }
 }

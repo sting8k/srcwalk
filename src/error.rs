@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::evidence::{render_next_actions, NextAction};
 use crate::format;
 /// Every error srcwalk can produce. Displayed as user-facing messages with suggestions.
 #[derive(Debug)]
@@ -12,6 +13,7 @@ pub enum SrcwalkError {
         query: String,
         scope: PathBuf,
         suggestion: Option<String>,
+        guidance: Option<String>,
     },
     PathLikeNotFound {
         path: PathBuf,
@@ -53,6 +55,7 @@ impl std::fmt::Display for SrcwalkError {
                 query,
                 scope,
                 suggestion,
+                guidance,
             } => {
                 write!(
                     f,
@@ -61,6 +64,9 @@ impl std::fmt::Display for SrcwalkError {
                 )?;
                 if let Some(s) = suggestion {
                     write!(f, "\n> Did you mean: {s}")?;
+                }
+                if let Some(guidance) = guidance {
+                    write!(f, "\n> {guidance}")?;
                 }
                 Ok(())
             }
@@ -78,7 +84,15 @@ impl std::fmt::Display for SrcwalkError {
                 if let Some(basename) = basename {
                     writeln!(f, "> Did you mean to search for basename: {basename}")?;
                 }
-                write!(f, "> Next: check the path or scope.")
+                write!(
+                    f,
+                    "{}",
+                    render_next_actions(&[NextAction::guidance(
+                        "check the path or scope.",
+                        "path-like query recovery",
+                        20,
+                    )])
+                )
             }
             Self::PermissionDenied { path } => {
                 write!(f, "{} [permission denied]", format::display_path(path))

@@ -50,7 +50,11 @@ fn build_visible_set(scope: &Path) -> std::collections::HashSet<std::path::PathB
     let mut out = std::collections::HashSet::new();
     for entry in walker.flatten() {
         if entry.file_type().is_some_and(|ft| ft.is_file()) {
-            out.insert(entry.path().to_path_buf());
+            let path = entry.path().to_path_buf();
+            if let Ok(canonical) = path.canonicalize() {
+                out.insert(canonical);
+            }
+            out.insert(path);
         }
     }
     out
@@ -100,7 +104,12 @@ pub(crate) fn disambiguate_glob_for_section(
         .files
         .iter()
         .map(|e| &e.path)
-        .filter(|p| visible.contains(*p) && !is_non_prod(p, scope))
+        .filter(|p| {
+            (visible.contains(*p)
+                || p.canonicalize()
+                    .is_ok_and(|canonical| visible.contains(&canonical)))
+                && !is_non_prod(p, scope)
+        })
         .collect();
 
     // Picker: single primary → done. Multiple primary → break tie by

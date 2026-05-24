@@ -71,6 +71,7 @@ pub(crate) fn run_multi_scope_find_filtered(
             suggestion: scopes
                 .iter()
                 .find_map(|scope| symbol_or_file_suggestion(scope, query, glob)),
+            guidance: None,
         });
     }
 
@@ -141,6 +142,7 @@ fn run_multi_scope_multi_symbol_find(
                     .iter()
                     .find_map(|scope| symbol_or_file_suggestion(scope, part, glob))
             }),
+            guidance: None,
         });
     }
 
@@ -243,15 +245,15 @@ fn multi_scope_search_result(
 }
 
 pub(crate) fn use_files_error(query: &str) -> SrcwalkError {
-    SrcwalkError::unsupported_syntax(query, "srcwalk find", &find_supported_forms(None))
+    SrcwalkError::unsupported_syntax(query, "srcwalk discover", &find_supported_forms(None))
 }
 
 pub(crate) fn unsupported_find_syntax_error(query: &str) -> Option<SrcwalkError> {
     let parts = parse_pipe_separated_identifiers(query)?;
-    let batch = format!("srcwalk find \"{}\" --scope <dir>", parts.join(", "));
+    let batch = format!("srcwalk discover \"{}\" --scope <dir>", parts.join(", "));
     Some(SrcwalkError::unsupported_syntax(
         query,
-        "srcwalk find",
+        "srcwalk discover",
         &find_supported_forms(Some(batch)),
     ))
 }
@@ -262,11 +264,11 @@ fn find_supported_forms(batch: Option<String>) -> Vec<String> {
         forms.push(batch);
     }
     forms.extend([
-        "srcwalk find <query> --scope <dir>".to_string(),
-        "srcwalk find \"A, B, C\" --scope <dir>".to_string(),
-        "srcwalk find '*Name*' --scope <dir>".to_string(),
-        "srcwalk find <query> --filter kind:fn --scope <dir>".to_string(),
-        "srcwalk files '<glob>' --scope <dir>  # filenames".to_string(),
+        "srcwalk discover <query> --scope <dir>".to_string(),
+        "srcwalk discover \"A, B, C\" --scope <dir>".to_string(),
+        "srcwalk discover '*Name*' --as symbol --scope <dir>".to_string(),
+        "srcwalk discover <query> --filter kind:fn --scope <dir>".to_string(),
+        "srcwalk discover '<glob>' --as file --scope <dir>  # filenames".to_string(),
         "rg '<regex>' <dir>  # raw regex".to_string(),
     ]);
     forms

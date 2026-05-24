@@ -6,6 +6,7 @@ use ignore::WalkBuilder;
 
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
+use crate::evidence::{render_next_actions, NextAction};
 use crate::lang::detect_file_type;
 use crate::read::{imports, outline};
 use crate::types::{estimate_tokens, FileType, Lang};
@@ -163,10 +164,10 @@ fn is_map_file(path: &Path, file_type: FileType, artifact: ArtifactMode) -> bool
         || (artifact.enabled() && crate::artifact::is_artifact_js_ts_file(path))
 }
 
-/// Generate a source map with static local dependency relations.
+/// Generate a source overview with static local dependency relations.
 /// By default files show compact token estimates; symbol names are opt-in.
 ///
-/// The `budget` argument is retained for public API compatibility. Map output
+/// The `budget` argument is retained for API compatibility. Overview output
 /// now uses a fixed hard cap and does not truncate or bypass that cap.
 pub fn generate(
     scope: &Path,
@@ -247,7 +248,7 @@ fn generate_auto_depth(
     }
 
     Err(last_err.unwrap_or_else(|| SrcwalkError::InvalidQuery {
-        query: "map".to_string(),
+        query: "overview".to_string(),
         reason: "output too large".to_string(),
     }))
 }
@@ -347,7 +348,7 @@ fn generate_at_depth(
     }
 
     let mut base = format!(
-        "# Map: {} (depth {}, sizes ~= tokens)\n",
+        "# Overview: {} (depth {}, sizes ~= tokens)\n",
         crate::format::display_path(scope),
         depth_label
     );
@@ -403,19 +404,45 @@ fn append_map_footer(
     has_outbound_relations: bool,
 ) {
     if artifact.enabled() {
-        out.push_str("> Artifact mode: JS/TS anchors, binaries skipped, AST cap 25MB.\n");
+        out.push_str(
+            "> Artifact mode: JS/TS anchors, provider outlines, binaries skipped, AST cap 25MB.\n",
+        );
     }
 
-    if artifact.enabled() {
-        out.push_str("\n\n> Next: drill into artifact files with `srcwalk <path> --artifact`, or search anchors with `srcwalk find <name> --artifact`.\n");
+    let action = if artifact.enabled() {
+        Some(NextAction::guidance(
+            "drill into artifact files with `srcwalk <path> --artifact`, or search anchors with `srcwalk discover <name> --artifact`.",
+            "artifact overview drilldown",
+            40,
+        ))
     } else if show_no_relations_hint {
-        out.push_str("\n\n> Next: no cross-group relations shown. Use `srcwalk deps <file>` for file-level deps, or adjust --scope/--depth.\n");
+        Some(NextAction::guidance(
+            "no cross-group relations shown. Use `srcwalk deps <file>` for file-level deps, or adjust --scope/--depth.",
+            "overview relation drilldown",
+            40,
+        ))
     } else if has_outbound_relations {
         // Outbound preview already includes the relevant next action.
+        None
     } else if include_symbols {
-        out.push_str("\n\n> Next: narrow with --scope <dir>.\n");
+        Some(NextAction::guidance(
+            "narrow with --scope <dir>.",
+            "overview scoped drilldown",
+            40,
+        ))
     } else {
-        out.push_str("\n\n> Next: add --symbols, or narrow with --scope <dir>.\n");
+        Some(NextAction::guidance(
+            "add --symbols, or narrow with --scope <dir>.",
+            "overview symbol or scope drilldown",
+            40,
+        ))
+    };
+
+    if let Some(action) = action {
+        let rendered = render_next_actions(&[action]);
+        if !rendered.is_empty() {
+            let _ = write!(out, "\n\n{rendered}");
+        }
     }
 }
 
@@ -426,10 +453,10 @@ fn enforce_hard_cap(out: &str, scope: &Path, depth: usize) -> Result<(), Srcwalk
     }
 
     Err(SrcwalkError::InvalidQuery {
-        query: "map".to_string(),
+        query: "overview".to_string(),
         reason: format!(
             "output too large (~{estimated} tokens; hard cap {MAP_HARD_TOKEN_CAP}). \
-             Narrow with `srcwalk map --scope <dir>`, lower `--depth` below {depth}, \
+             Narrow with `srcwalk overview --scope <dir>`, lower `--depth` below {depth}, \
              or inspect specific relations with `srcwalk deps <file>`. Scope: {}",
             crate::format::display_path(scope)
         ),

@@ -37,7 +37,7 @@ fn find_accepts_repeated_scopes_and_outputs_pwd_relative_hits() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "shared_target",
             "--scope",
             "src",
@@ -81,7 +81,7 @@ fn paginated_multi_scope_find_labels_scope_counts_as_page_counts() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "shared_target",
             "--scope",
             "src",
@@ -126,7 +126,7 @@ fn find_accepts_repeated_scopes_with_multi_symbol_query() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "alpha_symbol, beta_symbol, customized_data",
             "--scope",
             "classes",
@@ -165,7 +165,7 @@ fn find_repeated_scopes_fail_fast_when_any_scope_is_invalid() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "shared_target",
             "--scope",
             "src",
@@ -194,7 +194,7 @@ fn find_repeated_scopes_rejects_expand_with_minimal_hint() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "shared_target",
             "--scope",
             "src",
@@ -216,14 +216,15 @@ fn find_repeated_scopes_rejects_expand_with_minimal_hint() {
 }
 
 #[test]
-fn repeated_scopes_are_rejected_for_non_find_commands() {
-    let dir = temp_repo("multi_scope_reject_non_find");
+fn repeated_scopes_are_rejected_with_mode_specific_errors() {
+    let dir = temp_repo("multi_scope_reject_mode");
     write_file(&dir.join("src/lib.rs"), "pub fn shared_target() {}\n");
     write_file(&dir.join("tests/lib.rs"), "pub fn shared_target() {}\n");
 
     let out = srcwalk()
         .current_dir(&dir)
         .args([
+            "trace",
             "callers",
             "shared_target",
             "--scope",
@@ -234,11 +235,40 @@ fn repeated_scopes_are_rejected_for_non_find_commands() {
         .output()
         .unwrap();
 
-    assert!(!out.status.success(), "non-find multi-scope should fail");
+    assert!(
+        !out.status.success(),
+        "non-discover multi-scope should fail"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("supported only by `srcwalk find`"),
-        "expected unsupported multi-scope error, got:\n{stderr}"
+        stderr.contains("not supported for trace callers")
+            && stderr.contains("currently accepts one --scope"),
+        "expected trace-specific multi-scope error, got:\n{stderr}"
+    );
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "shared_target",
+            "--as",
+            "text",
+            "--scope",
+            "src",
+            "--scope",
+            "tests",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !out.status.success(),
+        "discover --as text multi-scope should fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not supported for discover --as text")
+            && stderr.contains("currently accepts one --scope"),
+        "expected discover-text-specific multi-scope error, got:\n{stderr}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -252,7 +282,7 @@ fn overlapping_scopes_are_deduped_before_pagination() {
     let out = srcwalk()
         .current_dir(&dir)
         .args([
-            "find",
+            "discover",
             "shared_target",
             "--scope",
             ".",
@@ -268,7 +298,9 @@ fn overlapping_scopes_are_deduped_before_pagination() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let normalized = norm_path_separators(&stdout);
     assert_eq!(
-        normalized.matches("src/lib.rs:1-1").count(),
+        normalized
+            .matches("  [fn] shared_target src/lib.rs:1-1")
+            .count(),
         1,
         "overlapping scopes should dedupe duplicate hits, got:\n{stdout}"
     );

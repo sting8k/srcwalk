@@ -5,12 +5,13 @@ use memmap2::Mmap;
 
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
+use crate::evidence::{render_next_actions, NextAction};
 use crate::format;
 use crate::lang::detect_file_type;
 use crate::types::{estimate_tokens, FileType, ViewMode};
 
 use super::directory::list_directory;
-use super::section::read_section;
+use super::section::read_section_with_context;
 use super::{outline, read_file};
 
 fn capped_line_end(buf: &[u8], start_byte: usize, max_lines: u32, max_tokens: u64) -> (usize, u32) {
@@ -92,8 +93,15 @@ pub(super) fn render_full_body(
         Some(cap) => format!("{token_cap} tokens or {cap} lines"),
         None => format!("{token_cap} tokens"),
     };
+    let next = render_next_actions(&[NextAction::guidance(
+        format!(
+            "use --section <symbol|range[,symbol|range]> for the needed parts, or retry with --budget <N>. Continue from --section {next_start}-<end>."
+        ),
+        "continue capped full read",
+        20,
+    )]);
     Ok(format!(
-        "{header}\n\n> Caveat: full capped — tokens ~{shown_tokens}/{raw_tokens} shown (cap {cap_text}); lines {shown}/{line_count}.\n\n{numbered_head}\n\n## Outline\n\n{outline}\n\n> Next: use --section <symbol|range[,symbol|range]> for the needed parts, or retry with --budget <N>. Continue from --section {next_start}-<end>."
+        "{header}\n\n> Caveat: full capped — tokens ~{shown_tokens}/{raw_tokens} shown (cap {cap_text}); lines {shown}/{line_count}.\n\n{numbered_head}\n\n## Outline\n\n{outline}\n\n{next}"
     ))
 }
 
@@ -104,13 +112,32 @@ pub fn read_file_with_budget(
     budget: Option<u64>,
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
+    read_file_with_budget_and_context(path, section, full, budget, cache, None)
+}
+
+pub fn read_file_with_budget_and_context(
+    path: &Path,
+    section: Option<&str>,
+    full: bool,
+    budget: Option<u64>,
+    cache: &OutlineCache,
+    context_lines: Option<usize>,
+) -> Result<String, SrcwalkError> {
+    if context_lines.is_some() && section.is_none() {
+        return Err(SrcwalkError::InvalidQuery {
+            query: path.display().to_string(),
+            reason: "--context-lines requires a path:line target or --section line".to_string(),
+        });
+    }
+
+    if let Some(range) = section {
+        return read_section_with_context(path, range, budget, cache, context_lines);
+    }
+
     // Fast path: not a full-file budgeted request → defer to read_file.
     let Some(b) = budget else {
         return read_file(path, section, full, cache);
     };
-    if let Some(range) = section {
-        return read_section(path, range, Some(b), cache);
-    }
     if !full {
         return read_file(path, section, full, cache);
     }
@@ -142,9 +169,13 @@ pub fn read_file_with_budget(
     let line_count =
         std::fs::read(path).map_or(0, |buf| memchr::memchr_iter(b'\n', &buf).count() as u32 + 1);
     let header = format::file_header(path, meta.len(), line_count, ViewMode::Signatures);
+    let next = render_next_actions(&[NextAction::guidance(
+        "use --section <symbol|range> or --budget <N>.",
+        "small-budget read fallback",
+        20,
+    )]);
     Ok(format!(
-        "{header}\n\n> Caveat: budget {b} tokens too small for file summary.\
-         > Next: use --section <symbol|range> or --budget <N>."
+        "{header}\n\n> Caveat: budget {b} tokens too small for file summary.\n{next}"
     ))
 }
 
@@ -262,9 +293,12 @@ fn append_cascade_note(body: &str, prev_kind: &str, prev_bytes: usize, budget: u
     } else {
         format!("downgraded {prev_kind}->outline")
     };
-    format!(
-        "{body}\n\n> Note: budget ~{prev_tokens}/{budget} tokens; {action}.\n> Next: use --section <symbol|range> or --budget <N>."
-    )
+    let next = render_next_actions(&[NextAction::guidance(
+        "use --section <symbol|range> or --budget <N>.",
+        "budget fallback read drilldown",
+        20,
+    )]);
+    format!("{body}\n\n> Note: budget ~{prev_tokens}/{budget} tokens; {action}.\n{next}")
 }
 
 /// Guess MIME type from extension for binary file headers.

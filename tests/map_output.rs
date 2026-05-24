@@ -38,6 +38,33 @@ fn create_symlink_dir_or_skip(target: &std::path::Path, link: &std::path::Path) 
 }
 
 #[test]
+fn overview_file_scope_error_is_actionable() {
+    let dir = temp_repo("overview_file_scope_error");
+    let file = dir.join("src.c");
+    fs::write(&file, "int main(void) { return 0; }\n").unwrap();
+
+    let out = srcwalk()
+        .arg("overview")
+        .arg("--scope")
+        .arg(&file)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(), "overview file scope should fail");
+    assert!(
+        stderr.contains("overview expects a directory scope"),
+        "expected overview-specific guidance, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("srcwalk show") && stderr.contains("srcwalk context"),
+        "expected show/context guidance, got:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn map_does_not_traverse_symlinked_directory_outside_scope() {
     let dir = temp_repo("map_symlink_escape");
     let outside = temp_repo("map_symlink_outside");
@@ -48,13 +75,13 @@ fn map_does_not_traverse_symlinked_directory_outside_scope() {
     }
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !stdout.contains("secret.rs") && !stdout.contains("secret_escape"),
@@ -77,13 +104,13 @@ fn map_default_is_compact_without_symbols() {
     fs::write(dir.join("README.md"), "hello\n").unwrap();
 
     let out = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("sizes ~= tokens"),
@@ -95,11 +122,11 @@ fn map_default_is_compact_without_symbols() {
     );
     assert!(
         !stdout.contains("lib.rs: alpha") && !stdout.contains("~9 tokens"),
-        "default map should not include symbols or repeated token units, got:\n{stdout}"
+        "default overview should not include symbols or repeated token units, got:\n{stdout}"
     );
     assert!(
         stdout.contains("> Next: add --symbols") && stdout.contains("--scope <dir>"),
-        "expected compact map footer, got:\n{stdout}"
+        "expected compact overview footer, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -113,7 +140,7 @@ fn map_uses_auto_depth_only_when_depth_is_omitted() {
     }
 
     let auto = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
@@ -129,7 +156,7 @@ fn map_uses_auto_depth_only_when_depth_is_omitted() {
     );
 
     let explicit = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--depth")
@@ -166,7 +193,7 @@ fn map_auto_depth_retries_lower_depth_to_fit_cap() {
     }
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
@@ -204,13 +231,13 @@ fn map_filters_to_source_files_only() {
     fs::write(dir.join("logo.svg"), "<svg/>\n").unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("lib.rs"),
@@ -221,7 +248,7 @@ fn map_filters_to_source_files_only() {
             && !stdout.contains("package.json")
             && !stdout.contains("composer.lock")
             && !stdout.contains("logo.svg"),
-        "default map should omit non-source files, got:\n{stdout}"
+        "default overview should omit non-source files, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -233,14 +260,17 @@ fn map_rejects_budget_controls() {
     fs::write(dir.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
 
     let budget = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--budget")
         .arg("80")
         .output()
         .unwrap();
-    assert!(!budget.status.success(), "expected --map --budget to fail");
+    assert!(
+        !budget.status.success(),
+        "expected overview --budget to fail"
+    );
     let stderr = String::from_utf8_lossy(&budget.stderr);
     assert!(
         stderr.contains("fixed 15k token cap"),
@@ -248,7 +278,7 @@ fn map_rejects_budget_controls() {
     );
 
     let no_budget = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--no-budget")
@@ -256,7 +286,7 @@ fn map_rejects_budget_controls() {
         .unwrap();
     assert!(
         !no_budget.status.success(),
-        "expected --map --no-budget to fail"
+        "expected overview --no-budget to fail"
     );
     let stderr = String::from_utf8_lossy(&no_budget.stderr);
     assert!(
@@ -267,14 +297,14 @@ fn map_rejects_budget_controls() {
     let command_budget = srcwalk()
         .arg("--budget")
         .arg("80")
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
     assert!(
         !command_budget.status.success(),
-        "expected top-level --budget with map command to fail"
+        "expected top-level --budget with overview command to fail"
     );
     let stderr = String::from_utf8_lossy(&command_budget.stderr);
     assert!(
@@ -284,14 +314,14 @@ fn map_rejects_budget_controls() {
 
     let command_no_budget = srcwalk()
         .arg("--no-budget")
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
     assert!(
         !command_no_budget.status.success(),
-        "expected top-level --no-budget with map command to fail"
+        "expected top-level --no-budget with overview command to fail"
     );
     let stderr = String::from_utf8_lossy(&command_no_budget.stderr);
     assert!(
@@ -314,7 +344,7 @@ fn map_hard_cap_aborts_without_partial_output() {
     }
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
@@ -323,7 +353,7 @@ fn map_hard_cap_aborts_without_partial_output() {
     assert!(!out.status.success(), "expected hard-cap abort");
     assert!(
         out.stdout.is_empty(),
-        "hard-cap abort must not print partial map, got:\n{}",
+        "hard-cap abort must not print partial overview, got:\n{}",
         String::from_utf8_lossy(&out.stdout)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -356,7 +386,7 @@ fn map_degrades_to_structure_only_when_relations_exceed_cap() {
     }
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
@@ -386,13 +416,13 @@ fn map_omits_relations_when_no_local_deps() {
     fs::write(dir.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !stdout.contains("[relations]"),
@@ -415,13 +445,13 @@ fn map_relations_show_static_local_rust_deps() {
     fs::write(dir.join("src/search/callees.rs"), "pub fn resolve() {}\n").unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(dir.join("src"))
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("[relations]")
@@ -446,13 +476,13 @@ fn map_relations_group_root_scope_files() {
     fs::write(dir.join("src/types.rs"), "pub struct Config;\n").unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(dir.join("src"))
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("feature deps:1")
@@ -478,13 +508,13 @@ fn map_relations_show_go_module_imports() {
     fs::write(dir.join("internal/runtime/runtime.go"), "package runtime\n").unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("cmd/server deps:1") && stdout.contains("  -> internal/runtime deps:1"),
@@ -508,7 +538,7 @@ fn map_go_relations_respect_glob_visible_targets() {
     fs::write(dir.join("internal/runtime/runtime.go"), "package runtime\n").unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--glob")
@@ -516,7 +546,7 @@ fn map_go_relations_respect_glob_visible_targets() {
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("main.go") && !stdout.contains("internal/runtime"),
@@ -553,13 +583,13 @@ fn map_shows_outbound_go_deps_when_scope_is_narrow() {
     )
     .unwrap();
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(dir.join("examples"))
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("[relations] 0 in-scope groups"),
@@ -601,7 +631,7 @@ fn map_go_relations_discover_nested_modules_from_repo_root() {
     .unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--depth")
@@ -609,7 +639,7 @@ fn map_go_relations_discover_nested_modules_from_repo_root() {
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("services/app/cmd deps:1")
@@ -637,13 +667,13 @@ fn map_relations_smoke_js_and_python_imports() {
     fs::write(dir.join("py/lib/util.py"), "def util(): pass\n").unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("web/app deps:1")
@@ -666,13 +696,13 @@ fn map_relations_work_with_relative_scope() {
 
     let out = srcwalk()
         .current_dir(&dir)
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(".")
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("app deps:1") && stdout.contains("  -> lib deps:1"),
@@ -701,13 +731,13 @@ fn map_relations_include_ts_esm_js_specifiers_and_reexports() {
     fs::write(dir.join("lib/helper.ts"), "export function helper() {}\n").unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("app deps:1")
@@ -727,13 +757,13 @@ fn map_footer_describes_no_cross_group_relations() {
     fs::write(dir.join("helper.ts"), "export function helper() {}\n").unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("no cross-group relations shown")
@@ -766,13 +796,13 @@ fn map_relations_show_php_psr4_imports() {
     .unwrap();
 
     let out = srcwalk()
-        .arg("map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map to succeed");
+    assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("classes deps:1") && stdout.contains("  -> src/Core deps:1"),
@@ -790,7 +820,7 @@ fn map_honors_depth() {
     fs::write(dir.join("src/nested/deep.rs"), "pub fn beta() {}\n").unwrap();
 
     let out = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--depth")
@@ -798,7 +828,7 @@ fn map_honors_depth() {
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map --depth to succeed");
+    assert!(out.status.success(), "expected overview --depth to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("depth 1"),
@@ -827,7 +857,7 @@ fn map_rolls_up_deep_source_dirs_beyond_depth() {
     .unwrap();
 
     let out = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--depth")
@@ -835,7 +865,7 @@ fn map_rolls_up_deep_source_dirs_beyond_depth() {
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map --depth to succeed");
+    assert!(out.status.success(), "expected overview --depth to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("src/"),
@@ -862,7 +892,7 @@ fn map_honors_glob() {
     fs::write(dir.join("README.md"), "hello\n").unwrap();
 
     let out = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--glob")
@@ -870,7 +900,7 @@ fn map_honors_glob() {
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map --glob to succeed");
+    assert!(out.status.success(), "expected overview --glob to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("lib.rs"),
@@ -890,23 +920,26 @@ fn map_rejects_filter_and_json_noops() {
     fs::write(dir.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
 
     let filter = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--filter")
         .arg("path:src")
         .output()
         .unwrap();
-    assert!(!filter.status.success(), "expected --map --filter to fail");
+    assert!(
+        !filter.status.success(),
+        "expected overview --filter to fail"
+    );
 
     let json = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--json")
         .output()
         .unwrap();
-    assert!(!json.status.success(), "expected --map --json to fail");
+    assert!(!json.status.success(), "expected overview --json to fail");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -922,7 +955,7 @@ fn map_sorts_dirs_and_files_by_size() {
     fs::write(dir.join("large_root.rs"), "x\n".repeat(100)).unwrap();
 
     let out = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--scope")
         .arg(&dir)
         .arg("--depth")
@@ -930,7 +963,7 @@ fn map_sorts_dirs_and_files_by_size() {
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected sorted map to succeed");
+    assert!(out.status.success(), "expected sorted overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let large_dir = stdout.find("large_dir/").expect("large_dir missing");
     let small_dir = stdout.find("small_dir/").expect("small_dir missing");
@@ -964,14 +997,17 @@ fn map_symbols_includes_symbol_names() {
     .unwrap();
 
     let out = srcwalk()
-        .arg("--map")
+        .arg("overview")
         .arg("--symbols")
         .arg("--scope")
         .arg(&dir)
         .output()
         .unwrap();
 
-    assert!(out.status.success(), "expected map --symbols to succeed");
+    assert!(
+        out.status.success(),
+        "expected overview --symbols to succeed"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("lib.rs: alpha, beta"),
@@ -979,7 +1015,7 @@ fn map_symbols_includes_symbol_names() {
     );
     assert!(
         stdout.contains("> Next: narrow with --scope <dir>"),
-        "expected symbols map footer, got:\n{stdout}"
+        "expected symbols overview footer, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -1001,7 +1037,7 @@ fn map_artifact_surfaces_capped_safe_anchors() {
     fs::write(dir.join("dist/amd.min.js"), modules).unwrap();
 
     let default = srcwalk()
-        .args(["map", "--scope"])
+        .args(["overview", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -1009,17 +1045,17 @@ fn map_artifact_surfaces_capped_safe_anchors() {
     assert!(!stdout.contains("anchors:"), "{stdout}");
     assert!(
         !stdout.contains("dist/"),
-        "default map should skip artifact dirs:\n{stdout}"
+        "default overview should skip artifact dirs:\n{stdout}"
     );
 
     let artifact = srcwalk()
-        .args(["map", "--artifact", "--scope"])
+        .args(["overview", "--artifact", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
     assert!(
         artifact.status.success(),
-        "map --artifact failed:\n{}",
+        "overview --artifact failed:\n{}",
         String::from_utf8_lossy(&artifact.stderr)
     );
     let stdout = String::from_utf8_lossy(&artifact.stdout);
@@ -1037,7 +1073,7 @@ fn map_artifact_surfaces_capped_safe_anchors() {
     assert!(stdout.contains("Artifact mode:"), "{stdout}");
     assert!(stdout.contains("srcwalk <path> --artifact"), "{stdout}");
     assert!(
-        stdout.contains("srcwalk find <name> --artifact"),
+        stdout.contains("srcwalk discover <name> --artifact"),
         "{stdout}"
     );
 

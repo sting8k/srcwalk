@@ -5,14 +5,14 @@ use crate::error::SrcwalkError;
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
 use crate::search::rank;
-use crate::types::{FileType, Match, SearchResult};
+use crate::types::{Match, SearchResult};
 use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
 
 use super::super::{file_metadata, read_file_bytes, walker};
 use super::comments::tag_comment_matches;
-use super::definitions::{find_defs_heuristic_buf, find_defs_treesitter};
+use super::definitions::{find_defs_from_outline, find_defs_heuristic_buf, find_defs_treesitter};
 use super::usages::is_word_byte;
 
 /// Multi-symbol batch search.
@@ -141,7 +141,8 @@ fn find_definitions_batch(
                 return ignore::WalkState::Continue;
             }
 
-            if file_size >= super::super::io::MINIFIED_CHECK_THRESHOLD
+            if !crate::capabilities::is_private_text_file_type(detect_file_type(path))
+                && file_size >= super::super::io::MINIFIED_CHECK_THRESHOLD
                 && super::super::io::looks_minified(&bytes)
             {
                 return ignore::WalkState::Continue;
@@ -152,16 +153,28 @@ fn find_definitions_batch(
 
             let (file_lines, mtime) = file_metadata(path);
             let file_type = detect_file_type(path);
-            let lang = match file_type {
-                FileType::Code(l) => Some(l),
-                _ => None,
+            let lang = file_type.structural_lang();
+            let is_document = lang.is_some_and(crate::lang::document::is_document_lang);
+            let ts_language = if is_document {
+                None
+            } else {
+                lang.and_then(outline_language)
             };
-            let ts_language = lang.and_then(outline_language);
 
             // Per-file local buckets so we lock global mutex once.
             let mut local: Vec<Vec<Match>> = vec![Vec::new(); queries.len()];
 
-            if let Some(ref ts_lang) = ts_language {
+            if let Some(lang) = lang.filter(|lang| crate::lang::document::is_document_lang(*lang)) {
+                for (i, q) in queries.iter().enumerate() {
+                    if !hit_mask[i] {
+                        continue;
+                    }
+                    let defs = find_defs_from_outline(path, q, content, file_lines, mtime, lang);
+                    if !defs.is_empty() {
+                        local[i] = defs;
+                    }
+                }
+            } else if let Some(ref ts_lang) = ts_language {
                 // Parse once, walk once per query that hit (cheap: walk is fast vs parse).
                 for (i, q) in queries.iter().enumerate() {
                     if !hit_mask[i] {
@@ -170,6 +183,18 @@ fn find_definitions_batch(
                     let defs = find_defs_treesitter(
                         path, q, ts_lang, lang, content, file_lines, mtime, cache,
                     );
+                    if !defs.is_empty() {
+                        local[i] = defs;
+                    }
+                }
+            } else if let Some(lang) =
+                lang.filter(|lang| crate::capabilities::provides_outline_entries(*lang))
+            {
+                for (i, q) in queries.iter().enumerate() {
+                    if !hit_mask[i] {
+                        continue;
+                    }
+                    let defs = find_defs_from_outline(path, q, content, file_lines, mtime, lang);
                     if !defs.is_empty() {
                         local[i] = defs;
                     }

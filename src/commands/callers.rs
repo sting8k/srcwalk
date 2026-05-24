@@ -22,7 +22,6 @@ pub(crate) fn run_callers(
     skip_hubs: Option<&str>,
     filter: Option<&str>,
     count_by: Option<&str>,
-    json: bool,
 ) -> Result<String, SrcwalkError> {
     run_callers_with_artifact(
         target,
@@ -39,7 +38,6 @@ pub(crate) fn run_callers(
         skip_hubs,
         filter,
         count_by,
-        json,
         ArtifactMode::Source,
     )
 }
@@ -60,7 +58,6 @@ pub(crate) fn run_callers_with_artifact(
     skip_hubs: Option<&str>,
     filter: Option<&str>,
     count_by: Option<&str>,
-    json: bool,
     artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
     if artifact.enabled() && matches!(depth, Some(d) if d >= 2) {
@@ -74,7 +71,7 @@ pub(crate) fn run_callers_with_artifact(
         return Err(SrcwalkError::InvalidQuery {
             query: target.to_string(),
             reason:
-                "--filter and --count-by currently apply to direct --callers only; omit --depth"
+                "--filter and --count-by currently apply to direct trace callers only; omit --depth"
                     .to_string(),
         });
     }
@@ -94,19 +91,12 @@ pub(crate) fn run_callers_with_artifact(
             max_edges.unwrap_or(500),
             glob,
             skip_hubs,
-            json,
-            budget_tokens.map(|b| b as usize),
         )?,
         _ => search::callers::search_callers_expanded_with_artifact(
             target, scope, cache, &session, &bloom, expand, None, limit, offset, glob, filter,
             count_by, artifact,
         )?,
     };
-    if json {
-        // BFS JSON handles its own budget internally (edges array cap).
-        // Legacy callers JSON returns unmodified for machine-readable output.
-        return Ok(output);
-    }
     match budget_tokens {
         Some(b) => Ok(budget::apply_preserving_footer(&output, b)),
         None => Ok(output),

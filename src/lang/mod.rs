@@ -1,4 +1,7 @@
+pub(crate) mod css;
+pub(crate) mod decision_flow;
 pub mod detection;
+pub(crate) mod document;
 pub mod outline;
 pub mod treesitter;
 
@@ -8,6 +11,9 @@ use crate::types::{FileType, Lang};
 
 /// Detect file type by extension, then by name.
 pub fn detect_file_type(path: &Path) -> FileType {
+    if let Some(file_type) = crate::capabilities::detect_file_type(path) {
+        return file_type;
+    }
     match path.extension().and_then(|e| e.to_str()) {
         Some("ts") => FileType::Code(Lang::TypeScript),
         Some("tsx") => FileType::Code(Lang::Tsx),
@@ -25,8 +31,12 @@ pub fn detect_file_type(path: &Path) -> FileType {
         Some("kt" | "kts") => FileType::Code(Lang::Kotlin),
         Some("cs") => FileType::Code(Lang::CSharp),
         Some("ex" | "exs") => FileType::Code(Lang::Elixir),
+        Some("css") => FileType::Code(Lang::Css),
+        Some("scss") => FileType::Code(Lang::Scss),
+        Some("less") => FileType::Code(Lang::Less),
+        Some("html" | "htm") => FileType::Document(Lang::Html),
 
-        Some("md" | "mdx" | "rst") => FileType::Markdown,
+        Some("md" | "mdx" | "rst") => FileType::Document(Lang::Markdown),
         Some("json" | "yaml" | "yml" | "toml" | "xml" | "ini") => FileType::StructuredData,
         Some("csv" | "tsv") => FileType::Tabular,
         Some("log") => FileType::Log,

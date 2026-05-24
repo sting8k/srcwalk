@@ -5,7 +5,7 @@ use std::path::Path;
 use super::{extract_line_range, get_outline_str};
 use crate::cache::OutlineCache;
 use crate::format::rel_nonempty;
-use crate::types::{FileType, Match, OutlineEntry, OutlineKind};
+use crate::types::{Match, OutlineEntry, OutlineKind};
 
 pub(super) fn enclosing_fn_name(path: &Path, line: u32, cache: &OutlineCache) -> Option<String> {
     let outline_str = get_outline_str(path, cache)?;
@@ -43,8 +43,51 @@ pub(in crate::search) struct SemanticChild {
     pub(in crate::search) end_line: u32,
 }
 
-fn is_artifact_anchor_match(m: &Match) -> bool {
-    m.is_definition && m.text.starts_with("artifact anchor ")
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct ContextTarget {
+    pub(super) start_line: u32,
+    pub(super) end_line: u32,
+}
+
+pub(super) fn context_target_for_match(m: &Match, cache: &OutlineCache) -> Option<ContextTarget> {
+    if m.in_comment || crate::artifact::should_auto_artifact_file(&m.path) {
+        return None;
+    }
+    let crate::types::FileType::Code(lang) = crate::lang::detect_file_type(&m.path) else {
+        return None;
+    };
+    if !crate::lang::decision_flow::is_supported_flow_target_lang(lang) {
+        return None;
+    }
+
+    if m.is_definition {
+        if let Some(candidate) = semantic_candidate_for_match(m, cache) {
+            if candidate.kind == OutlineKind::Function {
+                return Some(ContextTarget {
+                    start_line: candidate.start_line,
+                    end_line: candidate.end_line,
+                });
+            }
+        }
+        if let Some((start_line, end_line)) = function_definition_range_from_outline(m, cache) {
+            return Some(ContextTarget {
+                start_line,
+                end_line,
+            });
+        }
+        return None;
+    }
+
+    if !m.exact {
+        return None;
+    }
+
+    let entries = structured_outline_entries(&m.path, cache)?;
+    let candidate = best_enclosing_function(&entries, m.line)?;
+    Some(ContextTarget {
+        start_line: candidate.start_line,
+        end_line: candidate.end_line,
+    })
 }
 
 pub(super) fn format_definition_semantic_match(
@@ -54,18 +97,45 @@ pub(super) fn format_definition_semantic_match(
     out: &mut String,
 ) {
     let path = rel_nonempty(&m.path, scope);
-    if is_artifact_anchor_match(m) {
-        let label = m.def_name.as_deref().unwrap_or_else(|| m.text.trim());
-        let _ = write!(out, "\n  [anchor] {label} {path}:{}", m.line);
+    format_definition_semantic_match_with_path(m, Some(&path), cache, out, "  ");
+}
+
+pub(super) fn format_definition_semantic_match_in_file(
+    m: &Match,
+    cache: &OutlineCache,
+    out: &mut String,
+) {
+    format_definition_semantic_match_with_path(m, None, cache, out, "    ");
+}
+
+fn format_definition_semantic_match_with_path(
+    m: &Match,
+    path: Option<&str>,
+    cache: &OutlineCache,
+    out: &mut String,
+    indent: &str,
+) {
+    let atom = m.to_evidence_atom();
+    if super::is_artifact_anchor_match(m) {
+        let label = m
+            .def_name
+            .as_deref()
+            .unwrap_or_else(|| atom.snippet().trim());
+        let _ = write!(
+            out,
+            "\n{indent}[anchor] {label} {}",
+            format_loc(path, atom.anchor().start_line())
+        );
+        super::append_match_provenance_with_kind(m, out, indent, Some("anchor"));
         return;
     }
     if m.impl_target.is_some() {
-        format_relation_definition_match(m, "impl", &path, out);
+        format_relation_definition_match(m, "impl", path, out, indent);
         append_artifact_definition_snippet(m, out);
         return;
     }
     if m.base_target.is_some() {
-        format_relation_definition_match(m, "base", &path, out);
+        format_relation_definition_match(m, "base", path, out, indent);
         append_artifact_definition_snippet(m, out);
         return;
     }
@@ -77,17 +147,24 @@ pub(super) fn format_definition_semantic_match(
         };
         let _ = write!(
             out,
-            "\n  [{}] {} {}:{}-{}",
+            "\n{indent}[{}] {} {}",
             outline_kind_label(candidate.kind),
             qualified_name,
-            path,
-            candidate.start_line,
-            candidate.end_line
+            format_range(path, candidate.start_line, candidate.end_line)
         );
+        let kind_override = if matches!(
+            crate::lang::detect_file_type(&m.path),
+            crate::types::FileType::Document(_)
+        ) {
+            super::document_outline_kind_label(candidate.kind)
+        } else {
+            None
+        };
+        super::append_match_provenance_with_kind(m, out, indent, kind_override);
         for child in candidate.children.iter().take(2) {
             let _ = write!(
                 out,
-                "\n    +[{}] {} {}-{}",
+                "\n{indent}  +[{}] {} {}-{}",
                 outline_kind_label(child.kind),
                 child.name,
                 child.start_line,
@@ -104,10 +181,15 @@ pub(super) fn format_definition_semantic_match(
             "definition"
         };
         if let Some(name) = m.def_name.as_deref() {
-            let _ = write!(out, "\n  [{kind}] {name} {path}:{start}-{end}");
+            let _ = write!(
+                out,
+                "\n{indent}[{kind}] {name} {}",
+                format_range(path, start, end)
+            );
         } else {
-            let _ = write!(out, "\n  [{kind}] {path}:{start}-{end}");
+            let _ = write!(out, "\n{indent}[{kind}] {}", format_range(path, start, end));
         }
+        super::append_match_provenance(m, out, indent);
     } else {
         let kind = if m.impl_target.is_some() {
             "impl"
@@ -115,12 +197,35 @@ pub(super) fn format_definition_semantic_match(
             "definition"
         };
         if let Some(name) = m.def_name.as_deref() {
-            let _ = write!(out, "\n  [{kind}] {name} {path}:{}", m.line);
+            let _ = write!(
+                out,
+                "\n{indent}[{kind}] {name} {}",
+                format_loc(path, atom.anchor().start_line())
+            );
         } else {
-            let _ = write!(out, "\n  [{kind}] {path}:{}", m.line);
+            let _ = write!(
+                out,
+                "\n{indent}[{kind}] {}",
+                format_loc(path, atom.anchor().start_line())
+            );
         }
+        super::append_match_provenance(m, out, indent);
     }
     append_artifact_definition_snippet(m, out);
+}
+
+fn format_loc(path: Option<&str>, line: u32) -> String {
+    match path {
+        Some(path) => format!("{path}:{line}"),
+        None => format!(":{line}"),
+    }
+}
+
+fn format_range(path: Option<&str>, start: u32, end: u32) -> String {
+    match path {
+        Some(path) => format!("{path}:{start}-{end}"),
+        None => format!(":{start}-{end}"),
+    }
 }
 
 fn append_artifact_definition_snippet(m: &Match, out: &mut String) {
@@ -139,15 +244,29 @@ fn append_artifact_definition_snippet(m: &Match, out: &mut String) {
 pub(super) fn format_relation_definition_match(
     m: &Match,
     kind: &str,
-    path: &str,
+    path: Option<&str>,
     out: &mut String,
+    indent: &str,
 ) {
-    let label = m.def_name.as_deref().unwrap_or_else(|| m.text.trim());
+    let atom = m.to_evidence_atom();
+    let label = m
+        .def_name
+        .as_deref()
+        .unwrap_or_else(|| atom.snippet().trim());
     if let Some((start, end)) = m.def_range {
-        let _ = write!(out, "\n  [{kind}] {label} {path}:{start}-{end}");
+        let _ = write!(
+            out,
+            "\n{indent}[{kind}] {label} {}",
+            format_range(path, start, end)
+        );
     } else {
-        let _ = write!(out, "\n  [{kind}] {label} {path}:{}", m.line);
+        let _ = write!(
+            out,
+            "\n{indent}[{kind}] {label} {}",
+            format_loc(path, atom.anchor().start_line())
+        );
     }
+    super::append_match_provenance(m, out, indent);
 }
 
 pub(super) fn semantic_candidate_for_match(
@@ -160,15 +279,19 @@ pub(super) fn semantic_candidate_for_match(
 
 fn structured_outline_entries(path: &Path, cache: &OutlineCache) -> Option<Vec<OutlineEntry>> {
     let file_type = crate::lang::detect_file_type(path);
-    let FileType::Code(lang) = file_type else {
-        return None;
-    };
+    let lang = file_type.structural_lang()?;
     let meta = fs::metadata(path).ok()?;
     if meta.len() > 500_000 {
         return None;
     }
     let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let content = fs::read_to_string(path).ok()?;
+    if crate::lang::document::is_document_lang(lang) {
+        return Some(crate::lang::outline::get_outline_entries(&content, lang));
+    }
+    if let Some(entries) = crate::capabilities::outline_entries(lang, &content) {
+        return Some(entries);
+    }
     let ts_lang = crate::lang::outline::outline_language(lang)?;
     let tree = cache.get_or_parse(path, mtime, &content, &ts_lang)?;
     let lines: Vec<&str> = content.lines().collect();
@@ -188,10 +311,15 @@ pub(in crate::search) fn best_semantic_candidate(
     let mut candidates = Vec::new();
     collect_semantic_candidates(entries, &mut Vec::new(), range, wanted, &mut candidates);
     if let Some(wanted) = wanted {
-        if !candidates
-            .iter()
-            .any(|(candidate, _, _)| candidate.name == wanted)
-        {
+        if !candidates.iter().any(|(candidate, _, _)| {
+            candidate.name == wanted
+                || crate::lang::css::outline_name_matches(candidate.kind, &candidate.name, wanted)
+                || crate::lang::document::outline_name_matches(
+                    candidate.kind,
+                    &candidate.name,
+                    wanted,
+                )
+        }) {
             return None;
         }
     }
@@ -212,7 +340,11 @@ fn collect_semantic_candidates(
         let overlaps = ranges_overlap((entry.start_line, entry.end_line), match_range);
         let contains_line = match_range.0 >= entry.start_line && match_range.0 <= entry.end_line;
         if overlaps || contains_line {
-            let name_match = wanted.is_some_and(|name| entry.name == name);
+            let name_match = wanted.is_some_and(|name| {
+                entry.name == name
+                    || crate::lang::css::outline_name_matches(entry.kind, &entry.name, name)
+                    || crate::lang::document::outline_name_matches(entry.kind, &entry.name, name)
+            });
             let is_module = entry.kind == OutlineKind::Module;
             let kind_penalty = if is_module && !name_match { 25 } else { 0 };
             let name_penalty = if name_match { 0 } else { 100 };
@@ -261,6 +393,84 @@ fn collect_semantic_candidates(
     }
 }
 
+fn function_definition_range_from_outline(m: &Match, cache: &OutlineCache) -> Option<(u32, u32)> {
+    let range = m.def_range?;
+    let wanted = m.def_name.as_deref();
+    let entries = structured_outline_entries(&m.path, cache)?;
+    find_function_definition_range(&entries, range, wanted)
+}
+
+fn find_function_definition_range(
+    entries: &[OutlineEntry],
+    range: (u32, u32),
+    wanted: Option<&str>,
+) -> Option<(u32, u32)> {
+    for entry in entries {
+        if entry.kind == OutlineKind::Function
+            && (entry.start_line, entry.end_line) == range
+            && wanted.is_none_or(|name| entry.name == name)
+        {
+            return Some(range);
+        }
+        if let Some(found) = find_function_definition_range(&entry.children, range, wanted) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn best_enclosing_function(entries: &[OutlineEntry], line: u32) -> Option<SemanticCandidate> {
+    let mut candidates = Vec::new();
+    collect_enclosing_functions(entries, line, &mut Vec::new(), &mut candidates);
+    candidates
+        .into_iter()
+        .min_by_key(|candidate| candidate.end_line.saturating_sub(candidate.start_line))
+}
+
+fn collect_enclosing_functions(
+    entries: &[OutlineEntry],
+    line: u32,
+    parents: &mut Vec<String>,
+    out: &mut Vec<SemanticCandidate>,
+) {
+    for entry in entries {
+        let contains_line = line >= entry.start_line && line <= entry.end_line;
+        if contains_line && entry.kind == OutlineKind::Function {
+            out.push(SemanticCandidate {
+                kind: entry.kind,
+                name: entry.name.clone(),
+                start_line: entry.start_line,
+                end_line: entry.end_line,
+                parents: parents.clone(),
+                children: entry
+                    .children
+                    .iter()
+                    .filter(|child| child.kind != OutlineKind::Import)
+                    .map(|child| SemanticChild {
+                        kind: child.kind,
+                        name: child.name.clone(),
+                        start_line: child.start_line,
+                        end_line: child.end_line,
+                    })
+                    .collect(),
+            });
+        }
+
+        let pushed_parent = if entry.kind == OutlineKind::Module {
+            parents.push(entry.name.clone());
+            true
+        } else {
+            false
+        };
+        if contains_line {
+            collect_enclosing_functions(&entry.children, line, parents, out);
+        }
+        if pushed_parent {
+            parents.pop();
+        }
+    }
+}
+
 fn ranges_overlap(a: (u32, u32), b: (u32, u32)) -> bool {
     a.0 <= b.1 && b.0 <= a.1
 }
@@ -277,6 +487,13 @@ pub(super) fn outline_kind_label(kind: OutlineKind) -> &'static str {
         OutlineKind::Constant => "const",
         OutlineKind::Variable | OutlineKind::ImmutableVariable => "var",
         OutlineKind::Export => "export",
+        OutlineKind::Provider(kind) => kind.semantic_label(),
+        OutlineKind::Selector => "selector",
+        OutlineKind::AtRule => "at-rule",
+        OutlineKind::Section => "section",
+        OutlineKind::Element => "element",
+        OutlineKind::CodeBlock => "code-block",
+        OutlineKind::Mixin => "mixin",
         OutlineKind::Property => "property",
         OutlineKind::Module => "mod",
         OutlineKind::TestSuite => "test_suite",

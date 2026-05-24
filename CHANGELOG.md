@@ -4,6 +4,29 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+### Added
+- Added HTML and Markdown-style document navigation support: sections, elements,
+  code blocks, and explicit links/assets without runtime or renderer claims.
+- Added smart routing for exact minified JS/TS artifact file reads and exact
+  artifact-file scopes, inferred path-like file glob discovery, and explicit
+  comma-separated literal text OR through `discover --match any --as text`.
+- Added `compare <target-a> <target-b>` for structural shared/only evidence
+  between two known function-like source targets, with exact anchors and no
+  equivalence/runtime/verdict claims.
+- Added intent-first CLI routing: `discover`, `show`, `trace callers`, `trace callees`, `context`, and `assess`, while preserving `overview`, `deps`, `guide`, and `version`.
+- Added `show -C/--context-lines`, strict comma-separated multi-location `show`, `discover --as`, `discover --match all` same-file co-occurrence, and conservative `discover --exclude` file-pattern filtering.
+
+### Changed
+- Renamed the repo-orientation command from `map` to `overview` to make the intent explicit.
+- Upgraded `context` into the one-target understanding packet with Flow Map evidence, caller/callee neighborhood summaries, and exact next reads.
+- Made `deps <file>` show explicit empty outbound/inbound sections so imports and dependents are visible by default.
+- Updated `compare` follow-up footers to route one-target follow-up reads through `context`.
+- Compact discover facets now group multiple definitions from the same file under one file header, preserving exact `:line-range` evidence while reducing repeated path tokens.
+- Removed the old action-first command surface (`find`, `files`, `callers`, `callees`, `flow`, `impact`, and root analysis flags); use the intent-first commands instead.
+- Root non-path query fallback was removed. Root positional input is now exact path evidence; use `srcwalk discover <query>` for search.
+- Slash-delimited text queries are now literal text; raw regex grep belongs to
+  `rg`, while srcwalk text discovery stays focused on literal navigation evidence.
+
 ## [0.5.0] - 2026-05-11
 
 ### Added
@@ -25,7 +48,7 @@ All notable changes to srcwalk are documented here.
 
 ### Changed
 - Improved grouped artifact output, compact match snippets, and long-line hit evidence around matched terms.
-- Clarified public artifact workflow guidance and added regression coverage for artifact navigation and path reads.
+- Clarified artifact workflow guidance and added regression coverage for artifact navigation and path reads.
 
 ## [0.4.0] - 2026-05-09
 

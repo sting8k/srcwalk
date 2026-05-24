@@ -3,6 +3,7 @@ use std::fmt::Write;
 use std::fs;
 use std::path::Path;
 
+use crate::evidence::{render_next_actions, NextAction};
 use crate::format::rel_nonempty;
 use crate::read::RAW_TOKEN_CAP;
 use crate::types::{estimate_tokens, Match};
@@ -50,10 +51,18 @@ pub(crate) fn append_expand_budget_note(out: &mut String, budget: &ExpandBudget)
     let omitted = budget.omitted;
     let used = budget.cap_tokens.saturating_sub(budget.remaining_tokens);
     let cap = budget.cap_tokens;
+    let rendered = render_next_actions(&[NextAction::guidance(
+        "drill into omitted hits with `srcwalk <path>:<line>` or `srcwalk <path> --section <symbol|range>`.",
+        "expanded omitted-hit drilldown",
+        40,
+    )]);
     let _ = write!(
         out,
-        "\n\n> Note: expand cap ~{used}/{cap} tokens; expanded {expanded}, omitted {omitted}.\n> Next: drill into omitted hits with `srcwalk <path>:<line>` or `srcwalk <path> --section <symbol|range>`."
+        "\n\n> Note: expand cap ~{used}/{cap} tokens; expanded {expanded}, omitted {omitted}."
     );
+    if !rendered.is_empty() {
+        let _ = write!(out, "\n{rendered}");
+    }
 }
 
 pub(super) fn expand_match(m: &Match, scope: &Path) -> Option<(String, String)> {

@@ -16,8 +16,10 @@
 pub(crate) mod artifact;
 pub(crate) mod budget;
 pub mod cache;
+pub(crate) mod capabilities;
 pub(crate) mod classify;
 pub mod error;
+pub(crate) mod evidence;
 pub(crate) mod format;
 pub mod index;
 pub(crate) mod lang;
@@ -33,6 +35,11 @@ mod commands;
 pub use commands::context::ArtifactMode;
 
 use std::path::{Path, PathBuf};
+
+#[must_use]
+pub fn should_auto_artifact_file(path: &Path) -> bool {
+    artifact::should_auto_artifact_file(path)
+}
 
 use cache::OutlineCache;
 use error::SrcwalkError;
@@ -75,6 +82,155 @@ pub fn run_filtered(
         query,
         scope,
         section,
+        budget_tokens,
+        limit,
+        offset,
+        glob,
+        filter,
+        cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_text_filtered_with_artifact(
+    query: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    artifact: ArtifactMode,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::find::run_text_filtered_with_artifact(
+        query,
+        scope,
+        budget_tokens,
+        limit,
+        offset,
+        glob,
+        filter,
+        artifact,
+        cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_text_filtered_with_artifact_and_hint(
+    query: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    artifact: ArtifactMode,
+    literal_comma_hint: bool,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::find::run_text_filtered_with_artifact_and_hint(
+        query,
+        scope,
+        budget_tokens,
+        limit,
+        offset,
+        glob,
+        filter,
+        artifact,
+        literal_comma_hint,
+        cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_text_or_filtered_with_artifact(
+    query: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    artifact: ArtifactMode,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::find::run_text_or_filtered_with_artifact(
+        query,
+        scope,
+        budget_tokens,
+        limit,
+        offset,
+        glob,
+        filter,
+        artifact,
+        cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_text_expanded_filtered(
+    query: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    expand: usize,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::find::run_text_expanded_filtered(
+        query,
+        scope,
+        budget_tokens,
+        expand,
+        limit,
+        offset,
+        glob,
+        filter,
+        cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_cooccurrence_filtered_with_artifact(
+    query: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    artifact: ArtifactMode,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::find::run_cooccurrence_filtered_with_artifact(
+        query,
+        scope,
+        budget_tokens,
+        limit,
+        offset,
+        glob,
+        filter,
+        artifact,
+        cache,
+    )
+}
+
+pub fn run_access_filtered(
+    query: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::find::run_access_filtered(
+        query,
+        scope,
         budget_tokens,
         limit,
         offset,
@@ -246,8 +402,29 @@ pub fn run_files(
     budget_tokens: Option<u64>,
     limit: Option<usize>,
     offset: usize,
+    exclude: Option<&str>,
 ) -> Result<String, SrcwalkError> {
-    commands::find::run_files(pattern, scope, budget_tokens, limit, offset)
+    commands::find::run_files(pattern, scope, budget_tokens, limit, offset, exclude)
+}
+
+pub fn run_files_with_scope_filter(
+    pattern: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    scope_glob: Option<&str>,
+    exclude: Option<&str>,
+) -> Result<String, SrcwalkError> {
+    commands::find::run_files_with_scope_filter(
+        pattern,
+        scope,
+        budget_tokens,
+        limit,
+        offset,
+        scope_glob,
+        exclude,
+    )
 }
 
 pub fn run_multi_scope_find_filtered(
@@ -283,6 +460,29 @@ pub fn run_path_exact(
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
     commands::path::run_path_exact(query, scope, section, budget_tokens, full, cache)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_path_exact_with_artifact_and_context(
+    query: &str,
+    scope: &Path,
+    section: Option<&str>,
+    budget_tokens: Option<u64>,
+    full: bool,
+    artifact: bool,
+    context_lines: Option<usize>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::path::run_path_exact_with_artifact_and_context(
+        query,
+        scope,
+        section,
+        budget_tokens,
+        full,
+        artifact,
+        context_lines,
+        cache,
+    )
 }
 
 pub fn run_path_exact_with_artifact(
@@ -322,7 +522,6 @@ pub fn run_callers(
     skip_hubs: Option<&str>,
     filter: Option<&str>,
     count_by: Option<&str>,
-    json: bool,
 ) -> Result<String, SrcwalkError> {
     commands::callers::run_callers(
         target,
@@ -339,7 +538,6 @@ pub fn run_callers(
         skip_hubs,
         filter,
         count_by,
-        json,
     )
 }
 
@@ -359,7 +557,6 @@ pub fn run_callers_with_artifact(
     skip_hubs: Option<&str>,
     filter: Option<&str>,
     count_by: Option<&str>,
-    json: bool,
     artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
     commands::callers::run_callers_with_artifact(
@@ -377,7 +574,6 @@ pub fn run_callers_with_artifact(
         skip_hubs,
         filter,
         count_by,
-        json,
         artifact,
     )
 }
@@ -414,6 +610,82 @@ pub fn run_callees_with_artifact(
         detailed,
         filter,
         artifact,
+    )
+}
+
+/// Structural tree-sitter decision-flow for a function or source range.
+pub fn run_decision_flow(
+    target: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::decision_flow::run_decision_flow(target, scope, budget_tokens, cache)
+}
+
+/// Navigate source evidence changed by a git diff.
+#[allow(clippy::too_many_arguments)]
+pub fn run_diff(
+    rev_range: Option<&str>,
+    staged: bool,
+    scope: &Path,
+    scope_glob: Option<&str>,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    let mode = if staged {
+        commands::diff::DiffMode::Staged
+    } else if rev_range.is_some() {
+        commands::diff::DiffMode::Range
+    } else {
+        commands::diff::DiffMode::Working
+    };
+    commands::diff::run_diff(
+        rev_range,
+        mode,
+        scope,
+        scope_glob,
+        budget_tokens,
+        limit,
+        offset,
+        cache,
+    )
+}
+
+/// Compare two known source targets with structural syntax evidence.
+pub fn run_compare(
+    target_a: &str,
+    target_b: &str,
+    scope: &Path,
+    budget_tokens: Option<u64>,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::compare::run_compare(target_a, target_b, scope, budget_tokens, cache)
+}
+
+/// Compose a Review Packet from local Flow Map or changed diff evidence.
+#[allow(clippy::too_many_arguments)]
+pub fn run_review(
+    target: Option<&str>,
+    staged: bool,
+    scope: &Path,
+    scope_glob: Option<&str>,
+    budget_tokens: Option<u64>,
+    limit: Option<usize>,
+    offset: usize,
+    cache: &OutlineCache,
+) -> Result<String, SrcwalkError> {
+    commands::review::run_review(
+        target,
+        staged,
+        scope,
+        scope_glob,
+        budget_tokens,
+        limit,
+        offset,
+        cache,
     )
 }
 

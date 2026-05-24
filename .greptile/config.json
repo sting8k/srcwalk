@@ -1,0 +1,45 @@
+{
+  "strictness": 3,
+  "commentTypes": [
+    "logic",
+    "syntax"
+  ],
+  "fileChangeLimit": 200,
+  "triggerOnUpdates": true,
+  "statusCheck": true,
+  "statusCommentsEnabled": true,
+  "updateExistingSummaryComment": true,
+  "ignorePatterns": "target/**\nnode_modules/**\ndist/**\ncoverage/**\n.tmp*/**\n**/*.generated.*\nCargo.lock.orig\npackage-lock.json",
+  "excludeAuthors": [
+    "github-actions[bot]",
+    "dependabot[bot]"
+  ],
+  "ignoreKeywords": "release:\nwip:",
+  "disabledLabels": [
+    "no-greptile",
+    "wip"
+  ],
+  "instructions": "Prioritize clear correctness bugs, runtime errors, data loss risks, and missing validation. Avoid speculative edge cases and style nits. For srcwalk, focus on semantic correctness, bounded output, command behavior regressions, path/platform handling, and test coverage for changed CLI behavior.",
+  "rules": [
+    {
+      "id": "bounded-agent-output",
+      "rule": "CLI output shown to users or agents should be bounded and avoid dumping large file contents unless explicitly requested.",
+      "severity": "medium",
+      "scope": [
+        "src/**/*.rs",
+        "tests/**/*.rs"
+      ]
+    },
+    {
+      "id": "semantic-evidence-honesty",
+      "rule": "Do not imply stronger semantic confidence than the parser or artifact evidence supports; label syntax-level or heuristic evidence clearly.",
+      "severity": "medium",
+      "scope": [
+        "src/**/*.rs",
+        "tests/**/*.rs",
+        "skills/srcwalk/GUIDE.md",
+        "README.md"
+      ]
+    }
+  ]
+}

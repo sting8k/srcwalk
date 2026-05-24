@@ -4,6 +4,16 @@ use crate::types::{Lang, OutlineEntry, OutlineKind};
 /// Generate a code outline using tree-sitter. Walks top-level AST nodes,
 /// emitting signatures without bodies.
 pub fn outline(content: &str, lang: Lang, max_lines: usize) -> String {
+    if let Some(entries) = crate::capabilities::outline_entries(lang, content) {
+        let lines: Vec<&str> = content.lines().collect();
+        return format_entries(&entries, &lines, max_lines, lang);
+    }
+    if crate::lang::document::is_document_lang(lang) {
+        let lines: Vec<&str> = content.lines().collect();
+        let entries = crate::lang::document::outline_entries(content, lang);
+        return format_entries(&entries, &lines, max_lines, lang);
+    }
+
     let Some(language) = outline_language(lang) else {
         return fallback_outline(content, max_lines);
     };
@@ -60,7 +70,9 @@ fn format_entries(
 
         // Flatten namespace modules — hoist their children to top level
         // so classes inside namespaces show their methods at indent 1.
-        if entry.kind == OutlineKind::Module && !entry.children.is_empty() {
+        if matches!(entry.kind, OutlineKind::Module | OutlineKind::Section)
+            && !entry.children.is_empty()
+        {
             out.push(format_entry(entry, 0, lang));
             for child in &entry.children {
                 if out.len() >= max_lines {
@@ -127,7 +139,12 @@ fn format_imports(imports: &[&str], start: u32, lang: Lang) -> String {
         String::new()
     };
     let condensed = parts.join(", ");
-    format!("[{start}-]   imports: {condensed}{suffix}")
+    let label = if crate::lang::document::is_document_lang(lang) {
+        "links/assets"
+    } else {
+        "imports"
+    };
+    format!("[{start}-]   {label}: {condensed}{suffix}")
 }
 
 /// Format a single outline entry with optional indentation.
@@ -170,6 +187,13 @@ fn format_entry(entry: &OutlineEntry, indent: usize, lang: Lang) -> String {
             }
         }
         OutlineKind::Export => "export",
+        OutlineKind::Provider(kind) => kind.outline_label(),
+        OutlineKind::Selector => "selector",
+        OutlineKind::AtRule => "at-rule",
+        OutlineKind::Section => "section",
+        OutlineKind::Element => "element",
+        OutlineKind::CodeBlock => "code-block",
+        OutlineKind::Mixin => "mixin",
         OutlineKind::Property => "prop",
         OutlineKind::Module => {
             if lang == Lang::Scala || lang == Lang::Kotlin {

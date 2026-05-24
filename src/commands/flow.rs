@@ -3,8 +3,13 @@ use std::path::Path;
 use crate::cache::OutlineCache;
 use crate::commands::call_format::format_call_site;
 use crate::commands::context::{apply_optional_budget, ArtifactMode};
+use crate::commands::decision_flow::resolve_decision_flow_target;
 use crate::commands::find::symbol_or_file_suggestion;
 use crate::error::SrcwalkError;
+use crate::evidence::{
+    confidence_label_for, render_next_actions, Anchor, EvidenceSource, NextAction,
+};
+use crate::lang::decision_flow::{self, TargetSelector};
 use crate::{format, index, lang, search, types};
 
 /// Lab: compact downstream flow slice for a known symbol.
@@ -24,37 +29,206 @@ pub(crate) fn run_flow(
     }
 
     let bloom = index::bloom::BloomFilterCache::new();
-    let def_match = find_primary_definition(target, scope)?;
-    let content = std::fs::read_to_string(&def_match.path).map_err(|e| SrcwalkError::IoError {
-        path: def_match.path.clone(),
+    let resolved = resolve_decision_flow_target(target, scope)?;
+    let content = std::fs::read_to_string(&resolved.path).map_err(|e| SrcwalkError::IoError {
+        path: resolved.path.clone(),
         source: e,
     })?;
-    let types::FileType::Code(lang) = lang::detect_file_type(&def_match.path) else {
-        return Ok(format!("# Slice: {target} — flow\n\n(not a code file)"));
+    let types::FileType::Code(lang) = lang::detect_file_type(&resolved.path) else {
+        return Ok(format!("# Context Packet: {target}\n\n(not a code file)"));
     };
 
-    let rel = format::rel_nonempty(&def_match.path, scope);
-    let range = def_match
-        .def_range
-        .map_or(String::new(), |(s, e)| format!(":{s}-{e}"));
-    let mut out = format!("# Slice: {target} — flow\n\n[symbol] {target} {rel}{range}\n");
+    let display_path = format::display_path(&resolved.path);
+    let confidence = confidence_label_for(EvidenceSource::Ast);
+    let mut out = format!("# Context Packet: {target}");
+    out.push_str("\nconfidence: ");
+    out.push_str(confidence);
+    out.push_str("\ncaveat: source-evidence navigation only; no runtime proof");
+    let packet_budget = budget_tokens;
 
-    let sites = search::callees::extract_call_sites(&content, lang, def_match.def_range);
+    let (focus_range, call_target) =
+        match decision_flow::render_flow_map(&resolved, &content, lang, packet_budget) {
+            Ok(flow_map) => {
+                append_context_flow_map(&mut out, &resolved.path, &flow_map);
+                (
+                    Some((flow_map.entry_start, flow_map.entry_end)),
+                    Some(flow_map.entry_label.clone()),
+                )
+            }
+            Err(err) if is_flow_map_fallback_error(&err) => {
+                append_context_flow_map_fallback(&mut out, &display_path, &resolved.selector);
+                (
+                    selector_range(&resolved.selector),
+                    context_call_target(&resolved.selector),
+                )
+            }
+            Err(err) => return Err(err),
+        };
+
+    append_context_neighborhood(
+        &mut out,
+        call_target.as_deref(),
+        &resolved.path,
+        &content,
+        lang,
+        focus_range,
+        scope,
+        cache,
+        &bloom,
+        depth,
+        filter,
+    )?;
+
+    let show_anchor = focus_range.map(|(start, end)| Anchor::lines(&resolved.path, start, end));
+    let show_target = show_anchor
+        .as_ref()
+        .map_or_else(|| display_path.clone(), Anchor::display);
+    let mut actions = Vec::new();
+    if let Some(anchor) = show_anchor {
+        actions.push(NextAction::from_evidence(
+            format!("srcwalk show {show_target} -C 20"),
+            "show the resolved context target source",
+            10,
+            EvidenceSource::Ast,
+            anchor,
+        ));
+    } else {
+        actions.push(NextAction::guidance(
+            format!("srcwalk show {show_target} -C 20"),
+            "show the resolved file source",
+            10,
+        ));
+    }
+    if let Some(call_target) = &call_target {
+        actions.push(NextAction::from_evidence(
+            format!("srcwalk trace callers {call_target}"),
+            "inspect direct callers of the context target",
+            20,
+            EvidenceSource::Ast,
+            Anchor::file(&resolved.path),
+        ));
+        actions.push(NextAction::from_evidence(
+            format!("srcwalk trace callees {call_target} --detailed"),
+            "inspect direct callees from the context target",
+            30,
+            EvidenceSource::Ast,
+            Anchor::file(&resolved.path),
+        ));
+    }
+    let rendered = render_next_actions(&actions);
+    if !rendered.is_empty() {
+        let _ = write!(out, "\n\n{rendered}");
+    }
+    Ok(apply_optional_budget(out, packet_budget))
+}
+
+fn append_context_flow_map(
+    out: &mut String,
+    path: &Path,
+    flow_map: &decision_flow::RenderedFlowMap,
+) {
+    use std::fmt::Write as _;
+
+    let target_anchor = Anchor::lines(path, flow_map.entry_start, flow_map.entry_end).display();
+    let _ = write!(
+        out,
+        "\n\n## Target\n- {target_anchor} {}",
+        flow_map.entry_label
+    );
+    out.push_str("\n\n## Flow Map\n");
+    out.push_str(flow_map.body.trim_end());
+    out.push('\n');
+
+    out.push_str("\n## Exits");
+    if flow_map.exits.is_empty() {
+        out.push_str("\n- none structurally detected");
+    } else {
+        for exit in &flow_map.exits {
+            let _ = write!(out, "\n- {exit}");
+        }
+    }
+}
+
+fn append_context_flow_map_fallback(
+    out: &mut String,
+    display_path: &str,
+    selector: &TargetSelector,
+) {
+    use std::fmt::Write as _;
+
+    out.push_str("\n\n## Target");
+    if let Some((start, end)) = selector_range(selector) {
+        let _ = write!(out, "\n- {display_path}:{start}-{end}");
+    } else {
+        let _ = write!(out, "\n- {display_path}");
+    }
+    out.push_str(
+        "\n\n## Flow Map\nfile-level evidence only; structural function map unavailable for this target",
+    );
+    out.push_str("\n\n## Exits\n- not available from structural parser");
+}
+
+fn selector_range(selector: &TargetSelector) -> Option<(u32, u32)> {
+    match selector {
+        TargetSelector::LineRange { start, end }
+        | TargetSelector::FocusedLineRange { start, end } => Some((*start, *end)),
+        TargetSelector::Symbol(_) => None,
+    }
+}
+
+fn context_call_target(selector: &TargetSelector) -> Option<String> {
+    match selector {
+        TargetSelector::Symbol(name) => Some(name.clone()),
+        TargetSelector::LineRange { .. } | TargetSelector::FocusedLineRange { .. } => None,
+    }
+}
+
+fn is_flow_map_fallback_error(err: &SrcwalkError) -> bool {
+    match err {
+        SrcwalkError::InvalidQuery { reason, .. } => {
+            reason.contains("target did not resolve to a supported function-like AST node")
+                || reason.contains("decision-flow requires a source code file")
+                || reason.contains("symbol target did not provide a definition range")
+                || reason.contains("line/range target must be inside one supported function")
+        }
+        _ => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_context_neighborhood(
+    out: &mut String,
+    call_target: Option<&str>,
+    source_path: &Path,
+    content: &str,
+    lang: types::Lang,
+    focus_range: Option<(u32, u32)>,
+    scope: &Path,
+    cache: &OutlineCache,
+    bloom: &index::bloom::BloomFilterCache,
+    depth: Option<usize>,
+    filter: Option<&str>,
+) -> Result<(), SrcwalkError> {
+    use std::fmt::Write as _;
+
+    out.push_str("\n\n## Call Neighborhood");
+
+    let sites = search::callees::extract_call_sites(content, lang, focus_range);
     let total_sites = sites.len();
     let sites = search::callees::filter_call_sites(sites, filter)?;
     if let Some(filter) = filter {
-        let _ = writeln!(out, "-> calls (ordered, filtered {filter})");
+        let _ = writeln!(out, "\n### Callees (ordered, filtered {filter})");
     } else {
-        out.push_str("-> calls (ordered)\n");
+        out.push_str("\n### Callees (ordered)");
     }
     if sites.is_empty() {
-        out.push_str("  (none)\n");
+        out.push_str("\n- none");
     } else {
-        for site in sites.iter().take(40) {
-            let _ = writeln!(out, "  [call] {}", format_call_site(site));
+        for site in sites.iter().take(12) {
+            let _ = write!(out, "\n- {}", format_call_site(site));
         }
-        if sites.len() > 40 {
-            let _ = writeln!(out, "  ... {} more call sites", sites.len() - 40);
+        if sites.len() > 12 {
+            let _ = write!(out, "\n- ... {} more call sites", sites.len() - 12);
         }
     }
 
@@ -64,61 +238,72 @@ pub(crate) fn run_flow(
             .map(|site| site.callee.clone())
             .collect::<Vec<_>>()
     } else {
-        search::callees::extract_callee_names(&content, lang, def_match.def_range)
+        search::callees::extract_callee_names(content, lang, focus_range)
     };
     let depth_limit = depth.map_or(1, |d| d.min(3) as u32);
     let nodes = search::callees::resolve_callees_transitive(
         &names,
-        &def_match.path,
-        &content,
+        source_path,
+        content,
         cache,
-        &bloom,
+        bloom,
         depth_limit,
         30,
     );
-    let flow_nodes = prioritize_flow_resolves(nodes, &def_match.path);
+    let flow_nodes = prioritize_flow_resolves(nodes, source_path);
     if !flow_nodes.is_empty() {
-        out.push_str("\n-> resolves (selected local helpers)\n");
-        for node in flow_nodes.iter().take(12) {
-            append_resolved_callee(&mut out, scope, &node.callee, 1);
+        out.push_str("\n\n### Resolved local callees\n");
+        for node in flow_nodes.iter().take(8) {
+            append_resolved_callee(out, scope, &node.callee, 1);
             for child in node.children.iter().take(2) {
-                append_resolved_callee(&mut out, scope, child, 2);
+                append_resolved_callee(out, scope, child, 2);
             }
         }
-        if flow_nodes.len() > 12 {
-            let _ = writeln!(out, "  ... {} more resolved callees", flow_nodes.len() - 12);
+        if flow_nodes.len() > 8 {
+            let _ = write!(
+                out,
+                "\n- ... {} more resolved callees",
+                flow_nodes.len() - 8
+            );
         }
     }
 
-    if let Ok(mut callers) = search::callers::find_callers(target, scope, &bloom, None, Some(cache))
-    {
-        callers.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
-        if !callers.is_empty() {
-            out.push_str("\n<- callers\n");
-            for caller in callers.iter().take(8) {
-                let rel_c = format::rel_nonempty(&caller.path, scope);
-                let _ = writeln!(
-                    out,
-                    "  [fn] {} {}:{}",
-                    caller.calling_function, rel_c, caller.line
-                );
+    out.push_str("\n\n### Callers");
+    if let Some(call_target) = call_target {
+        match search::callers::find_callers(call_target, scope, bloom, None, Some(cache)) {
+            Ok(mut callers) => {
+                callers.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+                if callers.is_empty() {
+                    out.push_str("\n- none");
+                } else {
+                    for caller in callers.iter().take(8) {
+                        let anchor =
+                            Anchor::line(&caller.path, caller.line).display_relative_to(scope);
+                        let _ = write!(out, "\n- [fn] {} {anchor}", caller.calling_function);
+                    }
+                    if callers.len() > 8 {
+                        let _ = write!(out, "\n- ... {} more callers", callers.len() - 8);
+                    }
+                }
             }
-            if callers.len() > 8 {
-                let _ = writeln!(out, "  ... {} more callers", callers.len() - 8);
-            }
+            Err(_) => out.push_str("\n- unavailable"),
         }
+    } else {
+        out.push_str("\n- not available for non-symbol range targets");
     }
 
     if filter.is_some() {
         let _ = write!(
             out,
-            "\n> Note: filter matched {}/{} call sites. Qualifiers: callee:NAME.",
+            "\n\n> Note: filter matched {}/{} call sites. Qualifiers: callee:NAME.",
             sites.len(),
             total_sites
         );
     }
-    out.push_str("\n> Caveat: flow output capped.\n> Next: use `srcwalk callees <symbol> --detailed` or `srcwalk callers <symbol>`.");
-    Ok(apply_optional_budget(out, budget_tokens))
+    out.push_str(
+        "\n\n> Caveat: static context packet is capped; verify exact edges with trace commands.",
+    );
+    Ok(())
 }
 
 fn run_artifact_flow(
@@ -139,13 +324,13 @@ fn run_artifact_flow(
     })?;
     let types::FileType::Code(lang) = lang::detect_file_type(&def_match.path) else {
         return Ok(format!(
-            "# Slice: {target} — artifact flow\n\n(not a code file)"
+            "# Context: {target} — artifact\n\n(not a code file)"
         ));
     };
 
     let rel = format::rel_nonempty(&def_match.path, scope);
     let mut out = format!(
-        "# Slice: {target} — artifact flow\n\n[symbol] {target} {rel}:{}\n",
+        "# Context: {target} — artifact\n\n[symbol] {target} {rel}:{}\n",
         def_match.line
     );
     let _ = writeln!(
@@ -220,7 +405,15 @@ fn run_artifact_flow(
     out.push_str(
         "\n> Caveat: artifact flow is byte-level bundle evidence, not sourcemap/source semantics.",
     );
-    out.push_str("\n> Next: use `srcwalk <path> --artifact --section <symbol|bytes:start-end>`, `callers --artifact --expand=1`, or `callees --artifact --detailed`.");
+    let rendered = render_next_actions(&[NextAction::guidance(
+        "use `srcwalk <path> --artifact --section <symbol|bytes:start-end>`, `srcwalk trace callers <symbol> --artifact --expand=1`, or `srcwalk trace callees <symbol> --artifact --detailed`.",
+        "artifact flow drilldown",
+        40,
+    )]);
+    if !rendered.is_empty() {
+        out.push('\n');
+        out.push_str(&rendered);
+    }
     if let Some(note) = artifact.callees_note() {
         out.push_str("\n> ");
         out.push_str(note);
@@ -254,18 +447,7 @@ fn find_primary_definition_with_artifact(
             query: target.to_string(),
             scope: scope.to_path_buf(),
             suggestion: symbol_or_file_suggestion(scope, target, None),
-        })
-}
-
-fn find_primary_definition(target: &str, scope: &Path) -> Result<types::Match, SrcwalkError> {
-    let raw = search::search_symbol_raw(target, scope, None)?;
-    raw.matches
-        .into_iter()
-        .find(|m| m.is_definition && m.def_range.is_some())
-        .ok_or_else(|| SrcwalkError::NoMatches {
-            query: target.to_string(),
-            scope: scope.to_path_buf(),
-            suggestion: symbol_or_file_suggestion(scope, target, None),
+            guidance: None,
         })
 }
 

@@ -89,6 +89,41 @@ static int rust_demangle_callback(data, len)
     }
 }
 
+#[test]
+fn c_named_struct_body_definitions_detected() {
+    let code = r#"
+typedef struct ngx_http_core_loc_conf_s  ngx_http_core_loc_conf_t;
+
+struct ngx_http_core_loc_conf_s {
+    int value;
+};
+"#;
+    let ts_lang = crate::lang::outline::outline_language(crate::types::Lang::C).unwrap();
+
+    let defs = find_defs_treesitter(
+        std::path::Path::new("test.h"),
+        "ngx_http_core_loc_conf_s",
+        &ts_lang,
+        Some(crate::types::Lang::C),
+        code,
+        code.lines().count() as u32,
+        SystemTime::now(),
+        None,
+    );
+
+    assert_eq!(
+        defs.len(),
+        1,
+        "should only report the struct body: {defs:?}"
+    );
+    assert_eq!(defs[0].line, 4);
+    assert_eq!(
+        defs[0].def_name.as_deref(),
+        Some("ngx_http_core_loc_conf_s")
+    );
+    assert_eq!(defs[0].def_range, Some((4, 6)));
+}
+
 /// Helper: search for an Elixir definition by name in a code snippet.
 fn elixir_find(code: &str, name: &str) -> Vec<Match> {
     let ts_lang = crate::lang::outline::outline_language(crate::types::Lang::Elixir).unwrap();

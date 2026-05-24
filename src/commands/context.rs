@@ -1,3 +1,7 @@
+use crate::evidence::{
+    confidence_label_for, evidence_packet_label_for, evidence_source_caveat_for,
+    evidence_source_label_for, EvidenceSource,
+};
 use crate::{budget, index, session};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -20,7 +24,9 @@ impl ArtifactMode {
     pub const fn note(self) -> Option<&'static str> {
         match self {
             Self::Source => None,
-            Self::Artifact => Some("Artifact mode: JS/TS anchors, binaries skipped, AST cap 25MB."),
+            Self::Artifact => Some(
+                "Artifact mode: JS/TS anchors, provider search, binaries skipped, AST cap 25MB.",
+            ),
         }
     }
 
@@ -72,6 +78,35 @@ pub(crate) fn apply_optional_budget(output: String, budget_tokens: Option<u64>) 
     }
 }
 
+fn artifact_read_kind(header: &str) -> &'static str {
+    if header.ends_with("[artifact full]") {
+        "full"
+    } else if header.ends_with("[artifact section]")
+        || header.ends_with("[artifact section, outline (over limit)]")
+    {
+        "section"
+    } else {
+        "outline"
+    }
+}
+
+fn insert_artifact_packet(output: String) -> String {
+    if output.contains("source: artifact ·") {
+        return output;
+    }
+
+    let Some(header_end) = output.find('\n') else {
+        return output;
+    };
+    let (header, rest) = output.split_at(header_end);
+    let packet = evidence_packet_label_for(EvidenceSource::Artifact, artifact_read_kind(header));
+    if let Some(stripped) = rest.strip_prefix("\n\n") {
+        format!("{header}\n\n{packet}\n\n{stripped}")
+    } else {
+        format!("{header}\n{packet}{rest}")
+    }
+}
+
 pub(crate) fn with_artifact_read_label(output: String, artifact: ArtifactMode) -> String {
     if !artifact.enabled() {
         return output;
@@ -83,6 +118,8 @@ pub(crate) fn with_artifact_read_label(output: String, artifact: ArtifactMode) -
     } else {
         relabel_artifact_header(output)
     };
+
+    let output = insert_artifact_packet(output);
 
     output.replace(
         "> Next: drill into a symbol with --section <name> or a line range",
@@ -120,9 +157,46 @@ pub(crate) fn with_artifact_note(output: String, artifact: ArtifactMode) -> Stri
     let Some(note) = artifact.note() else {
         return output;
     };
-    let output = output.replace(
+    let output = output
+        .replace(
+            "source: ast · kind:",
+            &format!(
+                "source: {} · kind:",
+                evidence_source_label_for(EvidenceSource::Artifact)
+            ),
+        )
+        .replace(
+            "source: text · kind:",
+            &format!(
+                "source: {} · kind:",
+                evidence_source_label_for(EvidenceSource::Artifact)
+            ),
+        )
+        .replace(
+            &format!("confidence: {}", confidence_label_for(EvidenceSource::Ast)),
+            &format!(
+                "confidence: {}",
+                confidence_label_for(EvidenceSource::Artifact)
+            ),
+        )
+        .replace(
+            &format!(
+                "confidence: {}",
+                confidence_label_for(EvidenceSource::Text)
+            ),
+            &format!(
+                "confidence: {}",
+                confidence_label_for(EvidenceSource::Artifact)
+            ),
+        )
+        .replace(
         "> Next: drill into any hit with `srcwalk <path>:<line>`.",
         "> Next: drill artifact hits with `srcwalk <path> --artifact --section <symbol|bytes:start-end>`.",
     );
-    format!("{output}\n\n> {note}")
+    let caveat = evidence_source_caveat_for(EvidenceSource::Artifact).unwrap_or("");
+    if output.contains(caveat) {
+        format!("{output}\n\n> {note}")
+    } else {
+        format!("{output}\n\n> Caveat: {caveat}\n\n> {note}")
+    }
 }

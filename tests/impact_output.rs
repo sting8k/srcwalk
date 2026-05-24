@@ -33,7 +33,7 @@ export async function shutdown(conn: Conn, watcher: Watcher) {
     .unwrap();
 
     let out = srcwalk()
-        .args(["close", "--impact", "--scope"])
+        .args(["assess", "close", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -77,7 +77,7 @@ fn impact_warns_for_broad_name_matched_symbols() {
     fs::write(dir.join("sample.ts"), body).unwrap();
 
     let out = srcwalk()
-        .args(["close", "--impact", "--scope"])
+        .args(["assess", "close", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -93,11 +93,11 @@ fn impact_warns_for_broad_name_matched_symbols() {
         "expected capped callsite output, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("Warning: broad symbol name; impact is name-matched"),
+        stdout.contains("Warning: broad symbol name; assess is name-matched"),
         "expected broad symbol warning, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("51 direct name-matched call sites found; impact output capped"),
+        stdout.contains("51 direct name-matched call sites found; heuristic assess output capped"),
         "expected capped footer, got:\n{stdout}"
     );
     assert!(
@@ -120,7 +120,7 @@ export function uniqueTarget() {
     .unwrap();
 
     let out = srcwalk()
-        .args(["uniqueTarget", "--impact", "--scope"])
+        .args(["assess", "uniqueTarget", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();

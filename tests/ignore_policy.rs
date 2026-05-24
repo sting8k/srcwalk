@@ -29,6 +29,7 @@ fn root_search_skips_gitignored_subtree_but_explicit_scope_can_search_it() {
     fs::write(dir.join("ignored_dir/hidden.rs"), "fn hidden_symbol() {}\n").unwrap();
 
     let root_out = srcwalk()
+        .arg("discover")
         .arg("hidden_symbol")
         .arg("--scope")
         .arg(&dir)
@@ -45,6 +46,7 @@ fn root_search_skips_gitignored_subtree_but_explicit_scope_can_search_it() {
     );
 
     let explicit_out = srcwalk()
+        .arg("discover")
         .arg("hidden_symbol")
         .arg("--scope")
         .arg(dir.join("ignored_dir"))

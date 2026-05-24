@@ -1,6 +1,5 @@
 pub mod code;
 pub mod fallback;
-pub mod markdown;
 pub mod structured;
 pub mod tabular;
 pub mod test_file;
@@ -16,7 +15,7 @@ pub fn generate(
     path: &Path,
     file_type: FileType,
     content: &str,
-    buf: &[u8],
+    _buf: &[u8],
     capped: bool,
 ) -> String {
     let max_lines = if capped { OUTLINE_CAP } else { usize::MAX };
@@ -31,8 +30,7 @@ pub fn generate(
     }
 
     let out = match file_type {
-        FileType::Code(lang) => code::outline(content, lang, max_lines),
-        FileType::Markdown => markdown::outline(buf, max_lines),
+        FileType::Code(lang) | FileType::Document(lang) => code::outline(content, lang, max_lines),
         FileType::StructuredData => structured::outline(path, content, max_lines),
         FileType::Tabular => tabular::outline(content, max_lines),
         FileType::Log => fallback::log_view(content),

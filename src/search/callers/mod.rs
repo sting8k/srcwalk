@@ -3,17 +3,15 @@
 //! - [`single`] — direct call sites (one-hop).
 //! - [`bfs`] — transitive caller graph (multi-hop, `--depth N`).
 //!
-//! Public surface is re-exported here for stable `crate::search::callers::*`
-//! paths; both submodules are private.
+//! Re-export stable `crate::search::callers::*` paths while implementation
+//! modules stay internal.
 
-// Submodules are crate-private; external paths use the re-exports below.
+// Implementation modules stay internal; callers use the re-exports below.
 mod bfs;
 mod single;
 
 #[allow(unused_imports)]
-pub use bfs::{
-    compute_suspicious_hops, search_callers_bfs, BfsEdge, BfsStats, HopStats, SuspicionInfo,
-};
+pub use bfs::{compute_suspicious_hops, search_callers_bfs, BfsEdge, BfsStats, SuspicionInfo};
 pub(crate) use single::find_callers_batch;
 #[allow(unused_imports)]
 pub use single::{

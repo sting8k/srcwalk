@@ -44,7 +44,7 @@ fn windows_absolute_path_range_and_relative_backslash_line_work() {
     let file = dir.join("src").join("lib.rs");
     let abs_range = format!("{}:2-3", file.display());
 
-    let out = srcwalk().arg(abs_range).output().unwrap();
+    let out = srcwalk().arg(&abs_range).output().unwrap();
     assert!(
         out.status.success(),
         "absolute path range failed:\n{}",
@@ -52,6 +52,23 @@ fn windows_absolute_path_range_and_relative_backslash_line_work() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("beta();"), "{stdout}");
+
+    let out = srcwalk()
+        .args(["discover", "beta", "--scope"])
+        .arg(&abs_range)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "absolute discover scope range failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(":2"), "{stdout}");
+    assert!(
+        !stdout.contains(":4"),
+        "range scope should exclude definition outside range:\n{stdout}"
+    );
 
     let out = srcwalk()
         .arg(r".\src\lib.rs:2")
@@ -69,11 +86,35 @@ fn windows_absolute_path_range_and_relative_backslash_line_work() {
 }
 
 #[test]
+fn windows_compare_accepts_absolute_file_symbol_targets() {
+    let dir = fixture_repo("windows_compare_absolute_targets");
+    let file = dir.join("src").join("lib.rs");
+    let alpha = format!("{}:alpha", file.display());
+    let beta = format!("{}:beta", file.display());
+
+    let out = srcwalk()
+        .args(["compare"])
+        .arg(&alpha)
+        .arg(&beta)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "absolute compare targets failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Compare:"), "{stdout}");
+    assert!(stdout.contains("targets:"), "{stdout}");
+    assert!(stdout.contains("> Next: srcwalk show"), "{stdout}");
+}
+
+#[test]
 fn windows_globs_and_slash_route_queries_work() {
     let dir = fixture_repo("windows_glob_route");
 
     let out = srcwalk()
-        .args(["files", "**/*.rs", "--scope"])
+        .args(["discover", "**/*.rs", "--as", "file", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -86,7 +127,7 @@ fn windows_globs_and_slash_route_queries_work() {
     assert!(stdout.contains("lib.rs"), "{stdout}");
 
     let out = srcwalk()
-        .args(["find", "/api/gold", "--scope"])
+        .args(["discover", "/api/gold", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
@@ -105,7 +146,7 @@ fn windows_path_filters_accept_slash_and_backslash() {
 
     for filter in [r"path:src\lib.rs", "path:src/lib.rs"] {
         let out = srcwalk()
-            .args(["callers", "beta", "--scope"])
+            .args(["trace", "callers", "beta", "--scope"])
             .arg(&dir)
             .args(["--filter", filter])
             .output()

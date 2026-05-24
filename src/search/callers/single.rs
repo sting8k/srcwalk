@@ -13,6 +13,7 @@ use crate::lang::treesitter::{
 
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
+use crate::evidence::{render_next_actions, NextAction};
 use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
@@ -131,7 +132,9 @@ pub fn find_callers_with_artifact(
             } else {
                 500_000
             };
-            if file_len > max_file_size {
+            if !crate::capabilities::is_private_text_file_type(detect_file_type(path))
+                && file_len > max_file_size
+            {
                 return ignore::WalkState::Continue;
             }
             if crate::search::io::is_minified_filename(path) && !is_artifact {
@@ -147,7 +150,8 @@ pub fn find_callers_with_artifact(
                 return ignore::WalkState::Continue;
             }
 
-            if !is_artifact
+            if !crate::capabilities::is_private_text_file_type(detect_file_type(path))
+                && !is_artifact
                 && file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD
                 && crate::search::io::looks_minified(&bytes)
             {
@@ -159,14 +163,49 @@ pub fn find_callers_with_artifact(
             };
 
             let file_type = detect_file_type(path);
+            let skip_bloom = crate::capabilities::is_private_text_file_type(file_type);
 
-            if !is_artifact && !bloom.contains(path, mtime, content, target) {
+            // Bloom tokenization is tuned for source identifiers; artifact symbols can contain
+            // punctuation, so use the byte prefilter above instead.
+            if !skip_bloom && !is_artifact && !bloom.contains(path, mtime, content, target) {
                 return ignore::WalkState::Continue;
             }
 
             let FileType::Code(lang) = file_type else {
                 return ignore::WalkState::Continue;
             };
+
+            if let Some(direct_calls) = crate::capabilities::direct_calls(lang, content, None) {
+                let shared_content: Arc<String> = Arc::new(content.to_string());
+                let file_callers: Vec<CallerMatch> = direct_calls
+                    .into_iter()
+                    .filter(|call| {
+                        crate::capabilities::direct_call_matches_target(lang, call, target)
+                    })
+                    .map(|call| CallerMatch {
+                        path: path.to_path_buf(),
+                        line: call.line,
+                        calling_function: call.caller,
+                        call_text: call.call_text,
+                        caller_range: call.caller_range,
+                        call_byte_range: None,
+                        receiver: None,
+                        prefix_kind: None,
+                        arg_count: None,
+                        content: Arc::clone(&shared_content),
+                    })
+                    .collect();
+
+                if !file_callers.is_empty() {
+                    found_count.fetch_add(file_callers.len(), Ordering::Relaxed);
+                    let mut all = matches
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    all.extend(file_callers);
+                }
+
+                return ignore::WalkState::Continue;
+            }
 
             let Some(ts_lang) = outline_language(lang) else {
                 return ignore::WalkState::Continue;
@@ -397,7 +436,9 @@ pub(crate) fn find_callers_batch_with_artifact(
             } else {
                 500_000
             };
-            if file_len > max_file_size {
+            if !crate::capabilities::is_private_text_file_type(detect_file_type(path))
+                && file_len > max_file_size
+            {
                 return ignore::WalkState::Continue;
             }
             if crate::search::io::is_minified_filename(path) && !is_artifact {
@@ -420,7 +461,8 @@ pub(crate) fn find_callers_batch_with_artifact(
                 return ignore::WalkState::Continue;
             }
 
-            if !is_artifact
+            if !crate::capabilities::is_private_text_file_type(detect_file_type(path))
+                && !is_artifact
                 && file_len >= crate::search::io::MINIFIED_CHECK_THRESHOLD
                 && crate::search::io::looks_minified(&bytes)
             {
@@ -432,8 +474,12 @@ pub(crate) fn find_callers_batch_with_artifact(
             };
 
             let file_type = detect_file_type(path);
+            let skip_bloom = crate::capabilities::is_private_text_file_type(file_type);
 
-            if !is_artifact
+            // Bloom tokenization is tuned for source identifiers; artifact symbols can contain
+            // dots and tool prefixes (e.g. sym.imp.puts), so use the byte prefilter above instead.
+            if !skip_bloom
+                && !is_artifact
                 && !targets
                     .iter()
                     .any(|t| bloom.contains(path, mtime, content, t))
@@ -444,6 +490,49 @@ pub(crate) fn find_callers_batch_with_artifact(
             let FileType::Code(lang) = file_type else {
                 return ignore::WalkState::Continue;
             };
+
+            if let Some(direct_calls) = crate::capabilities::direct_calls(lang, content, None) {
+                let shared_content: Arc<String> = Arc::new(content.to_string());
+                let file_callers: Vec<(String, CallerMatch)> = direct_calls
+                    .into_iter()
+                    .filter_map(|call| {
+                        let matched = targets
+                            .iter()
+                            .find(|target| {
+                                crate::capabilities::direct_call_matches_target(lang, &call, target)
+                            })?
+                            .clone();
+                        Some((matched, call))
+                    })
+                    .map(|(target, call)| {
+                        (
+                            target,
+                            CallerMatch {
+                                path: path.to_path_buf(),
+                                line: call.line,
+                                calling_function: call.caller,
+                                call_text: call.call_text,
+                                caller_range: call.caller_range,
+                                call_byte_range: None,
+                                receiver: None,
+                                prefix_kind: None,
+                                arg_count: None,
+                                content: Arc::clone(&shared_content),
+                            },
+                        )
+                    })
+                    .collect();
+
+                if !file_callers.is_empty() {
+                    found_count.fetch_add(file_callers.len(), Ordering::Relaxed);
+                    let mut all = matches
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    all.extend(file_callers);
+                }
+
+                return ignore::WalkState::Continue;
+            }
 
             let Some(ts_lang) = outline_language(lang) else {
                 return ignore::WalkState::Continue;
@@ -916,13 +1005,17 @@ pub fn search_callers_expanded_with_artifact(
     }
 
     if callers.is_empty() {
+        let next = render_next_actions(&[NextAction::guidance(
+            format!("use `srcwalk discover {target}` or search interface/trait/implementor names."),
+            "caller miss recovery",
+            40,
+        )]);
         return Ok(format!(
             "# Callers of \"{}\" in {} — no call sites found\n\n\
              > Caveat: direct by-name search only; misses dynamic dispatch, reflection, macros.\n\
-             > Next: use `srcwalk find {}` or search interface/trait/implementor names.",
+             {next}",
             target,
             crate::format::display_path(scope),
-            target,
         ));
     }
 
@@ -957,7 +1050,7 @@ pub fn search_callers_expanded_with_artifact(
             .any(|caller| crate::artifact::is_artifact_js_ts_file(&caller.path));
     // Format the output as semantic-compact call edges.
     let mut output = format!(
-        "# Slice: {target} — {total} call site{}\n\n[symbol] {target}\n<- calls\n",
+        "# Trace callers: {target} — {total} call site{}\n\n[symbol] {target}\n<- calls\n",
         if total == 1 { "" } else { "s" }
     );
 
@@ -965,7 +1058,10 @@ pub fn search_callers_expanded_with_artifact(
         append_artifact_callers_grouped(&mut output, &sorted_callers, scope, expand);
     } else {
         for (i, caller) in sorted_callers.iter().enumerate() {
-            let caller_kind = "fn";
+            let caller_kind = detect_file_type(&caller.path)
+                .structural_lang()
+                .and_then(crate::capabilities::caller_context_kind)
+                .unwrap_or("fn");
 
             let _ = write!(
                 output,
@@ -1017,31 +1113,43 @@ pub fn search_callers_expanded_with_artifact(
     }
 
     let mut footer = String::new();
+    let mut actions = Vec::new();
     if total > effective_offset + shown {
         let omitted = total - effective_offset - shown;
         let next_offset = effective_offset + shown;
         let page_size = shown.max(1);
-        let _ = write!(
-            footer,
-            "> Next: {omitted} more call sites available. Continue with --offset {next_offset} --limit {page_size}."
-        );
+        actions.push(NextAction::metadata(
+            format!(
+                "{omitted} more call sites available. Continue with --offset {next_offset} --limit {page_size}."
+            ),
+            "caller pagination",
+            20,
+        ));
     } else if effective_offset > 0 {
         let _ = write!(
             footer,
             "> Note: end of results at offset {effective_offset}."
         );
     }
-    if !footer.is_empty() {
-        footer.push('\n');
-    }
     if js_ts_artifact_callers {
-        footer.push_str(
-            "> Next: --expand[=N] for byte-window evidence | --count-by args|path | --filter 'args:N prefix:NAME'.",
-        );
+        actions.push(NextAction::guidance(
+            "--expand[=N] for byte-window evidence | --count-by args|path | --filter 'args:N prefix:NAME'.",
+            "artifact caller drilldown",
+            40,
+        ));
     } else {
-        footer.push_str(
-            "> Next: <path>:<line> | --expand[=N] | --count-by args|path | --filter 'args:N prefix:NAME' | --depth N.",
-        );
+        actions.push(NextAction::guidance(
+            "<path>:<line> | --expand[=N] | --count-by args|path | --filter 'args:N prefix:NAME' | --depth N.",
+            "caller drilldown",
+            40,
+        ));
+    }
+    let rendered = render_next_actions(&actions);
+    if !rendered.is_empty() {
+        if !footer.is_empty() {
+            footer.push('\n');
+        }
+        footer.push_str(&rendered);
     }
     if artifact.enabled() {
         if let Some(note) = artifact.callers_note() {
@@ -1120,7 +1228,7 @@ pub fn search_callers_expanded_with_artifact(
                         footer.push('\n');
                     }
                     footer.push_str(
-                        "> Caveat: impact list was capped. Use `srcwalk callers <symbol> --depth 2` for the full 2-hop graph.",
+                        "> Caveat: assess list was capped. Use `srcwalk trace callers <symbol> --depth 2` for the full 2-hop graph.",
                     );
                 }
 
@@ -1312,7 +1420,7 @@ fn format_callsite_counts(
     let total = callers.len();
     let filter_suffix = filter.map_or(String::new(), |f| format!(" matching `{f}`"));
     let mut output = format!(
-        "# Slice: {target} — {total} call site{} grouped by {field}{}\n\n[symbol] {target}\n<- calls\n",
+        "# Trace callers: {target} — {total} call site{} grouped by {field}{}\n\n[symbol] {target}\n<- calls\n",
         if total == 1 { "" } else { "s" },
         filter_suffix,
     );
@@ -1327,16 +1435,23 @@ fn format_callsite_counts(
     }
 
     let shown_end = (effective_offset + page_size).min(total_groups);
-    let mut footer = String::from(
-        "> Next: narrow with --filter 'args:N prefix:NAME caller:NAME path:TEXT text:TEXT'; group with --count-by args|caller|path|file|prefix.",
-    );
+    let mut actions = vec![NextAction::guidance(
+        "narrow with --filter 'args:N prefix:NAME caller:NAME path:TEXT text:TEXT'; group with --count-by args|caller|path|file|prefix.",
+        "caller count drilldown",
+        20,
+    )];
     if total_groups > shown_end {
         let omitted = total_groups - shown_end;
-        let _ = write!(
-            footer,
-            "\n> Next: {omitted} more groups available. Continue with --offset {shown_end} --limit {page_size}."
-        );
-    } else if effective_offset > 0 {
+        actions.push(NextAction::metadata(
+            format!(
+                "{omitted} more groups available. Continue with --offset {shown_end} --limit {page_size}."
+            ),
+            "caller count pagination",
+            30,
+        ));
+    }
+    let mut footer = render_next_actions(&actions);
+    if effective_offset > 0 && total_groups <= shown_end {
         let _ = write!(
             footer,
             "\n> Note: end of groups at offset {effective_offset}."

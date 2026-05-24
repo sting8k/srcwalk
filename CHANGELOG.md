@@ -4,28 +4,81 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [1.0.0] - 2026-05-24
+
+### Highlights
+- Reworked srcwalk around intent-first commands for agent navigation: `discover`,
+  `show`, `trace`, `context`, `assess`, `overview`, `deps`, `compare`, `diff`,
+  and `review`.
+- Added evidence packets with `source`, `kind`, `confidence`, `caveat`, and
+  next-action guidance so agents can bound claims and continue from exact reads.
+- Added change-review and diff evidence flows for Git worktrees.
+- Added HTML/Markdown document navigation and CSS/SCSS/Less structural navigation.
+- Improved bundled/minified artifact navigation with provenance labels and clearer
+  caveats.
+
+### Breaking changes
+- Removed legacy action-first commands and root analysis flags. Use the
+  intent-first commands in the migration table below.
+- Renamed the repo-orientation command from `map` to `overview`.
+- Root positional input is now exact path evidence. Use `srcwalk discover <query>`
+  for search.
+- Slash-delimited text queries are literal text. Use `rg` for raw regex search.
+
+### Migration notes
+| Before | Use now |
+| --- | --- |
+| `srcwalk find <query>` | `srcwalk discover <query>` |
+| `srcwalk files <glob>` | `srcwalk discover <glob> --as file` |
+| `srcwalk callers <target>` | `srcwalk trace callers <target>` |
+| `srcwalk callees <target>` | `srcwalk trace callees <target>` |
+| `srcwalk flow <target>` | `srcwalk context <target>` |
+| `srcwalk impact <target>` | `srcwalk assess <target>` |
+| `srcwalk map` | `srcwalk overview` |
+| `srcwalk <query>` | `srcwalk discover <query>` |
+
 ### Added
-- Added HTML and Markdown-style document navigation support: sections, elements,
-  code blocks, and explicit links/assets without runtime or renderer claims.
-- Added smart routing for exact minified JS/TS artifact file reads and exact
-  artifact-file scopes, inferred path-like file glob discovery, and explicit
-  comma-separated literal text OR through `discover --match any --as text`.
+- Added `review` for change-set evidence packets with Flow Map context, changed
+  symbol summaries, and next-step commands.
+- Added `diff` for structured Git diff evidence across ranges, staged changes,
+  working-tree changes, and untracked files.
 - Added `compare <target-a> <target-b>` for structural shared/only evidence
-  between two known function-like source targets, with exact anchors and no
-  equivalence/runtime/verdict claims.
-- Added intent-first CLI routing: `discover`, `show`, `trace callers`, `trace callees`, `context`, and `assess`, while preserving `overview`, `deps`, `guide`, and `version`.
-- Added `show -C/--context-lines`, strict comma-separated multi-location `show`, `discover --as`, `discover --match all` same-file co-occurrence, and conservative `discover --exclude` file-pattern filtering.
+  between two known function-like targets, without equivalence or runtime claims.
+- Added `discover --as access` for field/member access grouping across writes,
+  resets, reads, and unknown text evidence.
+- Added HTML and Markdown-style document navigation for sections, elements, code
+  blocks, links, and assets.
+- Added CSS, SCSS, and Less structural navigation for selectors, at-rules,
+  variables/properties, mixins/functions, imports, and `url(...)` references.
+- Added `show -C/--context-lines`, strict comma-separated multi-location `show`,
+  `discover --match all`, `discover --exclude`, and explicit literal OR through
+  `discover --match any --as text`.
+- Added smarter routing for exact bundled/minified artifact reads, exact
+  artifact-file scopes, and path-like file glob discovery.
 
 ### Changed
-- Renamed the repo-orientation command from `map` to `overview` to make the intent explicit.
-- Upgraded `context` into the one-target understanding packet with Flow Map evidence, caller/callee neighborhood summaries, and exact next reads.
-- Made `deps <file>` show explicit empty outbound/inbound sections so imports and dependents are visible by default.
-- Updated `compare` follow-up footers to route one-target follow-up reads through `context`.
-- Compact discover facets now group multiple definitions from the same file under one file header, preserving exact `:line-range` evidence while reducing repeated path tokens.
-- Removed the old action-first command surface (`find`, `files`, `callers`, `callees`, `flow`, `impact`, and root analysis flags); use the intent-first commands instead.
-- Root non-path query fallback was removed. Root positional input is now exact path evidence; use `srcwalk discover <query>` for search.
-- Slash-delimited text queries are now literal text; raw regex grep belongs to
-  `rg`, while srcwalk text discovery stays focused on literal navigation evidence.
+- Upgraded `context` into a one-target understanding packet with Flow Map
+  evidence, caller/callee neighborhood summaries, trust labels, and exact next
+  reads.
+- Made `deps <file>` show explicit outbound and inbound sections by default,
+  including empty sections when no edges are found.
+- Grouped compact discover facets by file to reduce repeated path tokens while
+  preserving exact `:line-range` evidence.
+- Updated `compare` follow-up footers to route one-target follow-up reads through
+  `context`.
+- Refreshed README examples and `srcwalk guide` routing text around the
+  intent-first command model and evidence-label interpretation.
+
+### Fixed
+- Bounded default `discover --as access` output and added pagination guidance for
+  large result sets.
+- Counted untracked diff file lines without loading the whole file into memory.
+- Hardened quoted Git diff path parsing for paths containing ` b/` inside names.
+- Made review fallback routing resilient to wording changes in unsupported-target
+  diagnostics.
+- Fixed Windows CI builds for parser dependencies by using the Clang toolchain
+  environment consistently.
+- Improved path disambiguation when canonical and displayed temporary paths differ.
 
 ## [0.5.0] - 2026-05-11
 

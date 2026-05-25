@@ -161,8 +161,8 @@ fn guide_subcommand_prints_full_embedded_skill() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("# srcwalk — agent routing policy"));
-    assert!(stdout.contains("Use srcwalk before shell search for code navigation"));
+    assert!(stdout.contains("# srcwalk — agent evidence contract"));
+    assert!(stdout.contains("Default to srcwalk first for code-structure work"));
     assert!(stdout.contains("## Routes"));
 }
 

@@ -586,6 +586,10 @@ fn caller() -> i32 {
         1,
         "confirmed context next action should be deduplicated:\n{stdout}"
     );
+    assert!(
+        stdout.contains("choose a confirmed context target above"),
+        "discover footer should route structural candidates to context first:\n{stdout}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -694,6 +698,10 @@ fn discover_text_and_document_hits_do_not_guess_context_targets() {
     assert!(
         !text_stdout.contains("## Confirmed next context targets"),
         "text evidence must not guess context targets:\n{text_stdout}"
+    );
+    assert!(
+        text_stdout.contains("read raw hit evidence with `srcwalk show <path>:<line> -C 10`"),
+        "text discover footer should prefer exact raw reads before context guesses:\n{text_stdout}"
     );
 
     let doc_output = srcwalk()

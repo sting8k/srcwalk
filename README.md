@@ -343,7 +343,7 @@ Scopes on this page: src/evidence (2), src/commands (0)
 (~101 tokens)
 
 > Next: 25 more matches available. Continue with --offset 2 --limit 2.
-> Next: drill into any hit with `srcwalk <path>:<line>`.
+> Next: choose a confirmed context target above, or read raw hit evidence with `srcwalk show <path>:<line> -C 10`.
 
 ---
 # Search: "Anchor" in 2 scopes — 2 matches (1 definitions, 1 usages)
@@ -381,7 +381,7 @@ Scopes on this page: src/evidence (2), src/commands (0)
 (~418 tokens)
 
 > Next: 38 more matches available. Continue with --offset 2 --limit 2.
-> Next: drill into any hit with `srcwalk <path>:<line>`.
+> Next: choose a confirmed context target above, or read raw hit evidence with `srcwalk show <path>:<line> -C 10`.
 ```
 </details>
 

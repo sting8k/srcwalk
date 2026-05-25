@@ -439,7 +439,7 @@ fn expanded_output_omits_bodies_to_fit_budget() {
         stdout.contains("expand cap ~")
             && stdout.contains("expanded ")
             && stdout.contains("omitted ")
-            && stdout.contains("Next: drill into omitted hits"),
+            && stdout.contains("Next: read omitted hits"),
         "expected expand budget note:\n{stdout}"
     );
 }

@@ -395,7 +395,11 @@ fn format_file_group(
     }
 }
 
-fn append_context_next_targets(out: &mut String, result: &SearchResult, cache: &OutlineCache) {
+fn append_context_next_targets(
+    out: &mut String,
+    result: &SearchResult,
+    cache: &OutlineCache,
+) -> bool {
     let mut actions = Vec::new();
     let mut seen = BTreeSet::new();
     for m in &result.matches {
@@ -424,7 +428,7 @@ fn append_context_next_targets(out: &mut String, result: &SearchResult, cache: &
     }
 
     if actions.is_empty() {
-        return;
+        return false;
     }
 
     out.push_str("\n\n## Confirmed next context targets");
@@ -433,6 +437,7 @@ fn append_context_next_targets(out: &mut String, result: &SearchResult, cache: &
         out.push('\n');
         out.push_str(&rendered);
     }
+    true
 }
 
 fn append_next_action(footer: &mut String, action: NextAction) {
@@ -675,7 +680,7 @@ pub(super) fn format_search_result_with_header(
         );
     }
 
-    append_context_next_targets(&mut out, result, cache);
+    let has_context_next_targets = append_context_next_targets(&mut out, result, cache);
 
     let mut footer = String::new();
     if result.has_more {
@@ -711,13 +716,14 @@ pub(super) fn format_search_result_with_header(
     }
 
     if result.total_found > 0 {
+        let guidance = if has_context_next_targets {
+            "choose a confirmed context target above, or read raw hit evidence with `srcwalk show <path>:<line> -C 10`."
+        } else {
+            "read raw hit evidence with `srcwalk show <path>:<line> -C 10`; use `srcwalk context <path>:<line>` only after choosing a code hit."
+        };
         append_next_action(
             &mut footer,
-            NextAction::guidance(
-                "drill into any hit with `srcwalk <path>:<line>`.",
-                "read exact hit evidence",
-                50,
-            ),
+            NextAction::guidance(guidance, "read exact hit evidence", 50),
         );
     }
 
@@ -753,7 +759,7 @@ pub(super) fn format_search_result_with_header(
         append_next_action(
             &mut footer,
             NextAction::guidance(
-                "drill into omitted hits with `srcwalk <path>:<line>` or `srcwalk show <path> --section <symbol|range>`.",
+                "read omitted hits with `srcwalk show <path>:<line> -C 10` or `srcwalk show <path> --section <symbol|range>`.",
                 "expanded hits omitted by budget",
                 70,
             ),

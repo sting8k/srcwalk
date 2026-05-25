@@ -213,7 +213,7 @@ pub(crate) fn run_text_or_filtered_with_artifact(
     );
     if total_found > 0 {
         let rendered = render_next_actions(&[NextAction::guidance(
-            "drill into any hit with `srcwalk <path>:<line>`.",
+            "read raw hit evidence with `srcwalk show <path>:<line> -C 10`.",
             "text-or hit drilldown",
             40,
         )]);

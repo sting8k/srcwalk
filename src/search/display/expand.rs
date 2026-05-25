@@ -52,7 +52,7 @@ pub(crate) fn append_expand_budget_note(out: &mut String, budget: &ExpandBudget)
     let used = budget.cap_tokens.saturating_sub(budget.remaining_tokens);
     let cap = budget.cap_tokens;
     let rendered = render_next_actions(&[NextAction::guidance(
-        "drill into omitted hits with `srcwalk <path>:<line>` or `srcwalk <path> --section <symbol|range>`.",
+        "read omitted hits with `srcwalk show <path>:<line> -C 10` or `srcwalk show <path> --section <symbol|range>`.",
         "expanded omitted-hit drilldown",
         40,
     )]);

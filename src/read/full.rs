@@ -126,7 +126,8 @@ pub fn read_file_with_budget_and_context(
     if context_lines.is_some() && section.is_none() {
         return Err(SrcwalkError::InvalidQuery {
             query: path.display().to_string(),
-            reason: "--context-lines requires a path:line target or --section line".to_string(),
+            reason: "--context-lines requires a path:line, path:range, or --section target"
+                .to_string(),
         });
     }
 

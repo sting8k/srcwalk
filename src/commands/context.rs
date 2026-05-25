@@ -190,7 +190,7 @@ pub(crate) fn with_artifact_note(output: String, artifact: ArtifactMode) -> Stri
             ),
         )
         .replace(
-        "> Next: drill into any hit with `srcwalk <path>:<line>`.",
+        "> Next: read raw hit evidence with `srcwalk show <path>:<line> -C 10`.",
         "> Next: drill artifact hits with `srcwalk <path> --artifact --section <symbol|bytes:start-end>`.",
     );
     let caveat = evidence_source_caveat_for(EvidenceSource::Artifact).unwrap_or("");

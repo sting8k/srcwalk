@@ -72,6 +72,7 @@ srcwalk context <symbol> --scope <dir>
 ```
 
 Use auto overview depth first; explicit `--depth N` is strict. `[relations]` are static local dependency groups, not runtime calls. `[outbound deps]` imports targets outside `--scope`.
+`overview --symbols` may show inline `kind name@line-range` anchors when budget allows; if output is too large it falls back to fewer anchors or compact symbol names.
 
 `discover` only searches inside `--scope`; narrow scopes can hide definitions. After a first pass, use `--expand=3`, `--filter kind:fn`, or `--exclude 'tests/**'` only when the output is too broad.
 

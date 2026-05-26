@@ -1010,8 +1010,8 @@ fn map_symbols_includes_symbol_names() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("lib.rs: alpha, beta"),
-        "expected symbol names with --symbols, got:\n{stdout}"
+        stdout.contains("lib.rs: fn alpha@1, fn beta@2"),
+        "expected anchored symbol previews with --symbols, got:\n{stdout}"
     );
     assert!(
         stdout.contains("> Next: narrow with --scope <dir>"),

@@ -131,8 +131,9 @@ srcwalk assess validateToken --scope src/
 srcwalk deps src/auth.ts
 srcwalk deps docs/guide.md                 # Markdown/HTML links and assets
 
-# Overview
+# Overview / semantic directory orientation
 srcwalk overview --scope src/
+srcwalk overview --scope src/ --symbols          # inline symbol kind/range anchors when budget allows
 ```
 
 Discovery commands respect ignore files; explicit file reads can still inspect ignored paths.

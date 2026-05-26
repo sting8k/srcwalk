@@ -133,6 +133,33 @@ fn root_path_shortcut_reads_file_without_fallback() {
 }
 
 #[test]
+fn directory_path_read_routes_to_semantic_overview() {
+    let dir = temp_repo("path_directory_footer");
+    let src = dir.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+
+    let out = srcwalk().arg(&src).output().unwrap();
+
+    assert!(out.status.success(), "expected directory read to succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("lib.rs") && stdout.contains("> Next: srcwalk overview --scope"),
+        "expected directory listing plus semantic overview next step, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("sizes ~= tokens") && !stdout.contains("lib.rs  ("),
+        "expected one header-level token unit instead of repeated row token labels, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--symbols") && stdout.contains("srcwalk discover <symbol> --scope"),
+        "expected symbol-oriented directory next steps, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn root_missing_path_fails_fast() {
     let dir = temp_repo("path_exact_missing");
     fs::write(

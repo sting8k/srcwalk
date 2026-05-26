@@ -18,6 +18,8 @@ const WIDE_SCOPE_FILE_THRESHOLD: usize = 100;
 const MAX_ARTIFACT_MAP_FILES: usize = 40;
 const MAX_ARTIFACT_MAP_ANCHORS_PER_FILE: usize = 6;
 const MAX_OUTBOUND_RELATION_GROUPS: usize = 10;
+const PRIMARY_SYMBOL_ANCHOR_LIMIT: usize = 3;
+const FALLBACK_SYMBOL_ANCHOR_LIMIT: usize = 2;
 
 struct WalkConfig {
     hidden: bool,
@@ -312,7 +314,7 @@ fn generate_at_depth(
                         outline::generate(path, file_type, &content, buf, true)
                     });
 
-                    Some(extract_symbol_names(&outline_str))
+                    Some(extract_symbol_previews(&outline_str))
                 }
                 _ => None,
             }
@@ -347,6 +349,95 @@ fn generate_at_depth(
         }
     }
 
+    let relations = compute_relations(scope, depth, &visible_files);
+    let outbound_relations = if relations.is_empty() {
+        compute_outbound_relations(scope, depth, &visible_files)
+    } else {
+        Vec::new()
+    };
+
+    let symbol_modes = if include_symbols {
+        vec![
+            SymbolRenderMode::Anchored {
+                limit: PRIMARY_SYMBOL_ANCHOR_LIMIT,
+            },
+            SymbolRenderMode::Anchored {
+                limit: FALLBACK_SYMBOL_ANCHOR_LIMIT,
+            },
+            SymbolRenderMode::Compact,
+        ]
+    } else {
+        vec![SymbolRenderMode::Compact]
+    };
+
+    let mut last_output = String::new();
+    for symbol_mode in &symbol_modes {
+        let mut out = format_overview_base(
+            scope,
+            depth_label,
+            depth_reduced,
+            cfg,
+            artifact,
+            &tree,
+            &totals,
+            *symbol_mode,
+        );
+        if !relations.is_empty() {
+            format_relations(&relations, &mut out);
+        } else if !outbound_relations.is_empty() {
+            format_outbound_relations(&outbound_relations, &mut out);
+        }
+        append_map_footer(
+            &mut out,
+            artifact,
+            include_symbols,
+            relations.is_empty() && outbound_relations.is_empty() && visible_files.len() > 1,
+            !outbound_relations.is_empty(),
+        );
+        if enforce_hard_cap(&out, scope, depth).is_ok() {
+            return Ok(out);
+        }
+        last_output = out;
+    }
+
+    if !relations.is_empty() {
+        for symbol_mode in &symbol_modes {
+            let mut degraded = format_overview_base(
+                scope,
+                depth_label,
+                depth_reduced,
+                cfg,
+                artifact,
+                &tree,
+                &totals,
+                *symbol_mode,
+            );
+            let _ = writeln!(
+                degraded,
+                "\n# Note: relations omitted to fit {MAP_HARD_TOKEN_CAP} token cap; narrow --scope/--depth for relations."
+            );
+            append_map_footer(&mut degraded, artifact, include_symbols, false, false);
+            if enforce_hard_cap(&degraded, scope, depth).is_ok() {
+                return Ok(degraded);
+            }
+            last_output = degraded;
+        }
+    }
+
+    enforce_hard_cap(&last_output, scope, depth)?;
+    Ok(last_output)
+}
+
+fn format_overview_base(
+    scope: &Path,
+    depth_label: &str,
+    depth_reduced: bool,
+    cfg: &WalkConfig,
+    artifact: ArtifactMode,
+    tree: &BTreeMap<PathBuf, Vec<FileEntry>>,
+    totals: &BTreeMap<PathBuf, u64>,
+    symbol_mode: SymbolRenderMode,
+) -> String {
     let mut base = format!(
         "# Overview: {} (depth {}, sizes ~= tokens)\n",
         crate::format::display_path(scope),
@@ -356,44 +447,8 @@ fn generate_at_depth(
         base.push_str("# Note: depth reduced to fit cap.\n");
     }
     base.push_str(&format_walk_note(cfg, artifact));
-    format_tree(&tree, &totals, Path::new(""), 0, &mut base);
-
-    let relations = compute_relations(scope, depth, &visible_files);
-    let outbound_relations = if relations.is_empty() {
-        compute_outbound_relations(scope, depth, &visible_files)
-    } else {
-        Vec::new()
-    };
-    let mut out = base.clone();
-    if !relations.is_empty() {
-        format_relations(&relations, &mut out);
-    } else if !outbound_relations.is_empty() {
-        format_outbound_relations(&outbound_relations, &mut out);
-    }
-    append_map_footer(
-        &mut out,
-        artifact,
-        include_symbols,
-        relations.is_empty() && outbound_relations.is_empty() && visible_files.len() > 1,
-        !outbound_relations.is_empty(),
-    );
-    if enforce_hard_cap(&out, scope, depth).is_ok() {
-        return Ok(out);
-    }
-
-    if !relations.is_empty() {
-        let mut degraded = base;
-        let _ = writeln!(
-            degraded,
-            "\n# Note: relations omitted to fit {MAP_HARD_TOKEN_CAP} token cap; narrow --scope/--depth for relations."
-        );
-        append_map_footer(&mut degraded, artifact, include_symbols, false, false);
-        enforce_hard_cap(&degraded, scope, depth)?;
-        return Ok(degraded);
-    }
-
-    enforce_hard_cap(&out, scope, depth)?;
-    Ok(out)
+    format_tree(tree, totals, Path::new(""), 0, &mut base, symbol_mode);
+    base
 }
 
 fn append_map_footer(
@@ -943,9 +998,22 @@ fn add_dir_rollup(
 
 struct FileEntry {
     name: String,
-    symbols: Option<Vec<String>>,
+    symbols: Option<Vec<SymbolPreview>>,
     artifact_anchors: Option<ArtifactMapAnchors>,
     tokens: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SymbolPreview {
+    kind: &'static str,
+    name: String,
+    range: String,
+}
+
+#[derive(Clone, Copy)]
+enum SymbolRenderMode {
+    Anchored { limit: usize },
+    Compact,
 }
 
 struct ArtifactMapAnchors {
@@ -969,59 +1037,100 @@ fn artifact_map_anchors(path: &Path) -> Option<ArtifactMapAnchors> {
     })
 }
 
-/// Extract symbol names from an outline string.
-/// Outline lines look like: `[7-57]       fn classify`
-/// We extract the last word(s) after the kind keyword.
-fn extract_symbol_names(outline: &str) -> Vec<String> {
-    let mut names = Vec::new();
+/// Extract bounded symbol previews from an outline string.
+/// Outline lines look like: `[7-57]       fn classify`.
+fn extract_symbol_previews(outline: &str) -> Vec<SymbolPreview> {
+    let mut symbols = Vec::new();
     for line in outline.lines() {
         let trimmed = line.trim();
-        // Skip import lines and empty lines
-        if trimmed.starts_with('[') {
-            // Find the symbol name after kind keywords
-            if let Some(sig_start) = find_symbol_start(trimmed) {
-                let sig = &trimmed[sig_start..];
-                // Take just the name (up to first paren or space after name)
-                let name = extract_name_from_sig(sig);
-                if !name.is_empty() && name != "imports" {
-                    names.push(name);
-                }
-            }
+        let Some(rest) = trimmed.strip_prefix('[') else {
+            continue;
+        };
+        let Some(range_end) = rest.find(']') else {
+            continue;
+        };
+        let range = &rest[..range_end];
+        let body = rest[range_end + 1..].trim_start();
+        let Some((kind, sig)) = split_symbol_kind(body) else {
+            continue;
+        };
+        let name = extract_name_from_sig(sig);
+        if !name.is_empty() && name != "imports" {
+            symbols.push(SymbolPreview {
+                kind,
+                name,
+                range: range.to_string(),
+            });
         }
     }
-    names
+    symbols
 }
 
-fn find_symbol_start(line: &str) -> Option<usize> {
-    let kinds = [
-        "fn ",
-        "struct ",
-        "enum ",
-        "trait ",
-        "impl ",
-        "mod ",
-        "class ",
-        "interface ",
-        "type ",
-        "const ",
-        "static ",
-        "function ",
-        "method ",
-        "def ",
+fn split_symbol_kind(line: &str) -> Option<(&'static str, &str)> {
+    const KINDS: &[(&str, &str)] = &[
+        ("fn", "fn "),
+        ("struct", "struct "),
+        ("enum", "enum "),
+        ("trait", "trait "),
+        ("impl", "impl "),
+        ("mod", "mod "),
+        ("class", "class "),
+        ("interface", "interface "),
+        ("type", "type "),
+        ("const", "const "),
+        ("static", "static "),
+        ("function", "function "),
+        ("method", "method "),
+        ("def", "def "),
     ];
-    for kind in &kinds {
-        if let Some(pos) = line.find(kind) {
-            return Some(pos + kind.len());
-        }
-    }
-    None
+    KINDS
+        .iter()
+        .find_map(|(kind, prefix)| line.strip_prefix(prefix).map(|sig| (*kind, sig)))
 }
 
 fn extract_name_from_sig(sig: &str) -> String {
-    // Take characters until we hit a non-identifier char
     sig.chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
         .collect()
+}
+
+fn format_symbol_preview(symbols: &[SymbolPreview], mode: SymbolRenderMode) -> Option<String> {
+    if symbols.is_empty() {
+        return None;
+    }
+
+    match mode {
+        SymbolRenderMode::Anchored { limit } => Some(format_anchored_symbols(symbols, limit)),
+        SymbolRenderMode::Compact => Some(format_compact_symbols(symbols)),
+    }
+}
+
+fn format_anchored_symbols(symbols: &[SymbolPreview], limit: usize) -> String {
+    let shown = symbols
+        .iter()
+        .take(limit)
+        .map(|symbol| format!("{} {}@{}", symbol.kind, symbol.name, symbol.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let omitted = symbols.len().saturating_sub(limit);
+    if omitted > 0 {
+        format!("{shown}, ... +{omitted}")
+    } else {
+        shown
+    }
+}
+
+fn format_compact_symbols(symbols: &[SymbolPreview]) -> String {
+    let syms = symbols
+        .iter()
+        .map(|symbol| symbol.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if syms.len() > 80 {
+        format!("{}...", crate::types::truncate_str(&syms, 77))
+    } else {
+        syms
+    }
 }
 
 fn format_tree(
@@ -1030,6 +1139,7 @@ fn format_tree(
     dir: &Path,
     indent: usize,
     out: &mut String,
+    symbol_mode: SymbolRenderMode,
 ) {
     // Show directories first, largest first, so truncated maps keep the
     // highest-signal navigation scaffold near the top.
@@ -1049,7 +1159,7 @@ fn format_tree(
         let dir_name = subdir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         let total = totals.get(subdir).copied().unwrap_or(0);
         let _ = writeln!(out, "{prefix}{dir_name}/  ~{}", fmt_tokens(total));
-        format_tree(tree, totals, subdir, indent + 1, out);
+        format_tree(tree, totals, subdir, indent + 1, out, symbol_mode);
     }
 
     if let Some(files) = tree.get(dir) {
@@ -1058,16 +1168,10 @@ fn format_tree(
 
         for f in files {
             if let Some(ref symbols) = f.symbols {
-                if symbols.is_empty() {
-                    let _ = writeln!(out, "{prefix}{}  ~{}", f.name, fmt_tokens(f.tokens));
+                if let Some(preview) = format_symbol_preview(symbols, symbol_mode) {
+                    let _ = writeln!(out, "{prefix}{}: {preview}", f.name);
                 } else {
-                    let syms = symbols.join(", ");
-                    let truncated = if syms.len() > 80 {
-                        format!("{}...", crate::types::truncate_str(&syms, 77))
-                    } else {
-                        syms
-                    };
-                    let _ = writeln!(out, "{prefix}{}: {truncated}", f.name);
+                    let _ = writeln!(out, "{prefix}{}  ~{}", f.name, fmt_tokens(f.tokens));
                 }
             } else {
                 let _ = writeln!(out, "{prefix}{}  ~{}", f.name, fmt_tokens(f.tokens));

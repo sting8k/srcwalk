@@ -4,6 +4,8 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [1.0.1] - 2026-05-26
+
 ### Changed
 - Added semantic drilldown footers to directory reads and made `overview --symbols` emit budget-adaptive inline `kind name@line-range` anchors before falling back to compact symbol names.
 - Extended `show -C/--context-lines` to line ranges, resolved sections, and comma-separated show/section targets; comma-separated multi reads clamp each target to 10 context lines.

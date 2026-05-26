@@ -187,18 +187,18 @@ pub fn search_with_scope_glob(
     })
 }
 
-/// Quick preview: token estimate plus a one-line summary for code/text files.
-/// For code files, the summary is the first non-empty doc/comment or code line
-/// (truncated to ~80 chars). For other files, only the token estimate is shown.
+/// Quick preview: approximate token count plus a one-line summary for code/text files.
+/// The unit is declared once in the result header, so per-file rows keep only the
+/// compact `~N` size marker.
 fn file_preview(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
     let tokens = estimate_tokens(meta.len());
 
     let summary = first_meaningful_line(path).unwrap_or_default();
     if summary.is_empty() {
-        Some(format!("~{tokens} tokens"))
+        Some(format!("~{tokens}"))
     } else {
-        Some(format!("~{tokens} tokens · {summary}"))
+        Some(format!("~{tokens} · {summary}"))
     }
 }
 

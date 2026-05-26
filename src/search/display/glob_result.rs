@@ -49,7 +49,7 @@ pub(super) fn format_glob_result(
     label: &str,
 ) -> Result<String, SrcwalkError> {
     let header = format!(
-        "# {label}: \"{}\" in {} — {} of {} files (offset {})",
+        "# {label}: \"{}\" in {} — {} of {} files (offset {}, sizes ~= tokens)",
         result.pattern,
         crate::format::display_path(scope),
         result.files.len(),

@@ -204,6 +204,10 @@ fn files_action_lists_file_globs() {
         "<?php\nclass ProductController {}\n",
     );
     write_file(
+        &dir.join("controllers/front/EmptyController.php"),
+        "////\n---\n",
+    );
+    write_file(
         &dir.join("controllers/admin/AdminController.php"),
         "<?php\nclass AdminController {}\n",
     );
@@ -233,7 +237,15 @@ fn files_action_lists_file_globs() {
         "bad header:\n{stdout}"
     );
     assert!(
-        normalized.contains("controllers/front/ (2)"),
+        normalized.contains("sizes ~= tokens"),
+        "file result header should declare token unit once:\n{stdout}"
+    );
+    assert!(
+        !normalized.contains("tokens ·"),
+        "file rows should not repeat the token unit:\n{stdout}"
+    );
+    assert!(
+        normalized.contains("controllers/front/ (3)"),
         "missing grouped directory:\n{stdout}"
     );
     assert!(
@@ -243,6 +255,14 @@ fn files_action_lists_file_globs() {
     assert!(
         stdout.contains("  ProductController.php"),
         "missing product:\n{stdout}"
+    );
+    let empty_line = normalized
+        .lines()
+        .find(|line| line.contains("EmptyController.php"))
+        .expect("missing empty-summary file row");
+    assert!(
+        !empty_line.contains("tokens"),
+        "empty-summary file row should not repeat the token unit:\n{stdout}"
     );
     assert!(
         !normalized.contains("controllers/admin/AdminController.php"),

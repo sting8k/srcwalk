@@ -14,6 +14,8 @@ use crate::types::{estimate_tokens, FileType, OutlineEntry, ViewMode};
 
 use super::{edit_distance, RAW_TOKEN_CAP};
 
+const MAX_CONTEXT_LINES: usize = 10;
+
 fn section_token_limit(budget: Option<u64>) -> u64 {
     budget.unwrap_or_else(|| {
         std::env::var("SRCWALK_SECTION_SOFT_LIMIT")
@@ -200,20 +202,21 @@ pub(super) fn read_section_with_context(
 
     // Resolve section address: line range, focused line, heading, symbol name,
     // or a comma-separated list of those addresses.
-    if context_lines.is_some() && parse_focused_line(range).is_none() {
-        return Err(SrcwalkError::InvalidQuery {
-            query: range.to_string(),
-            reason: "--context-lines applies only to a single line target".to_string(),
-        });
-    }
-
     let mut focus_line = None;
     let (start, end) = if range.starts_with('#') {
         // Markdown heading. Try the full heading first so headings containing
         // commas still work; if that fails, fall through to comma-list parsing.
         match resolve_heading(buf, range) {
-            Some(r) => r,
-            None if range.contains(',') => return read_multi_section(path, buf, range, budget),
+            Some((start, end)) => {
+                if let Some(context) = context_lines {
+                    expand_range(start, end, context)
+                } else {
+                    (start, end)
+                }
+            }
+            None if range.contains(',') => {
+                return read_multi_section(path, buf, range, budget, context_lines)
+            }
             None => {
                 let suggestions = suggest_headings(buf, range, 5);
                 let reason = if suggestions.is_empty() {
@@ -231,18 +234,26 @@ pub(super) fn read_section_with_context(
             }
         }
     } else if range.contains(',') {
-        return read_multi_section(path, buf, range, budget);
+        return read_multi_section(path, buf, range, budget, context_lines);
     } else if let Some(line) = parse_focused_line(range).filter(|_| context_lines.is_some()) {
         let context = context_lines.expect("checked context_lines above");
         focus_line = Some(line);
-        (line.saturating_sub(context).max(1), line + context)
+        expand_range(line, line, context)
     } else if let Some((start, end, focus)) = parse_range(range) {
         // Line range like "45-89" or focused line like "45"
         focus_line = focus;
-        (start, end)
-    } else if let Some(r) = resolve_symbol(buf, path, range) {
+        if let Some(context) = context_lines {
+            expand_range(start, end, context)
+        } else {
+            (start, end)
+        }
+    } else if let Some((start, end)) = resolve_symbol(buf, path, range) {
         // Symbol name like "isCustomization" or "handleRequest"
-        r
+        if let Some(context) = context_lines {
+            expand_range(start, end, context)
+        } else {
+            (start, end)
+        }
     } else {
         let suggestions = suggest_symbols(buf, path, range, 3);
         let reason = if suggestions.is_empty() {
@@ -377,6 +388,17 @@ fn is_js_ts_file_type(file_type: FileType) -> bool {
     )
 }
 
+fn capped_context_lines(context_lines: Option<usize>) -> Option<usize> {
+    context_lines.map(|count| count.min(MAX_CONTEXT_LINES))
+}
+
+fn expand_range(start: usize, end: usize, context: usize) -> (usize, usize) {
+    (
+        start.saturating_sub(context).max(1),
+        end.saturating_add(context),
+    )
+}
+
 fn format_focused_lines(content: &str, start: u32, focus_line: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let last = (start as usize + lines.len()).max(1);
@@ -396,6 +418,7 @@ fn read_multi_section(
     buf: &[u8],
     range: &str,
     budget: Option<u64>,
+    context_lines: Option<usize>,
 ) -> Result<String, SrcwalkError> {
     let requested: Vec<&str> = range
         .split(',')
@@ -412,14 +435,29 @@ fn read_multi_section(
     let all_symbol_names = requested
         .iter()
         .all(|section| parse_range(section).is_none() && !section.starts_with('#'));
+    let context_lines = capped_context_lines(context_lines);
     let mut blocks: Vec<(usize, usize, Option<usize>, String)> = Vec::new(); // start, end, focus, label
     let mut errors: Vec<String> = Vec::new();
 
     for section in &requested {
-        if let Some((start, end, focus)) = parse_range(section) {
+        if let Some(line) = parse_focused_line(section).filter(|_| context_lines.is_some()) {
+            let context = context_lines.expect("checked context_lines above");
+            let (start, end) = expand_range(line, line, context);
+            blocks.push((start, end, Some(line), (*section).to_string()));
+        } else if let Some((start, end, focus)) = parse_range(section) {
+            let (start, end) = if let Some(context) = context_lines {
+                expand_range(start, end, context)
+            } else {
+                (start, end)
+            };
             blocks.push((start, end, focus, (*section).to_string()));
         } else if section.starts_with('#') {
             if let Some((start, end)) = resolve_heading(buf, section) {
+                let (start, end) = if let Some(context) = context_lines {
+                    expand_range(start, end, context)
+                } else {
+                    (start, end)
+                };
                 blocks.push((start, end, None, (*section).to_string()));
             } else {
                 let suggestions = suggest_headings(buf, section, 3);
@@ -433,6 +471,11 @@ fn read_multi_section(
                 }
             }
         } else if let Some((start, end)) = resolve_symbol(buf, path, section) {
+            let (start, end) = if let Some(context) = context_lines {
+                expand_range(start, end, context)
+            } else {
+                (start, end)
+            };
             blocks.push((start, end, None, (*section).to_string()));
         } else {
             let suggestions = suggest_symbols(buf, path, section, 3);

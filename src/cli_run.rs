@@ -6,6 +6,7 @@ use crate::output;
 use srcwalk::ArtifactMode;
 
 const MAX_SHOW_TARGETS: usize = 8;
+const MAX_MULTI_CONTEXT_LINES: usize = 10;
 
 fn display_path(path: &Path) -> String {
     let path = path.display().to_string();
@@ -867,6 +868,7 @@ fn run_show(
     }
 
     let per_target_budget = budget.map(|cap| (cap / targets.len() as u64).max(1));
+    let per_target_context = context_lines.map(|count| count.min(MAX_MULTI_CONTEXT_LINES));
     let mut outputs = Vec::with_capacity(targets.len());
     for target in targets {
         outputs.push(srcwalk::run_path_exact_with_artifact_and_context(
@@ -876,7 +878,7 @@ fn run_show(
             per_target_budget,
             full,
             artifact,
-            context_lines,
+            per_target_context,
             cache,
         )?);
     }

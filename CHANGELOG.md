@@ -4,6 +4,11 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+### Changed
+- Extended `show -C/--context-lines` to line ranges, resolved sections, and comma-separated show/section targets; comma-separated multi reads clamp each target to 10 context lines.
+- Updated discover next-step guidance to prefer confirmed `context` targets when structural candidates exist and raw `show <path>:<line> -C 10` reads for text hits.
+- Reframed the embedded agent guide as an evidence contract with explicit `srcwalk`-before-`rg` routing and comma-separated literal OR discovery guidance.
+
 ## [1.0.0] - 2026-05-24
 
 ### Highlights

@@ -19,6 +19,11 @@ fn temp_repo(name: &str) -> PathBuf {
     dir
 }
 
+fn has_numbered_line(output: &str, line: usize) -> bool {
+    let expected = format!("{line}  line {line}");
+    output.lines().any(|actual| actual.trim_start() == expected)
+}
+
 #[test]
 fn path_line_query_reads_focused_context() {
     let dir = temp_repo("path_line_query");
@@ -74,6 +79,183 @@ fn path_line_range_query_reads_exact_section() {
             && stdout.contains("4      let three = 3;")
             && !stdout.contains("fn main()"),
         "expected exact line range, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_lines_expand_line_ranges_without_cap() {
+    let dir = temp_repo("context_range_uncapped");
+    let body = (1..=50)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(dir.join("lib.rs"), body).unwrap();
+
+    let out = srcwalk()
+        .arg("show")
+        .arg("lib.rs:25-26")
+        .arg("--scope")
+        .arg(&dir)
+        .arg("-C")
+        .arg("20")
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "expected range context read to succeed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        has_numbered_line(&stdout, 5)
+            && has_numbered_line(&stdout, 25)
+            && has_numbered_line(&stdout, 26)
+            && has_numbered_line(&stdout, 46),
+        "single range should use requested context without a max-10 cap:\n{stdout}"
+    );
+    assert!(
+        !has_numbered_line(&stdout, 4) && !has_numbered_line(&stdout, 47),
+        "single range should expand by exactly the requested context:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_lines_expand_symbol_sections_without_cap() {
+    let dir = temp_repo("context_symbol_section_uncapped");
+    let mut body = String::new();
+    for line in 1..=24 {
+        body.push_str(&format!("// pre line {line}\n"));
+    }
+    body.push_str("fn target() {\n    let value = 1;\n}\n");
+    for line in 28..=55 {
+        body.push_str(&format!("// post line {line}\n"));
+    }
+    fs::write(dir.join("lib.rs"), body).unwrap();
+
+    let out = srcwalk()
+        .arg("show")
+        .arg("lib.rs")
+        .arg("--scope")
+        .arg(&dir)
+        .arg("--section")
+        .arg("target")
+        .arg("-C")
+        .arg("20")
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "expected symbol section context read to succeed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("5  // pre line 5")
+            && stdout.contains("25  fn target() {")
+            && stdout.contains("27  }")
+            && stdout.contains("47  // post line 47"),
+        "single symbol section should use requested context without a max-10 cap:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("4  // pre line 4") && !stdout.contains("48  // post line 48"),
+        "single symbol section should expand by exactly the requested context:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_lines_expand_multiple_sections_with_cap() {
+    let dir = temp_repo("context_multi_section_cap");
+    let body = (1..=60)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(dir.join("lib.rs"), body).unwrap();
+
+    let out = srcwalk()
+        .arg("show")
+        .arg("lib.rs")
+        .arg("--scope")
+        .arg(&dir)
+        .arg("--section")
+        .arg("20-21,50")
+        .arg("-C")
+        .arg("99")
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "expected multi-section context read to succeed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("## section: 20-21 [10-31]")
+            && has_numbered_line(&stdout, 10)
+            && has_numbered_line(&stdout, 31),
+        "multi explicit range section should clamp -C to 10:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("## section: 50 [40-60]")
+            && stdout.contains("►   50 │ line 50")
+            && stdout.contains("60 │ line 60"),
+        "multi focused line section should clamp -C to 10:\n{stdout}"
+    );
+    assert!(
+        !has_numbered_line(&stdout, 9) && !stdout.contains("39 │ line 39"),
+        "multi sections should not expand beyond the max-10 cap:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_lines_expand_comma_separated_show_locations_with_cap() {
+    let dir = temp_repo("context_multi_show_locations_cap");
+    let body = (1..=60)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(dir.join("lib.rs"), body).unwrap();
+
+    let out = srcwalk()
+        .arg("show")
+        .arg("lib.rs:20-21,lib.rs:50")
+        .arg("--scope")
+        .arg(&dir)
+        .arg("-C")
+        .arg("99")
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "expected comma-separated show locations with context to succeed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("# Show: 2 locations"), "{stdout}");
+    assert!(
+        has_numbered_line(&stdout, 10)
+            && has_numbered_line(&stdout, 31)
+            && stdout.contains("►   50 │ line 50")
+            && stdout.contains("60 │ line 60"),
+        "expected -C to clamp to 10 for each comma-separated location:\n{stdout}"
+    );
+    assert!(
+        !has_numbered_line(&stdout, 9) && !stdout.contains("39 │ line 39"),
+        "comma-separated locations should not expand beyond the max-10 cap:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);

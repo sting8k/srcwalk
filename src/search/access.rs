@@ -1099,7 +1099,7 @@ fn append_access_footer(
         }
     } else if total_found > 0 {
         actions.push(NextAction::guidance(
-            "drill into any hit with `srcwalk <path>:<line>`.",
+            "read raw hit evidence with `srcwalk show <path>:<line> -C 10`.",
             "read exact hit evidence",
             50,
         ));

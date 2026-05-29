@@ -38,6 +38,9 @@ Unsupported files still get smart text/outline reads.
 # npm (recommended)
 npm install -g srcwalk    # or: npx srcwalk
 
+# If npm appears stuck, show the postinstall binary download:
+npm install -g srcwalk --foreground-scripts
+
 # crates.io
 cargo install srcwalk --locked
 

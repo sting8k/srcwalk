@@ -4,6 +4,12 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+### Added
+- Added bounded local structural links to context call neighborhoods and bounded unique direct-call evidence with positional argument-to-parameter mappings to context and `trace callees --detailed`. Evidence uses exact source anchors and abstains when targets or local predecessors are ambiguous.
+
+### Changed
+- Aligned CLI error and overflow wording with command behavior, including unresolved callee labels and discover mode errors.
+
 ## [1.0.1] - 2026-05-26
 
 ### Changed

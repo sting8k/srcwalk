@@ -33,9 +33,9 @@ Use the smallest subset of this flow that proves the task. For broad, unfamiliar
 request / bug / feature question
   -> srcwalk overview --scope <dir>
   -> srcwalk discover <query> --scope <dir>
-  -> if output prints `## Confirmed next context targets`, run the matching `srcwalk context <path>:<range>`
-  -> otherwise read exact evidence with `srcwalk show <path>:<line> -C 10`
-  -> use `srcwalk show <path>:<line-or-range>` for exact source drilldown
+  -> pick one plausible target from discovery output
+  -> srcwalk context <symbol-or-file:line> --scope <dir>
+  -> srcwalk show <path>:<line-or-range>
   -> srcwalk trace callers <symbol> --scope <dir>
   -> srcwalk trace callees <symbol> --detailed --scope <dir>
   -> srcwalk deps <file>
@@ -187,7 +187,7 @@ srcwalk dist/app.min.js --artifact  # artifact-level outline for bundled/minifie
 
 ## Supported structural languages
 
-Code/source structure varies by command: Rust, TypeScript/TSX, JavaScript, Python, Go, Java/Scala/Kotlin, C/C++, Ruby, PHP, C#, Swift, Elixir, CSS/SCSS/Less. `context`/Flow Map support is narrower: trust confirmed context targets emitted by srcwalk, and otherwise use `show`, `trace`, or `deps` instead of guessing command support.
+Code/source structure: Rust, TypeScript/TSX, JavaScript, Python, Go, Java/Scala/Kotlin, C/C++, Ruby, PHP, C#, Swift, Elixir, CSS/SCSS/Less.
 
 Documents: HTML/HTM plus Markdown-style `.md`, `.mdx`, `.rst` fallback. Covers sections, elements, code blocks, links, assets. Treat document output as navigation evidence, not rendered or runtime proof.
 

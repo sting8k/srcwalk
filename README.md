@@ -16,10 +16,10 @@ one binary, zero config.
 - **Show** — read files, line ranges, symbols, headings, and capped raw pages.
 - **Discover** — find definitions, usages, files, text, comments, and
   field/member access evidence.
-- **Trace** — inspect callers and callees with bounded depth, hub guards, and
-  unresolved-call labels.
-- **Context** — build one-target packets with Flow Maps, local evidence, call
-  neighborhoods, and exact next commands.
+- **Trace** — inspect callers and callees with bounded depth, hub guards,
+  unresolved-call labels, and bounded direct-call evidence.
+- **Context** — build one-target packets with Flow Maps, local structural links,
+  call neighborhoods, and exact next commands.
 - **Review & diff** — turn Git changes into bounded evidence packets for changed
   files, symbols, and untracked files.
 - **Compare & assess** — compare two known targets structurally, or scan blast
@@ -154,7 +154,7 @@ Examples below use this repository. Timings may vary between machines; snippets 
 
 ```
 $ srcwalk src/evidence/next_action.rs
-# src/evidence/next_action.rs (198 lines, ~1.2k tokens) [outline]
+# src/evidence/next_action.rs (200 lines, ~1.2k tokens) [outline]
 
 [1-]   imports: std::collections::BTreeMap, std::fmt::Write as _, crate::evidence
 [7-13]       struct NextAction
@@ -183,13 +183,20 @@ $ srcwalk src/evidence/next_action.rs
 [109-118]    mod impl NextActionConfidence
   [110-117]    fn sort_rank
              const fn sort_rank(self) -> u8
-[120-127]    mod impl NextActionConfidence
-  [121-126]    fn from
+[120-129]    mod impl NextActionConfidence
+  [121-128]    fn from
              fn from(source: EvidenceSource) -> Self
-[129-139]    fn render_next_actions
+[131-141]    fn render_next_actions
            pub(crate) fn render_next_actions(actions: &[NextAction]) -> String
-[141-157]    fn ordered_unique
+[143-159]    fn ordered_unique
            fn ordered_unique(actions: &[NextAction]) -> Vec<NextAction>
+[162-199]    mod tests
+  [163]        import use std::path::Path;
+  [165]        import use super::*;
+  [168-185]    fn render_orders_by_rank_then_dedupes_by_command
+             fn render_orders_by_rank_then_dedupes_by_command()
+  [188-198]    fn duplicate_commands_keep_best_rank
+             fn duplicate_commands_keep_best_rank()
 
 > Next: drill into a symbol with --section <name> or a line range
 > Next: need raw file text? retry with --full, or use --section <range> for a smaller slice.
@@ -212,20 +219,20 @@ $ srcwalk src/evidence/next_action.rs --section "NextAction,render_next_actions,
 
 ---
 
-## section: render_next_actions [129-139] (compact)
+## section: render_next_actions [131-141] (compact)
 
-  129 │ pub(crate) fn render_next_actions(actions: &[NextAction]) -> String {
-  130 │     let actions = ordered_unique(actions);
-  131 │     let mut out = String::new();
+  131 │ pub(crate) fn render_next_actions(actions: &[NextAction]) -> String {
+  132 │     let actions = ordered_unique(actions);
+  133 │     let mut out = String::new();
   ... 8 lines omitted; narrow --section or raise --budget.
 
 ---
 
-## section: ordered_unique [141-157] (compact)
+## section: ordered_unique [143-159] (compact)
 
-  141 │ fn ordered_unique(actions: &[NextAction]) -> Vec<NextAction> {
-  142 │     let mut by_command = BTreeMap::<String, NextAction>::new();
-  143 │     for action in actions {
+  143 │ fn ordered_unique(actions: &[NextAction]) -> Vec<NextAction> {
+  144 │     let mut by_command = BTreeMap::<String, NextAction>::new();
+  145 │     for action in actions {
   ... 14 lines omitted; narrow --section or raise --budget.
 
 > Caveat: compacted ~272/260 tokens; shown 3 symbols.
@@ -243,40 +250,44 @@ confidence: structural syntax
 caveat: source-evidence navigation only; no runtime proof
 
 ## Target
-- src/evidence/next_action.rs:141-157 ordered_unique
+- src/evidence/next_action.rs:143-159 ordered_unique
 
 ## Flow Map
 shape: 1 entry, 0 decisions, 1 loop, 1 exit, 4 actions
-N1 entry :141-157 entry
-  next -> N2 action :142 BTreeMap::<String, NextAction>::new()
-N2 action :142 BTreeMap::<String, NextAction>::new()
-  calls: BTreeMap::<String, NextAction>::new :142
-  next -> N3 loop :143-152 actions
-N3 loop :143-152 actions
-  body -> N4 action :144-151 by_command .entry(action.command.clone()) .and_modify(|existing| { if action.sort_key() < exist…
-  next -> N5 action :154 by_command.into_values().collect()
-N4 action :144-151 by_command .entry(action.command.clone()) .and_modify(|existing| { if action.sort_key() < exist…
-  calls: by_command .entry :144
-  reads: action.clone call_arg :151
-  loop_back -> N3 loop :143-152 actions
-N5 action :154 by_command.into_values().collect()
-  calls: by_command.into_values :154
-  next -> N6 action :155 actions.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()))
-N6 action :155 actions.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()))
-  calls: actions.sort_by :155
-  reads: left.sort_key().cmp call_arg :155; right.sort_key call_arg :155
-  next -> N7 return :157 end
-N7 return :157 end
+N1 entry :143-159 entry
+  definitions: actions parameter :143
+  next -> N2 action :144 BTreeMap::<String, NextAction>::new()
+N2 action :144 BTreeMap::<String, NextAction>::new()
+  calls: BTreeMap::<String, NextAction>::new :144
+  writes: by_command assignment_lhs :144
+  next -> N3 loop :145-154 actions
+N3 loop :145-154 actions
+  reads: actions condition :145
+  body -> N4 action :146-153 by_command .entry(action.command.clone()) .and_modify(|existing| { if action.sort_key() < exist…
+  next -> N5 action :156 by_command.into_values().collect()
+N4 action :146-153 by_command .entry(action.command.clone()) .and_modify(|existing| { if action.sort_key() < exist…
+  calls: by_command .entry :146
+  reads: action.clone call_arg :153
+  loop_back -> N3 loop :145-154 actions
+N5 action :156 by_command.into_values().collect()
+  calls: by_command.into_values :156
+  writes: actions assignment_lhs :156
+  next -> N6 action :157 actions.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()))
+N6 action :157 actions.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()))
+  calls: actions.sort_by :157
+  reads: left call_arg :157; right call_arg :157; left.sort_key().cmp call_arg :157; +1 more
+  next -> N7 return :159 end
+N7 return :159 end
 
 ## Exits
-- :157 end
+- :159 end
 
 ## Call Neighborhood
 ### Callees (ordered)
-- L142 by_command = BTreeMap::<String, NextAction>::new()
-- L151 by_command.entry(action.command.clone()).and_modify(|existing| { if action.sort_key() < existing.sort_key() { *existing = action.clone(); } }).or_insert_with(arg1=|| action.clone())
-- L154 actions = by_command.into_values().collect()
-- L155 actions.sort_by(arg1=|left, right| left.sort_key().cmp(&right.sort_key()))
+- L144 by_command = BTreeMap::<String, NextAction>::new()
+- L153 by_command.entry(action.command.clone()).and_modify(|existing| { if action.sort_key() < existing.sort_key() { *existing = action.clone(); } }).or_insert_with(arg1=|| action.clone())
+- L156 actions = by_command.into_values().collect()
+- L157 actions.sort_by(arg1=|left, right| left.sort_key().cmp(&right.sort_key()))
 
 ### Resolved local callees
   [fn] NextAction src/evidence/next_action.rs:7-13
@@ -285,11 +296,11 @@ N7 return :157 end
 
 
 ### Callers
-- [fn] render_next_actions src/evidence/next_action.rs:130
+- [fn] render_next_actions src/evidence/next_action.rs:132
 
 > Caveat: static context packet is capped; verify exact edges with trace commands.
 
-> Next: srcwalk show src/evidence/next_action.rs:141-157 -C 20
+> Next: srcwalk show src/evidence/next_action.rs:143-159 -C 20
 > Next: srcwalk trace callers ordered_unique
 > Next: srcwalk trace callees ordered_unique --detailed
 ```
@@ -340,18 +351,20 @@ hunks:
 $ srcwalk discover "render_next_actions, Anchor" --scope src/evidence --scope src/commands --limit 2
 # Search: "render_next_actions" in 2 scopes — 2 matches (1 definitions, 1 usages)
 Scopes on this page: src/evidence (2), src/commands (0)
-  [fn] render_next_actions src/evidence/next_action.rs:129-139
+  [fn] render_next_actions src/evidence/next_action.rs:131-141
+  source: ast · kind: definition · confidence: structural syntax
 
-## src/evidence/mod.rs:9 [usage]
-→ [9]   pub(crate) use next_action::{render_next_actions, NextAction};
+## src/evidence/mod.rs:14 [usage]
+source: text · kind: usage · confidence: text evidence
+→ [14]   pub(crate) use next_action::{render_next_actions, NextAction};
 
 ## Confirmed next context targets
-> Next: srcwalk context src/evidence/next_action.rs:129-139
+> Next: srcwalk context src/evidence/next_action.rs:131-141
 
-(~101 tokens)
+(~133 tokens)
 
 > Next: 25 more matches available. Continue with --offset 2 --limit 2.
-> Next: choose a confirmed context target above, or read raw hit evidence with `srcwalk show <path>:<line> -C 10`.
+> Next: choose a confirmed context target above, or read exact hit evidence with `srcwalk show <path>:<line> -C 10`.
 
 ---
 # Search: "Anchor" in 2 scopes — 2 matches (1 definitions, 1 usages)
@@ -376,9 +389,19 @@ Scopes on this page: src/evidence (2), src/commands (0)
              pub(crate) fn display_relative_to(&self, scope: &Path) -> String
   [58-64]      fn display_with_path
              fn display_with_path(&self, path: &str) -> String
+[68-106]     mod tests
+  [69]         import use super::*;
+  [72-80]      fn line_anchor_uses_existing_display_path
+             fn line_anchor_uses_existing_display_path()
+  [83-93]      fn range_anchor_uses_existing_relative_display_path
+             fn range_anchor_uses_existing_relative_display_path()
+  [96-105]     fn file_anchor_uses_existing_relative_display_path
+             fn file_anchor_uses_existing_relative_display_path()
   [struct] Anchor src/evidence/anchor.rs:6-9
+  source: ast · kind: definition · confidence: structural syntax
 
 ## src/evidence/anchor.rs:18 [usage]
+source: text · kind: usage · confidence: text evidence
 → [18]   impl Anchor {
   [6-9]        struct Anchor
   [12-16]      enum AnchorRange
@@ -386,10 +409,10 @@ Scopes on this page: src/evidence (2), src/commands (0)
     [19-24]      fn file
                pub(crate) fn file(path: &Path) -> Self
 
-(~418 tokens)
+(~449 tokens)
 
-> Next: 38 more matches available. Continue with --offset 2 --limit 2.
-> Next: choose a confirmed context target above, or read raw hit evidence with `srcwalk show <path>:<line> -C 10`.
+> Next: 64 more matches available. Continue with --offset 2 --limit 2.
+> Next: read exact hit evidence with `srcwalk show <path>:<line> -C 10`.
 ```
 </details>
 
@@ -466,7 +489,7 @@ Bloom-filter pruning + length-sorted memchr + tree-sitter parse cache.
   `trace callees`, `assess`, `deps`, `overview`.
 - **Target-first reading** — `srcwalk <path>`, `<path>:<line>`, and `--section <symbol|range>`.
 - **Multi-hop caller BFS** — up to 5 hops, hub guard, collision detection.
-- **Forward callees** — resolved/unresolved calls, detailed ordered call sites, and depth support.
+- **Forward callees** — resolved/unresolved calls, detailed ordered call sites, bounded unique-target argument mappings, and depth support.
 - **Search ergonomics** — cross-naming-convention Did-you-mean, bare-filename auto-pick, typo tolerance.
 - **Performance** — mmap walkers, Aho-Corasick, rayon-parallel search, mimalloc.
 

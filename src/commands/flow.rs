@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::cache::OutlineCache;
@@ -232,6 +233,7 @@ fn append_context_neighborhood(
         }
     }
 
+    append_local_structural_links(out, source_path, content, lang, focus_range, scope, &sites);
     let names = if filter.is_some() {
         sites
             .iter()
@@ -304,6 +306,118 @@ fn append_context_neighborhood(
         "\n\n> Caveat: static context packet is capped; verify exact edges with trace commands.",
     );
     Ok(())
+}
+
+fn append_local_structural_links(
+    out: &mut String,
+    source_path: &Path,
+    content: &str,
+    lang: types::Lang,
+    focus_range: Option<(u32, u32)>,
+    scope: &Path,
+    sites: &[search::callees::CallSite],
+) {
+    use std::fmt::Write as _;
+
+    const MAX_ROWS: usize = 12;
+    let Some((start, end)) = focus_range else {
+        return;
+    };
+    if sites.is_empty() {
+        return;
+    }
+
+    let scope_id = format!("{}:{start}-{end}", format::display_path(source_path));
+    let mut graphs = crate::evidence::local_links::collect_local_links_for_function_spans(
+        source_path,
+        content,
+        lang,
+        &[(&scope_id, start, end)],
+    );
+    let Some(graph) = graphs.pop() else {
+        return;
+    };
+    if graph.budget_exceeded() {
+        return;
+    }
+
+    let visible_calls = sites
+        .iter()
+        .filter_map(|site| compact_call_site_identity(site, content))
+        .collect::<BTreeSet<_>>();
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for argument_use in graph.links().iter().filter(|link| {
+        link.kind() == crate::evidence::local_links::LocalLinkKind::ArgumentUse
+            && visible_calls.contains(link.to().identity())
+    }) {
+        let Some(mut chain) = graph.unique_predecessor_chain(
+            argument_use.from().identity(),
+            crate::evidence::local_links::DEFAULT_LOCAL_LINK_MAX_HOPS,
+        ) else {
+            continue;
+        };
+        if chain.is_empty() {
+            continue;
+        }
+        chain.push(argument_use.clone());
+
+        for link in chain {
+            let anchor = link.anchor().display_relative_to(scope);
+            let key = (
+                link.kind(),
+                link.from().identity().to_string(),
+                link.to().identity().to_string(),
+                anchor.clone(),
+            );
+            if seen.insert(key) {
+                selected.push((link, anchor));
+            }
+        }
+    }
+
+    selected.sort_by(|(left, _), (right, _)| {
+        left.anchor()
+            .start_line()
+            .cmp(&right.anchor().start_line())
+            .then(left.kind().cmp(&right.kind()))
+            .then(left.from().identity().cmp(right.from().identity()))
+            .then(left.to().identity().cmp(right.to().identity()))
+    });
+
+    if selected.is_empty() {
+        return;
+    }
+
+    out.push_str("\n\n### Local structural links");
+    let _ = write!(out, "\nconfidence: {}", selected[0].0.confidence());
+    out.push_str("\ncaveat: same-function structural links only; not runtime dataflow");
+    for (link, anchor) in selected.iter().take(MAX_ROWS) {
+        let _ = write!(
+            out,
+            "\n- {} -> {} [{}] {anchor}",
+            link.from().identity(),
+            link.to().identity(),
+            link.kind().as_str()
+        );
+    }
+    if selected.len() > MAX_ROWS {
+        let _ = write!(
+            out,
+            "\n- ... {} more local structural links omitted",
+            selected.len() - MAX_ROWS
+        );
+    }
+}
+
+fn compact_call_site_identity(site: &search::callees::CallSite, content: &str) -> Option<String> {
+    let text = site
+        .call_byte_range
+        .and_then(|(start, end)| content.get(start..end))
+        .unwrap_or(&site.call_text);
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!compact.is_empty()).then_some(compact)
 }
 
 fn run_artifact_flow(

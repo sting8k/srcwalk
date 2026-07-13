@@ -15,6 +15,19 @@ fn fixture_dir() -> &'static Path {
     ))
 }
 
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "srcwalk_{name}_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 /// Set up a minimal fixture with known call structure.
 fn setup_fixtures() {
     SETUP_FIXTURES.call_once(|| {
@@ -37,6 +50,29 @@ fn process() {
 
 fn send(data: &str) {
     println!("sending: {}", data);
+}
+
+fn nested_unresolved() {
+    outer(
+        inner(),
+    );
+}
+
+fn many_unresolved() {
+    call00();
+    call01();
+    call02();
+    call03();
+    call04();
+    call05();
+    call06();
+    call07();
+    call08();
+    call09();
+    call10();
+    call11();
+    call12();
+    call13();
 }
 "#,
         )
@@ -155,6 +191,132 @@ fn callees_default_lists_resolved() {
         stdout.contains("greet") && stdout.contains("main.rs"),
         "default should list resolved callees, got:\n{stdout}"
     );
+}
+
+#[test]
+fn callees_default_shows_unresolved_call_site_evidence() {
+    setup_fixtures();
+    let out = srcwalk()
+        .args(["trace", "callees", "process", "--scope"])
+        .arg(fixture_dir())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("unresolved call sites (reason not classified)"),
+        "default output should label unresolved call-site evidence, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("L9") && stdout.contains("result.trim"),
+        "unresolved evidence should keep source line and call text, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("(unresolved):"),
+        "default output should not collapse unresolved calls to a bare name list:\n{stdout}"
+    );
+}
+
+#[test]
+fn callees_default_preserves_unrendered_unresolved_names() {
+    setup_fixtures();
+    let out = srcwalk()
+        .args(["trace", "callees", "nested_unresolved", "--scope"])
+        .arg(fixture_dir())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("unresolved call sites (reason not classified)"),
+        "default output should show unresolved call-site section, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("outer("),
+        "outer multiline call should have a call-site row, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("unresolved names without rendered call-site rows: inner"),
+        "nested unresolved name without a rendered row must be preserved, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn callees_default_preserves_unresolved_names_after_row_cap() {
+    setup_fixtures();
+    let out = srcwalk()
+        .args(["trace", "callees", "many_unresolved", "--scope"])
+        .arg(fixture_dir())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("... 2 more unresolved call sites"),
+        "default output should report capped unresolved call-site rows, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("unresolved names without rendered call-site rows: call12, call13"),
+        "unresolved names after the rendered row cap must be preserved, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn callees_detailed_shows_direct_call_mapping_and_ambiguity_without_unresolved_spam() {
+    let dir = temp_dir("callees_direct_call_evidence");
+    std::fs::write(
+        dir.join("lib.rs"),
+        r#"fn helper(user: &str, count: i32) {}
+
+fn duplicate(value: i32) {}
+fn duplicate(value: i64) {}
+
+fn entry(user: &str, count: i32, value: i32) {
+    helper(user, count);
+    duplicate(value);
+    external(value);
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["trace", "callees", "entry", "--detailed", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "trace callees --detailed should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("helper(arg1=user, arg2=count)"),
+        "expected detailed call-site args, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("-> [fn] helper")
+            && stdout.contains("confidence: same-file structural direct call"),
+        "expected same-file direct-call evidence, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("arg0 `user` -> param0 `user`")
+            && stdout.contains("arg1 `count` -> param1 `count`"),
+        "expected positional arg/param mappings, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("direct target: unknown (ambiguous structural target)")
+            && stdout.contains("candidate:"),
+        "expected ambiguity abstention with candidates, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("direct target: unknown (unresolved structural target)"),
+        "unresolved external calls should not add detailed direct-target spam:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

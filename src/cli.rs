@@ -4,10 +4,12 @@ use clap::{ArgAction, Args, Parser, ValueEnum};
 use clap_complete::Shell;
 use srcwalk::ArtifactMode;
 
+pub(crate) const DEFAULT_OUTPUT_BUDGET: u64 = 6_000;
+
 /// srcwalk — Tree-sitter indexed lookups, smart code reading for AI agents.
 /// Run `srcwalk guide` for the embedded, version-matched agent guide.
 #[derive(Parser)]
-#[command(name = "srcwalk", about, after_help = ROOT_HELP)]
+#[command(name = "srcwalk", about, version, after_help = ROOT_HELP)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
@@ -24,7 +26,7 @@ pub(crate) struct Cli {
     pub(crate) section: Option<String>,
 
     /// Max tokens in response. Reduces detail to fit.
-    /// Default: 5000 unless --no-budget is set.
+    /// Default: 6000 unless --no-budget is set.
     #[arg(long)]
     pub(crate) budget: Option<u64>,
 
@@ -330,7 +332,7 @@ pub(crate) struct CommonArgs {
     /// Scope root for search and relative path resolution.
     #[arg(long, default_value = ".", action = ArgAction::Append)]
     pub(crate) scope: Vec<PathBuf>,
-    /// Max tokens in response. Reduces detail to fit.
+    /// Max tokens in response. Reduces detail to fit. Default: 6000.
     #[arg(long)]
     pub(crate) budget: Option<u64>,
     /// Disable default budget cap.

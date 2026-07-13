@@ -4,6 +4,15 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [1.1.0] - 2026-07-13
+
+### Added
+- Added bounded local structural links to context call neighborhoods and bounded unique direct-call evidence with positional argument-to-parameter mappings to context and `trace callees --detailed`. Evidence uses exact source anchors and abstains when targets or local predecessors are ambiguous.
+
+### Changed
+- Aligned CLI error and overflow wording with command behavior, including unresolved callee labels and discover mode errors.
+- Raised the default response budget from 5,000 to 6,000 tokens; explicit `--budget`, `--no-budget`, raw-read, overview, and evidence-row caps are unchanged.
+
 ## [1.0.1] - 2026-05-26
 
 ### Changed

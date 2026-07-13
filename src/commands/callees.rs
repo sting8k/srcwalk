@@ -7,7 +7,9 @@ use crate::error::SrcwalkError;
 use crate::evidence::{render_next_actions, NextAction};
 use crate::{budget, format, index, lang, search, types};
 
-use crate::commands::call_format::format_call_site;
+use crate::commands::call_format::{
+    format_call_site, format_direct_call_edge, format_direct_call_unknown,
+};
 use crate::commands::find::symbol_or_file_suggestion;
 
 /// Show what a symbol calls (forward call graph).
@@ -92,6 +94,15 @@ pub(crate) fn run_callees_with_artifact(
         };
         let total_sites = sites.len();
         let sites = search::callees::filter_call_sites(sites, filter)?;
+        let direct_calls = (!artifact.enabled()).then(|| {
+            crate::evidence::direct_call::build_direct_call_evidence_index(
+                &def_match.path,
+                &content,
+                lang,
+                def_match.def_range,
+                &sites,
+            )
+        });
         if sites.is_empty() {
             let suffix = filter.map_or(String::new(), |f| format!(" matching `{f}`"));
             return Ok(format!(
@@ -111,7 +122,33 @@ pub(crate) fn run_callees_with_artifact(
             } else {
                 let _ = write!(out, "\n{}", format_call_site(s));
             }
+            if let Some(index) = &direct_calls {
+                if let Some(edge) = index.edge_for_site(s, &content) {
+                    let _ = write!(out, "\n{}", format_direct_call_edge(edge, scope, 2));
+                } else if let Some(unknown) = index.unknown_for_site(s, &content) {
+                    let _ = write!(out, "\n{}", format_direct_call_unknown(unknown, scope, 2));
+                }
+            }
         }
+        if let Some(index) = &direct_calls {
+            let omitted = index
+                .omitted_edges()
+                .saturating_add(index.omitted_unknowns());
+            if omitted > 0 {
+                let _ = write!(
+                    out,
+                    "\n\n> Note: {omitted} direct-call evidence rows omitted."
+                );
+            }
+            if index.omitted_related_files() > 0 {
+                let _ = write!(
+                    out,
+                    "\n> Note: {} related files omitted from direct-call resolution.",
+                    index.omitted_related_files()
+                );
+            }
+        }
+
         if filter.is_some() {
             let _ = write!(
                 out,
@@ -230,14 +267,17 @@ pub(crate) fn run_callees_with_artifact(
     }
 
     if !unresolved.is_empty() {
-        out.push_str("\n\n  (unresolved): ");
-        out.push_str(
-            &unresolved
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        let sites = if artifact.enabled() {
+            search::callees::extract_call_sites_for_artifact_target(
+                &content,
+                lang,
+                target,
+                def_match.def_range,
+            )
+        } else {
+            search::callees::extract_call_sites(&content, lang, def_match.def_range)
+        };
+        append_unresolved_call_site_evidence(&mut out, &unresolved, &sites);
     }
 
     let rendered = render_next_actions(&[NextAction::guidance(
@@ -258,6 +298,65 @@ pub(crate) fn run_callees_with_artifact(
         None => out,
     };
     Ok(output)
+}
+
+fn append_unresolved_call_site_evidence(
+    out: &mut String,
+    unresolved: &[&String],
+    sites: &[search::callees::CallSite],
+) {
+    const LIMIT: usize = 12;
+    let unresolved_names = unresolved
+        .iter()
+        .map(|name| name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut unresolved_sites = sites
+        .iter()
+        .filter(|site| unresolved_names.contains(site.callee.as_str()))
+        .collect::<Vec<_>>();
+    unresolved_sites.sort_by_key(|site| (site.line, site.callee.as_str()));
+
+    if unresolved_sites.is_empty() {
+        out.push_str("\n\n  (unresolved; call-site reason not classified): ");
+        out.push_str(
+            &unresolved
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        return;
+    }
+
+    out.push_str("\n\n  unresolved call sites (reason not classified):");
+    let rendered_names = unresolved_sites
+        .iter()
+        .take(LIMIT)
+        .map(|site| site.callee.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for site in unresolved_sites.iter().take(LIMIT) {
+        let _ = write!(out, "\n    {}", format_call_site(site));
+    }
+    if unresolved_sites.len() > LIMIT {
+        let _ = write!(
+            out,
+            "\n    ... {} more unresolved call sites",
+            unresolved_sites.len() - LIMIT
+        );
+    }
+
+    let unrendered_names = unresolved
+        .iter()
+        .map(|name| name.as_str())
+        .filter(|name| !rendered_names.contains(*name))
+        .collect::<Vec<_>>();
+    if !unrendered_names.is_empty() {
+        let _ = write!(
+            out,
+            "\n    unresolved names without rendered call-site rows: {}",
+            unrendered_names.join(", ")
+        );
+    }
 }
 
 fn format_artifact_call_site(site: &search::callees::CallSite, content: &str) -> String {

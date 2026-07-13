@@ -1,6 +1,8 @@
 pub(crate) mod anchor;
 pub(crate) mod atom;
 pub(crate) mod confidence;
+pub(crate) mod direct_call;
+pub(crate) mod local_links;
 pub(crate) mod next_action;
 
 pub(crate) use anchor::Anchor;

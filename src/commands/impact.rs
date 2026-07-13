@@ -412,9 +412,10 @@ pub(crate) fn run_impact(
         out.push_str("\n> Warning: broad symbol name; assess is name-matched and may include unrelated receivers.");
     }
 
+    let scope_display = format::display_path(scope);
     let _ = write!(
         out,
-        "\n> Caveat: {total_callers} direct name-matched call site{} found; heuristic assess output capped.",
+        "\n> Caveat: {total_callers} direct name-matched call site{} found inside `{scope_display}`; heuristic assess output capped.",
         if total_callers == 1 { "" } else { "s" }
     );
     let rendered = render_next_actions(&[NextAction::guidance(
@@ -427,7 +428,10 @@ pub(crate) fn run_impact(
         out.push_str(&rendered);
     }
     if total_callers == 0 {
-        out.push_str("\n> Note: no direct name-matched calls found in scope; this is not proof of no runtime callers.");
+        out.push_str("\n> Note: no direct name-matched calls found inside the selected scope; this is not proof of no runtime callers.");
+        out.push_str(
+            "\n> Next: if callers may live outside this scope, retry `srcwalk trace callers <symbol> --scope <broader-dir>`.",
+        );
     }
     out.push_str("\n> Note: direct-name scope scan; misses dynamic dispatch, reflection, generated/ignored, out-of-scope callers.");
     Ok(apply_optional_budget(out, budget_tokens))

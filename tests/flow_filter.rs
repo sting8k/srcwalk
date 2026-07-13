@@ -828,3 +828,305 @@ struct ngx_http_core_loc_conf_s {
         "context should resolve the named struct body range, got:\n{stdout}"
     );
 }
+
+#[test]
+fn context_renders_bounded_rust_local_structural_links() {
+    let dir = temp_dir("context_rust_local_links");
+    let file = dir.join("lib.rs");
+    fs::write(
+        &file,
+        r#"
+struct Request { path: String }
+
+fn open(_: String) {}
+
+fn handle(req: Request) {
+    let path = req.path;
+    let alias = path;
+    open(alias);
+}
+"#,
+    )
+    .unwrap();
+
+    let stdout = context_output(&dir, &file, "handle");
+    assert!(
+        stdout.contains("### Local structural links"),
+        "expected local structural link section:\n{stdout}"
+    );
+    assert!(stdout.contains("req.path -> path [field_read]"));
+    assert!(
+        stdout.contains("path -> alias [assignment/alias]"),
+        "expected alias predecessor link:\n{stdout}"
+    );
+    assert!(stdout.contains("alias -> open(alias) [argument_use]"));
+    assert!(stdout.contains("confidence: local structural syntax"));
+    assert!(stdout.contains("not runtime dataflow"));
+    assert_no_def_use_verdict_words(&stdout);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_renders_javascript_and_multiline_call_result_links() {
+    let dir = temp_dir("context_js_local_links");
+    let js_file = dir.join("lib.js");
+    fs::write(
+        &js_file,
+        r#"
+function handle(req) {
+  const path = req.path;
+  const alias = path;
+  open(alias);
+}
+"#,
+    )
+    .unwrap();
+
+    let js_stdout = context_output(&dir, &js_file, "handle");
+    assert!(js_stdout.contains("req.path -> path [field_read]"));
+    assert!(js_stdout.contains("alias -> open(alias) [argument_use]"));
+
+    let rust_file = dir.join("call_result.rs");
+    fs::write(
+        &rust_file,
+        r#"
+fn load_config(_: &str) -> String { String::new() }
+fn open(_: String) {}
+
+fn handle(path: &str) {
+    let config = load_config(
+        path,
+    );
+    open(config);
+}
+"#,
+    )
+    .unwrap();
+
+    let rust_stdout = context_output(&dir, &rust_file, "handle");
+    assert!(
+        rust_stdout.contains("-> config [call_result]"),
+        "multiline call result identity must connect to its binding:\n{rust_stdout}"
+    );
+    assert!(rust_stdout.contains("config -> open(config) [argument_use]"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_abstains_on_ambiguous_local_predecessors() {
+    let dir = temp_dir("context_ambiguous_local_links");
+    let file = dir.join("lib.rs");
+    fs::write(
+        &file,
+        r#"
+struct Request { safe: String, user: String }
+fn open(_: String) {}
+
+fn handle(req: Request) {
+    let path = req.safe;
+    let path = req.user;
+    open(path);
+}
+"#,
+    )
+    .unwrap();
+
+    let stdout = context_output(&dir, &file, "handle");
+    assert!(
+        !stdout.contains("### Local structural links"),
+        "ambiguous predecessor must abstain instead of choosing a chain:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_caps_local_structural_link_rows_with_omitted_count() {
+    let dir = temp_dir("context_capped_local_links");
+    let file = dir.join("lib.rs");
+    let mut source = String::from("struct Request { value: i32 }\n");
+    for index in 0..13 {
+        source.push_str(&format!("fn sink{index}(_: i32) {{}}\n"));
+    }
+    source.push_str("fn handle(req: Request) {\n");
+    for index in 0..13 {
+        source.push_str(&format!(
+            "    let value{index} = req.value;\n    sink{index}(value{index});\n"
+        ));
+    }
+    source.push_str("}\n");
+    fs::write(&file, source).unwrap();
+
+    let stdout = context_output(&dir, &file, "handle");
+    assert!(stdout.contains("### Local structural links"));
+    assert!(
+        stdout.contains("more local structural links omitted"),
+        "expected deterministic omitted count after row cap:\n{stdout}"
+    );
+    let rendered_rows = stdout
+        .lines()
+        .filter(|line| line.starts_with("- ") && line.contains("] ") && !line.contains("omitted"))
+        .count();
+    assert_eq!(
+        rendered_rows, 12,
+        "local-link rows must respect cap:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_filter_limits_local_links_to_visible_calls() {
+    let dir = temp_dir("context_filtered_local_links");
+    let file = dir.join("lib.rs");
+    fs::write(
+        &file,
+        r#"
+struct Request { first: i32, second: i32 }
+fn one(_: i32) {}
+fn two(_: i32) {}
+
+fn handle(req: Request) {
+    let first = req.first;
+    one(first);
+    let second = req.second;
+    two(second);
+}
+"#,
+    )
+    .unwrap();
+
+    let target = format!("{}:handle", file.display());
+    let output = srcwalk()
+        .args(["context", &target, "--filter", "callee:two", "--scope"])
+        .arg(&dir)
+        .arg("--no-budget")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let local_section = stdout
+        .split("### Local structural links")
+        .nth(1)
+        .and_then(|rest| rest.split("### Resolved local callees").next())
+        .expect("filtered call should retain one local-link section");
+    assert!(local_section.contains("req.second -> second [field_read]"));
+    assert!(local_section.contains("second -> two(second) [argument_use]"));
+    assert!(
+        !local_section.contains("req.first") && !local_section.contains("one(first)"),
+        "filtered local-link section leaked hidden call evidence:\n{local_section}"
+    );
+    let direct_section = stdout
+        .split("### Direct-call evidence")
+        .nth(1)
+        .and_then(|rest| rest.split("### Resolved local callees").next())
+        .expect("filtered call should retain one direct-call evidence section");
+    assert!(
+        direct_section.contains("two(second)"),
+        "filtered direct-call evidence should include the visible call:\n{direct_section}"
+    );
+    assert!(
+        !direct_section.contains("one(first)"),
+        "filtered direct-call evidence leaked hidden call evidence:\n{direct_section}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_direct_call_evidence_is_limited_to_visible_call_rows() {
+    let dir = temp_dir("context_capped_direct_calls");
+    let file = dir.join("lib.rs");
+    let mut source = String::new();
+    for index in 0..13 {
+        source.push_str(&format!("fn helper{index}(value: i32) {{}}\n"));
+    }
+    source.push_str("fn handle(value: i32) {\n");
+    for index in 0..13 {
+        source.push_str(&format!("    helper{index}(value);\n"));
+    }
+    source.push_str("}\n");
+    fs::write(&file, source).unwrap();
+
+    let stdout = context_output(&dir, &file, "handle");
+    let direct_section = stdout
+        .split("### Direct-call evidence")
+        .nth(1)
+        .and_then(|rest| rest.split("### Resolved local callees").next())
+        .expect("context should render direct-call evidence");
+    let rendered_rows = direct_section
+        .lines()
+        .filter(|line| line.starts_with("- L") && line.contains("helper"))
+        .count();
+    assert_eq!(
+        rendered_rows, 12,
+        "direct-call evidence rows must follow the visible call-site cap:\n{direct_section}"
+    );
+    assert!(
+        stdout.contains("... 1 more call sites"),
+        "context should still report capped call-site rows:\n{stdout}"
+    );
+    assert!(
+        direct_section.contains("helper0(value)")
+            && direct_section.contains("arg0 `value` -> param0 `value`"),
+        "expected resolved mapping for a visible direct call:\n{direct_section}"
+    );
+    assert!(
+        !direct_section.contains("helper12(value)")
+            && !direct_section.contains("direct-call edges omitted"),
+        "direct-call evidence should be built only from visible call rows:\n{direct_section}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_local_links_ignore_calls_beyond_visible_neighborhood() {
+    let dir = temp_dir("context_hidden_call_local_links");
+    let file = dir.join("lib.rs");
+    let mut source = String::from(
+        "struct Request { hidden: i32 }\nfn sink(_: i32) {}\nfn handle(req: Request) {\n",
+    );
+    for index in 0..12 {
+        source.push_str(&format!("    sink({index});\n"));
+    }
+    source.push_str("    let hidden = req.hidden;\n    sink(hidden);\n}\n");
+    fs::write(&file, source).unwrap();
+
+    let stdout = context_output(&dir, &file, "handle");
+    assert!(stdout.contains("... 1 more call sites"));
+    assert!(
+        !stdout.contains("### Local structural links")
+            && !stdout.contains("req.hidden -> hidden")
+            && !stdout.contains("hidden -> sink(hidden)"),
+        "hidden call must not influence visible local-link evidence:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn context_local_links_reject_hidden_call_result_predecessors() {
+    let dir = temp_dir("context_hidden_call_result_predecessor");
+    let file = dir.join("lib.rs");
+    let mut source = String::from(
+        "fn build() -> i32 { 1 }\nfn sink(_: i32) {}\nfn handle() {\n    sink(value);\n",
+    );
+    for index in 0..11 {
+        source.push_str(&format!("    sink({index});\n"));
+    }
+    source.push_str("    let value = build();\n}\n");
+    fs::write(&file, source).unwrap();
+
+    let stdout = context_output(&dir, &file, "handle");
+    assert!(stdout.contains("... 1 more call sites"));
+    assert!(
+        !stdout.contains("### Local structural links")
+            && !stdout.contains("build() -> value [call_result]"),
+        "hidden call result must not enter a visible call predecessor chain:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

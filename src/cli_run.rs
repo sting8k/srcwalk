@@ -329,14 +329,18 @@ fn canonicalize_scopes_or_exit(
     }
 }
 
-pub(crate) fn run(mut config: RunConfig) {
-    // Effective budget: explicit --budget wins, --no-budget disables,
-    // otherwise default to 5000 tokens for deterministic agent/script output.
-    let effective_budget = if config.no_budget {
+fn resolve_output_budget(configured: Option<u64>, no_budget: bool) -> Option<u64> {
+    if no_budget {
         None
     } else {
-        config.budget.or(Some(5_000))
-    };
+        configured.or(Some(crate::cli::DEFAULT_OUTPUT_BUDGET))
+    }
+}
+
+pub(crate) fn run(mut config: RunConfig) {
+    // Explicit --budget wins, --no-budget disables the cap, and all other
+    // commands share one deterministic default.
+    let effective_budget = resolve_output_budget(config.budget, config.no_budget);
 
     let cache = srcwalk::cache::OutlineCache::new();
     let normalized_scopes =
@@ -888,4 +892,19 @@ fn run_show(
         outputs.len(),
         outputs.join("\n\n---\n\n")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_output_budget;
+    use crate::cli::DEFAULT_OUTPUT_BUDGET;
+
+    #[test]
+    fn output_budget_resolution_preserves_default_and_overrides() {
+        assert_eq!(DEFAULT_OUTPUT_BUDGET, 6_000);
+        assert_eq!(resolve_output_budget(None, false), Some(6_000));
+        assert_eq!(resolve_output_budget(Some(1_234), false), Some(1_234));
+        assert_eq!(resolve_output_budget(None, true), None);
+        assert_eq!(resolve_output_budget(Some(1_234), true), None);
+    }
 }

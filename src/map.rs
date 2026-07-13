@@ -349,6 +349,22 @@ fn generate_at_depth(
         }
     }
 
+    if visible_files.is_empty() {
+        let mut out = format_overview_base(
+            scope,
+            depth_label,
+            depth_reduced,
+            cfg,
+            artifact,
+            &tree,
+            &totals,
+            SymbolRenderMode::Compact,
+        );
+        append_empty_overview_diagnostics(&mut out, scope);
+        enforce_hard_cap(&out, scope, depth)?;
+        return Ok(out);
+    }
+
     let relations = compute_relations(scope, depth, &visible_files);
     let outbound_relations = if relations.is_empty() {
         compute_outbound_relations(scope, depth, &visible_files)
@@ -449,6 +465,22 @@ fn format_overview_base(
     base.push_str(&format_walk_note(cfg, artifact));
     format_tree(tree, totals, Path::new(""), 0, &mut base, symbol_mode);
     base
+}
+
+fn append_empty_overview_diagnostics(out: &mut String, scope: &Path) {
+    let display = crate::format::display_path(scope);
+    let _ = writeln!(
+        out,
+        "\nNo overview entries found under `{display}`. The scope may be empty, ignored, unsupported, or filtered."
+    );
+    let rendered = render_next_actions(&[NextAction::guidance(
+        "inspect the parent scope, or read a known file with `srcwalk show <path>`.",
+        "overview empty-scope drilldown",
+        40,
+    )]);
+    if !rendered.is_empty() {
+        let _ = write!(out, "\n{rendered}");
+    }
 }
 
 fn append_map_footer(

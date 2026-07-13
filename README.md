@@ -81,66 +81,25 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for curated release notes. Maintainers shou
 
 ## Quick examples
 
-Agent routing order lives in `srcwalk guide`; examples below are command reference, not a workflow.
+These representative commands show the main shapes. Use `srcwalk --help` for the
+full command and flag reference; agent routing lives in `srcwalk guide`.
 
 ```sh
-# Version / installed binary check
-srcwalk --version
-srcwalk version --check
-
-# Read a file (structural view by default; raw pages are explicit)
+# Read and drill into source
 srcwalk src/auth.ts
-srcwalk src/auth.ts:72                       # drill into exact hit line
-srcwalk src/auth.ts --section handleAuth     # drill into symbol
-srcwalk src/auth.ts --section 72             # focused line context
-srcwalk src/auth.ts --section 44-89          # line range
+srcwalk src/auth.ts:72
+srcwalk src/auth.ts --section handleAuth
 
-# Discover definitions/usages/text/name globs/files
-srcwalk discover handleAuth --scope src/                         # definitions + usages
-srcwalk discover handleAuth --scope src/auth.ts                  # exact-file scope
-srcwalk discover handleAuth --scope 'src/**/*.ts'                # glob scope
-srcwalk discover handleAuth --scope src/auth.ts:40-90            # exact-file range scope
-srcwalk discover "foo, bar" --scope src/ --scope tests/          # multi-symbol + multi-scope
-srcwalk discover is_args --as access --scope src/                # file-grouped field/member access
-srcwalk discover '*Controller' --as symbol --scope src/ --filter kind:class
-srcwalk discover handleAuth --scope src/ --expand                # inline source context
-srcwalk discover '*.ts' --scope src/                             # file globs are inferred
-srcwalk discover handleAuth --scope src/ --exclude '*test*'      # exclude file patterns
-srcwalk discover 'alloc,copy' --match any --as text --scope src/ # literal text OR
-srcwalk discover 'alloc,copy' --match all --as text --scope src/ # same-file co-occurrence
-# Raw regex grep remains an rg job; srcwalk text discovery is literal navigation evidence.
-
-# Trace callers (reverse call graph)
+# Find and follow code
+srcwalk discover handleAuth --scope src/
+srcwalk context src/auth.ts:handleAuth
 srcwalk trace callers handleAuth --scope src/
-srcwalk trace callers decompileFunction --filter 'args:3' --scope src/
-srcwalk trace callers handleAuth --count-by caller --scope src/  # grouped compact output
+srcwalk trace callees handleAuth --detailed --scope src/
 
-# Trace callees (forward call graph)
-srcwalk trace callees handleAuth --scope src/
-srcwalk trace callees handleAuth --detailed --filter 'callee:validateToken' --scope src/
-srcwalk trace callees handleAuth --depth 2 --scope src/          # transitive
-
-# Context and Review Packets with Flow Maps
-srcwalk context src/auth.ts:handleAuth            # one-target Flow Map + neighborhood + Next footer
-srcwalk review --staged                           # staged change Review Packet
-srcwalk review HEAD~1..HEAD --scope src           # changed evidence + changed-symbol Flow Maps
-
-# Compare two known targets structurally
-srcwalk compare src/auth.ts:validateToken src/auth.ts:validateSession
-
-# Context (compact slice: ordered calls + local resolves + callers)
-srcwalk context handleAuth --filter 'callee:validateToken' --scope src/
-
-# Assess (heuristic blast-radius triage)
-srcwalk assess validateToken --scope src/
-
-# Deps (file coupling)
+# Review changes and orient in a project
+srcwalk review --staged
 srcwalk deps src/auth.ts
-srcwalk deps docs/guide.md                 # Markdown/HTML links and assets
-
-# Overview / semantic directory orientation
 srcwalk overview --scope src/
-srcwalk overview --scope src/ --symbols          # inline symbol kind/range anchors when budget allows
 ```
 
 Discovery commands respect ignore files; explicit file reads can still inspect ignored paths.

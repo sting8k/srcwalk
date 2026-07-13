@@ -717,9 +717,9 @@ pub(super) fn format_search_result_with_header(
 
     if result.total_found > 0 {
         let guidance = if has_context_next_targets {
-            "choose a confirmed context target above, or read raw hit evidence with `srcwalk show <path>:<line> -C 10`."
+            "choose a confirmed context target above, or read exact hit evidence with `srcwalk show <path>:<line> -C 10`."
         } else {
-            "read raw hit evidence with `srcwalk show <path>:<line> -C 10`; use `srcwalk context <path>:<line>` only after choosing a code hit."
+            "read exact hit evidence with `srcwalk show <path>:<line> -C 10`."
         };
         append_next_action(
             &mut footer,

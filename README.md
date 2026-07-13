@@ -84,6 +84,10 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for curated release notes. Maintainers shou
 Agent routing order lives in `srcwalk guide`; examples below are command reference, not a workflow.
 
 ```sh
+# Version / installed binary check
+srcwalk --version
+srcwalk version --check
+
 # Read a file (structural view by default; raw pages are explicit)
 srcwalk src/auth.ts
 srcwalk src/auth.ts:72                       # drill into exact hit line

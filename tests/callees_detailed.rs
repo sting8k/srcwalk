@@ -38,6 +38,29 @@ fn process() {
 fn send(data: &str) {
     println!("sending: {}", data);
 }
+
+fn nested_unresolved() {
+    outer(
+        inner(),
+    );
+}
+
+fn many_unresolved() {
+    call00();
+    call01();
+    call02();
+    call03();
+    call04();
+    call05();
+    call06();
+    call07();
+    call08();
+    call09();
+    call10();
+    call11();
+    call12();
+    call13();
+}
 "#,
         )
         .unwrap();
@@ -154,6 +177,74 @@ fn callees_default_lists_resolved() {
     assert!(
         stdout.contains("greet") && stdout.contains("main.rs"),
         "default should list resolved callees, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn callees_default_shows_unresolved_call_site_evidence() {
+    setup_fixtures();
+    let out = srcwalk()
+        .args(["trace", "callees", "process", "--scope"])
+        .arg(fixture_dir())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("unresolved call sites (reason not classified)"),
+        "default output should label unresolved call-site evidence, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("L9") && stdout.contains("result.trim"),
+        "unresolved evidence should keep source line and call text, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("(unresolved):"),
+        "default output should not collapse unresolved calls to a bare name list:\n{stdout}"
+    );
+}
+
+#[test]
+fn callees_default_preserves_unrendered_unresolved_names() {
+    setup_fixtures();
+    let out = srcwalk()
+        .args(["trace", "callees", "nested_unresolved", "--scope"])
+        .arg(fixture_dir())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("unresolved call sites (reason not classified)"),
+        "default output should show unresolved call-site section, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("outer("),
+        "outer multiline call should have a call-site row, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("unresolved names without call-site rows: inner"),
+        "nested unresolved name without a rendered row must be preserved, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn callees_default_preserves_unresolved_names_after_row_cap() {
+    setup_fixtures();
+    let out = srcwalk()
+        .args(["trace", "callees", "many_unresolved", "--scope"])
+        .arg(fixture_dir())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("... 2 more unresolved call sites"),
+        "default output should report capped unresolved call-site rows, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("unresolved names without call-site rows: call12, call13"),
+        "unresolved names after the rendered row cap must be preserved, got:\n{stdout}"
     );
 }
 

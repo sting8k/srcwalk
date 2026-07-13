@@ -674,6 +674,47 @@ func callStatus() {
         !stdout.contains("## Confirmed next context targets"),
         "unsupported context language must not suggest context targets:\n{stdout}"
     );
+    assert!(
+        !stdout.contains("srcwalk context"),
+        "unsupported context language must not suggest any context command:\n{stdout}"
+    );
+
+    fs::write(
+        dir.join("OrderReturn.php"),
+        r#"<?php
+class OrderReturn {
+    public static function checkEnoughProduct($id) {
+        return $id;
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let php_output = srcwalk()
+        .args(["discover", "checkEnoughProduct", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        php_output.status.success(),
+        "discover checkEnoughProduct failed:\n{}",
+        String::from_utf8_lossy(&php_output.stderr)
+    );
+    let php_stdout = String::from_utf8_lossy(&php_output.stdout);
+    assert!(
+        php_stdout.contains("[fn] checkEnoughProduct"),
+        "{php_stdout}"
+    );
+    assert!(
+        !php_stdout.contains("## Confirmed next context targets"),
+        "PHP is structural but context-unsupported, so no confirmed context targets:\n{php_stdout}"
+    );
+    assert!(
+        !php_stdout.contains("srcwalk context"),
+        "PHP context is unsupported, so fallback must not suggest context:\n{php_stdout}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -700,8 +741,8 @@ fn discover_text_and_document_hits_do_not_guess_context_targets() {
         "text evidence must not guess context targets:\n{text_stdout}"
     );
     assert!(
-        text_stdout.contains("read raw hit evidence with `srcwalk show <path>:<line> -C 10`"),
-        "text discover footer should prefer exact raw reads before context guesses:\n{text_stdout}"
+        text_stdout.contains("read exact hit evidence with `srcwalk show <path>:<line> -C 10`"),
+        "text discover footer should prefer exact reads without context guesses:\n{text_stdout}"
     );
 
     let doc_output = srcwalk()

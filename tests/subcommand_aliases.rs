@@ -138,6 +138,23 @@ fn version_subcommand_is_canonical_version_surface() {
 }
 
 #[test]
+fn root_version_flags_match_version_subcommand() {
+    for flag in ["--version", "-V"] {
+        let output = srcwalk().arg(flag).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{flag} failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("srcwalk {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+}
+
+#[test]
 fn version_help_exposes_check_flag() {
     let output = srcwalk().args(["version", "--help"]).output().unwrap();
 

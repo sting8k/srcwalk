@@ -65,6 +65,40 @@ fn overview_file_scope_error_is_actionable() {
 }
 
 #[test]
+fn overview_empty_scope_is_actionable_without_narrowing() {
+    let dir = temp_repo("overview_empty_scope");
+
+    let out = srcwalk()
+        .arg("overview")
+        .arg("--scope")
+        .arg(&dir)
+        .arg("--symbols")
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "empty overview should succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No overview entries found under"),
+        "expected empty overview diagnostic, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("may be empty, ignored, unsupported, or filtered"),
+        "expected honest cause caveat, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("srcwalk show <path>"),
+        "expected exact-read fallback, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("narrow with --scope"),
+        "empty scope should not suggest narrowing further:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn map_does_not_traverse_symlinked_directory_outside_scope() {
     let dir = temp_repo("map_symlink_escape");
     let outside = temp_repo("map_symlink_outside");

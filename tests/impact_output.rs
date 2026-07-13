@@ -97,7 +97,8 @@ fn impact_warns_for_broad_name_matched_symbols() {
         "expected broad symbol warning, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("51 direct name-matched call sites found; heuristic assess output capped"),
+        stdout.contains("51 direct name-matched call sites found inside")
+            && stdout.contains("heuristic assess output capped"),
         "expected capped footer, got:\n{stdout}"
     );
     assert!(
@@ -137,6 +138,16 @@ stdout:
     assert!(
         stdout.contains("0 direct name-matched call sites found"),
         "expected zero-call footer, got:
+{stdout}"
+    );
+    assert!(
+        stdout.contains("0 direct name-matched call sites found inside"),
+        "expected selected-scope count, got:
+{stdout}"
+    );
+    assert!(
+        stdout.contains("retry `srcwalk trace callers <symbol> --scope <broader-dir>`"),
+        "expected broader-scope verification hint, got:
 {stdout}"
     );
     assert!(

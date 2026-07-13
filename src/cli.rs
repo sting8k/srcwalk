@@ -7,7 +7,7 @@ use srcwalk::ArtifactMode;
 /// srcwalk — Tree-sitter indexed lookups, smart code reading for AI agents.
 /// Run `srcwalk guide` for the embedded, version-matched agent guide.
 #[derive(Parser)]
-#[command(name = "srcwalk", about, after_help = ROOT_HELP)]
+#[command(name = "srcwalk", about, version, after_help = ROOT_HELP)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,

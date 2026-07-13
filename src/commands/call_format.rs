@@ -1,3 +1,7 @@
+use std::fmt::Write as _;
+use std::path::Path;
+
+use crate::evidence::direct_call::{ArgParamMapping, DirectCallEvidenceEdge, DirectCallUnknown};
 use crate::search;
 
 pub(crate) fn format_call_site(site: &search::callees::CallSite) -> String {
@@ -47,4 +51,77 @@ fn compact_arg(arg: &str) -> String {
         .rev()
         .collect::<String>();
     format!("{head} … {tail}")
+}
+
+pub(crate) fn format_direct_call_edge(
+    edge: &DirectCallEvidenceEdge,
+    scope: &Path,
+    indent: usize,
+) -> String {
+    let pad = " ".repeat(indent);
+    let target = edge.target_anchor().display_relative_to(scope);
+    let mut out = format!(
+        "{pad}-> [fn] {} {target}\n{pad}   confidence: {}",
+        edge.target_name(),
+        edge.confidence().as_str()
+    );
+    for mapping in edge.arg_param_mappings() {
+        let _ = write!(
+            out,
+            "\n{pad}   arg{} `{}` -> param{} `{}`",
+            mapping.arg_index(),
+            mapping.arg_display(),
+            mapping.param_index(),
+            mapping.param_name()
+        );
+    }
+    if !edge.arg_param_mappings().is_empty() {
+        let _ = write!(
+            out,
+            "\n{pad}   mapping confidence: {}",
+            ArgParamMapping::confidence()
+        );
+    }
+    if let Some(reason) = edge.mapping_unknown() {
+        let _ = write!(
+            out,
+            "\n{pad}   arg→param mapping: unknown ({})",
+            reason.as_str()
+        );
+    }
+    if edge.omitted_arg_param_mappings() > 0 {
+        let _ = write!(
+            out,
+            "\n{pad}   ... {} arg→param mappings omitted",
+            edge.omitted_arg_param_mappings()
+        );
+    }
+    out
+}
+
+pub(crate) fn format_direct_call_unknown(
+    unknown: &DirectCallUnknown,
+    scope: &Path,
+    indent: usize,
+) -> String {
+    let pad = " ".repeat(indent);
+    let mut out = format!(
+        "{pad}-> direct target: unknown ({})",
+        unknown.reason().as_str()
+    );
+    for candidate in unknown.candidates() {
+        let _ = write!(
+            out,
+            "\n{pad}   candidate: {}",
+            candidate.display_relative_to(scope)
+        );
+    }
+    if unknown.omitted_candidates() > 0 {
+        let _ = write!(
+            out,
+            "\n{pad}   ... {} candidates omitted",
+            unknown.omitted_candidates()
+        );
+    }
+    out
 }

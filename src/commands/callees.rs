@@ -7,7 +7,9 @@ use crate::error::SrcwalkError;
 use crate::evidence::{render_next_actions, NextAction};
 use crate::{budget, format, index, lang, search, types};
 
-use crate::commands::call_format::format_call_site;
+use crate::commands::call_format::{
+    format_call_site, format_direct_call_edge, format_direct_call_unknown,
+};
 use crate::commands::find::symbol_or_file_suggestion;
 
 /// Show what a symbol calls (forward call graph).
@@ -92,6 +94,15 @@ pub(crate) fn run_callees_with_artifact(
         };
         let total_sites = sites.len();
         let sites = search::callees::filter_call_sites(sites, filter)?;
+        let direct_calls = (!artifact.enabled()).then(|| {
+            crate::evidence::direct_call::build_direct_call_evidence_index(
+                &def_match.path,
+                &content,
+                lang,
+                def_match.def_range,
+                &sites,
+            )
+        });
         if sites.is_empty() {
             let suffix = filter.map_or(String::new(), |f| format!(" matching `{f}`"));
             return Ok(format!(
@@ -111,7 +122,33 @@ pub(crate) fn run_callees_with_artifact(
             } else {
                 let _ = write!(out, "\n{}", format_call_site(s));
             }
+            if let Some(index) = &direct_calls {
+                if let Some(edge) = index.edge_for_site(s, &content) {
+                    let _ = write!(out, "\n{}", format_direct_call_edge(edge, scope, 2));
+                } else if let Some(unknown) = index.unknown_for_site(s, &content) {
+                    let _ = write!(out, "\n{}", format_direct_call_unknown(unknown, scope, 2));
+                }
+            }
         }
+        if let Some(index) = &direct_calls {
+            let omitted = index
+                .omitted_edges()
+                .saturating_add(index.omitted_unknowns());
+            if omitted > 0 {
+                let _ = write!(
+                    out,
+                    "\n\n> Note: {omitted} direct-call evidence rows omitted."
+                );
+            }
+            if index.omitted_related_files() > 0 {
+                let _ = write!(
+                    out,
+                    "\n> Note: {} related files omitted from direct-call resolution.",
+                    index.omitted_related_files()
+                );
+            }
+        }
+
         if filter.is_some() {
             let _ = write!(
                 out,

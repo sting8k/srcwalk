@@ -209,3 +209,20 @@ fn predecessor_chain_is_bounded_and_abstains_on_ambiguity() {
     ]);
     assert!(ambiguous.unique_predecessor_chain("alias", 2).is_none());
 }
+
+#[test]
+fn parenthesized_field_expression_is_not_a_call_result() {
+    let rust = r#"
+fn demo(req: Request) {
+    let value = (req.value);
+    sink(value);
+}
+"#;
+    let graph =
+        collect_local_links_for_function(Path::new("src/lib.rs"), rust, Lang::Rust, "demo", 1, 4);
+
+    assert!(graph
+        .links()
+        .iter()
+        .all(|link| link.kind() != LocalLinkKind::CallResult || link.to().identity() != "value"));
+}

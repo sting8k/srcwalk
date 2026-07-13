@@ -436,7 +436,7 @@ fn assignment_link(node: Node<'_>, source: &[u8], path: &Path) -> Option<LocalLi
     let rhs_text = compact_node_text(rhs, source);
 
     let lhs_subject = subject_from_expression(parts.lhs, source)?;
-    if is_call_like(rhs.kind(), &rhs_text) {
+    if is_call_like(rhs.kind()) {
         return subject_from_text(&rhs_text).map(|from| {
             LocalLink::new(
                 LocalLinkKind::CallResult,
@@ -722,11 +722,8 @@ fn is_declaration_wrapper(kind: &str) -> bool {
     )
 }
 
-fn is_call_like(kind: &str, text: &str) -> bool {
-    kind.contains("call")
-        || kind.contains("invocation")
-        || kind.contains("creation")
-        || text.contains('(')
+fn is_call_like(kind: &str) -> bool {
+    kind.contains("call") || kind.contains("invocation") || kind.contains("creation")
 }
 
 fn is_field_like(text: &str) -> bool {

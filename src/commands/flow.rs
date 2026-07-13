@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::cache::OutlineCache;
-use crate::commands::call_format::format_call_site;
+use crate::commands::call_format::{format_call_site, format_direct_call_edge};
 use crate::commands::context::{apply_optional_budget, ArtifactMode};
 use crate::commands::decision_flow::resolve_decision_flow_target;
 use crate::commands::find::symbol_or_file_suggestion;
@@ -217,6 +217,14 @@ fn append_context_neighborhood(
     let sites = search::callees::extract_call_sites(content, lang, focus_range);
     let total_sites = sites.len();
     let sites = search::callees::filter_call_sites(sites, filter)?;
+    let visible_sites = sites.iter().take(12).cloned().collect::<Vec<_>>();
+    let direct_calls = crate::evidence::direct_call::build_direct_call_evidence_index(
+        source_path,
+        content,
+        lang,
+        focus_range,
+        &visible_sites,
+    );
     if let Some(filter) = filter {
         let _ = writeln!(out, "\n### Callees (ordered, filtered {filter})");
     } else {
@@ -225,7 +233,7 @@ fn append_context_neighborhood(
     if sites.is_empty() {
         out.push_str("\n- none");
     } else {
-        for site in sites.iter().take(12) {
+        for site in &visible_sites {
             let _ = write!(out, "\n- {}", format_call_site(site));
         }
         if sites.len() > 12 {
@@ -233,7 +241,16 @@ fn append_context_neighborhood(
         }
     }
 
-    append_local_structural_links(out, source_path, content, lang, focus_range, scope, &sites);
+    append_local_structural_links(
+        out,
+        source_path,
+        content,
+        lang,
+        focus_range,
+        scope,
+        &visible_sites,
+    );
+    append_direct_call_evidence(out, scope, &direct_calls);
     let names = if filter.is_some() {
         sites
             .iter()
@@ -343,14 +360,19 @@ fn append_local_structural_links(
 
     let visible_calls = sites
         .iter()
-        .filter_map(|site| compact_call_site_identity(site, content))
+        .filter_map(|site| {
+            crate::evidence::direct_call::call_site_display(site, content)
+                .map(|display| (site.line, display))
+        })
         .collect::<BTreeSet<_>>();
     let mut selected = Vec::new();
     let mut seen = BTreeSet::new();
 
     for argument_use in graph.links().iter().filter(|link| {
         link.kind() == crate::evidence::local_links::LocalLinkKind::ArgumentUse
-            && visible_calls.contains(link.to().identity())
+            && visible_calls.iter().any(|(line, display)| {
+                *line == link.anchor().start_line() && display == link.to().identity()
+            })
     }) {
         let Some(mut chain) = graph.unique_predecessor_chain(
             argument_use.from().identity(),
@@ -362,6 +384,24 @@ fn append_local_structural_links(
             continue;
         }
         chain.push(argument_use.clone());
+        if chain.iter().any(|link| {
+            let call_identity = match link.kind() {
+                crate::evidence::local_links::LocalLinkKind::CallResult => {
+                    Some(link.from().identity())
+                }
+                crate::evidence::local_links::LocalLinkKind::ArgumentUse => {
+                    Some(link.to().identity())
+                }
+                _ => None,
+            };
+            call_identity.is_some_and(|identity| {
+                !visible_calls.iter().any(|(line, display)| {
+                    *line == link.anchor().start_line() && display == identity
+                })
+            })
+        }) {
+            continue;
+        }
 
         for link in chain {
             let anchor = link.anchor().display_relative_to(scope);
@@ -411,13 +451,43 @@ fn append_local_structural_links(
     }
 }
 
-fn compact_call_site_identity(site: &search::callees::CallSite, content: &str) -> Option<String> {
-    let text = site
-        .call_byte_range
-        .and_then(|(start, end)| content.get(start..end))
-        .unwrap_or(&site.call_text);
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!compact.is_empty()).then_some(compact)
+fn append_direct_call_evidence(
+    out: &mut String,
+    scope: &Path,
+    index: &crate::evidence::direct_call::DirectCallEvidenceIndex,
+) {
+    use std::fmt::Write as _;
+
+    const MAX_EDGES: usize = 12;
+    if index.edges().is_empty() {
+        return;
+    }
+
+    out.push_str("\n\n### Direct-call evidence");
+    for edge in index.edges().iter().take(MAX_EDGES) {
+        let _ = write!(
+            out,
+            "\n- L{} {}\n{}",
+            edge.call_anchor().start_line(),
+            edge.call_display(),
+            format_direct_call_edge(edge, scope, 2)
+        );
+    }
+    let omitted = index
+        .edges()
+        .len()
+        .saturating_sub(MAX_EDGES)
+        .saturating_add(index.omitted_edges());
+    if omitted > 0 {
+        let _ = write!(out, "\n- ... {omitted} direct-call edges omitted");
+    }
+    if index.omitted_related_files() > 0 {
+        let _ = write!(
+            out,
+            "\n- ... {} related files omitted from direct-call resolution",
+            index.omitted_related_files()
+        );
+    }
 }
 
 fn run_artifact_flow(

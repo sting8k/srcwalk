@@ -90,6 +90,63 @@ function caller(values) {
 }
 
 #[test]
+fn positional_argument_detection_ignores_nested_syntax_and_operators() {
+    let rust_path = Path::new("src/lib.rs");
+    for arg in [
+        "count >= 0",
+        "left == right",
+        "left != right",
+        "left <= right",
+        "Point { x: 1 }",
+        "predicate(value = other)",
+        "module::VALUE",
+        "\"kind=value:ok\"",
+        "value => value",
+    ] {
+        assert!(
+            is_positional_call_arg(rust_path, arg),
+            "expected positional argument: {arg}"
+        );
+    }
+
+    assert!(!is_positional_call_arg(
+        Path::new("src/lib.py"),
+        "label = value"
+    ));
+    assert!(!is_positional_call_arg(
+        Path::new("src/lib.rb"),
+        "label: value"
+    ));
+    assert!(!is_positional_call_arg(rust_path, "Point { x: 1"));
+}
+
+#[test]
+fn maps_rust_and_go_arguments_containing_comparisons_and_literals() {
+    let rust = r#"
+struct Point { x: i32 }
+fn helper(condition: bool, point: Point, label: &str) {}
+fn caller(count: i32) {
+    helper(count >= 0, Point { x: 1 }, "kind=value:ok");
+}
+"#;
+    let rust_index = build(Path::new("src/lib.rs"), rust, Lang::Rust, (4, 6));
+    assert_eq!(rust_index.edges().len(), 1);
+    assert_eq!(rust_index.edges()[0].arg_param_mappings().len(), 3);
+    assert_eq!(rust_index.edges()[0].mapping_unknown(), None);
+
+    let go = r#"
+func helper(condition bool, values map[string]int) {}
+func caller(count int) {
+    helper(count == 0, map[string]int{"value": count})
+}
+"#;
+    let go_index = build(Path::new("src/lib.go"), go, Lang::Go, (3, 5));
+    assert_eq!(go_index.edges().len(), 1);
+    assert_eq!(go_index.edges()[0].arg_param_mappings().len(), 2);
+    assert_eq!(go_index.edges()[0].mapping_unknown(), None);
+}
+
+#[test]
 fn ambiguous_and_self_recursive_targets_abstain_from_edges() {
     let ambiguous = r#"
 fn helper(value: i32) {}

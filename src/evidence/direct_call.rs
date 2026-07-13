@@ -762,7 +762,61 @@ fn is_positional_call_arg(path: &Path, arg: &str) -> bool {
     if arg.starts_with('*') && is_python_or_ruby_splat_path(path) {
         return false;
     }
-    !arg.contains('=') && !arg.contains(':')
+    matches!(top_level_named_argument_marker(arg), Some(false))
+}
+
+fn top_level_named_argument_marker(arg: &str) -> Option<bool> {
+    let bytes = arg.as_bytes();
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, &byte) in bytes.iter().enumerate() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match byte {
+            b'\'' | b'"' | b'`' => quote = Some(byte),
+            b'(' => delimiters.push(b')'),
+            b'[' => delimiters.push(b']'),
+            b'{' => delimiters.push(b'}'),
+            b')' | b']' | b'}' => {
+                if delimiters.pop() != Some(byte) {
+                    return None;
+                }
+            }
+            b'=' if delimiters.is_empty() => {
+                let previous = index.checked_sub(1).and_then(|offset| bytes.get(offset));
+                let next = bytes.get(index + 1);
+                let is_operator = matches!(previous, Some(b'!' | b'<' | b'>' | b'='))
+                    || matches!(next, Some(b'=' | b'>'));
+                if !is_operator && is_identifier(arg[..index].trim()) {
+                    return Some(true);
+                }
+            }
+            b':' if delimiters.is_empty() => {
+                let previous = index.checked_sub(1).and_then(|offset| bytes.get(offset));
+                let next = bytes.get(index + 1);
+                if previous != Some(&b':')
+                    && next != Some(&b':')
+                    && is_identifier(arg[..index].trim())
+                {
+                    return Some(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (quote.is_none() && delimiters.is_empty()).then_some(false)
 }
 
 fn is_python_or_ruby_splat_path(path: &Path) -> bool {

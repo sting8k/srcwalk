@@ -316,7 +316,7 @@ fn append_unresolved_call_site_evidence(
     if !unrendered_names.is_empty() {
         let _ = write!(
             out,
-            "\n    unresolved names without call-site rows: {}",
+            "\n    unresolved names without rendered call-site rows: {}",
             unrendered_names.join(", ")
         );
     }

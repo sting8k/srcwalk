@@ -223,7 +223,7 @@ fn callees_default_preserves_unrendered_unresolved_names() {
         "outer multiline call should have a call-site row, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("unresolved names without call-site rows: inner"),
+        stdout.contains("unresolved names without rendered call-site rows: inner"),
         "nested unresolved name without a rendered row must be preserved, got:\n{stdout}"
     );
 }
@@ -243,7 +243,7 @@ fn callees_default_preserves_unresolved_names_after_row_cap() {
         "default output should report capped unresolved call-site rows, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("unresolved names without call-site rows: call12, call13"),
+        stdout.contains("unresolved names without rendered call-site rows: call12, call13"),
         "unresolved names after the rendered row cap must be preserved, got:\n{stdout}"
     );
 }

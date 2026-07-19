@@ -242,11 +242,30 @@ fn node_declares_name(
         }
         "variable_declarator" => binding_field_matches(node, &["name", "pattern"], name, source),
         "let_declaration" => binding_field_matches(node, &["pattern"], name, source),
-        "assignment" if lang == Lang::Python => {
-            binding_field_matches(node, &["left"], name, source)
-        }
+        "assignment" if lang == Lang::Python => node
+            .child_by_field_name("left")
+            .is_some_and(|binding| python_assignment_binding_contains_name(binding, name, source)),
         _ => false,
     }
+}
+
+fn python_assignment_binding_contains_name(node: Node<'_>, name: &str, source: &str) -> bool {
+    if node.kind() == "identifier" {
+        return node.utf8_text(source.as_bytes()).ok() == Some(name);
+    }
+
+    if !matches!(
+        node.kind(),
+        "pattern_list" | "tuple_pattern" | "list_pattern" | "list_splat_pattern"
+    ) {
+        return false;
+    }
+
+    let mut cursor = node.walk();
+    let contains = node
+        .named_children(&mut cursor)
+        .any(|child| python_assignment_binding_contains_name(child, name, source));
+    contains
 }
 
 fn binding_field_matches(node: Node<'_>, fields: &[&str], name: &str, source: &str) -> bool {

@@ -319,6 +319,38 @@ fn nested_local_bindings_are_conservative_shadow_barriers() {
 }
 
 #[test]
+fn python_member_assignment_does_not_create_a_false_shadow_barrier() {
+    let dir = temp_repo("python_member_assignment");
+    fs::write(
+        dir.join("member.py"),
+        r#"def outer(value, obj, items):
+    def helper(input):
+        return input + 1
+    def nested(value):
+        obj.helper = value
+        items[helper] = value
+        return helper(value)
+    return nested(value)
+"#,
+    )
+    .unwrap();
+
+    let output = context_output(&dir, "member.py", 2);
+    assert!(
+        output.contains("## Scoped name occurrences (3)"),
+        "{output}"
+    );
+    for line in [5, 6, 7] {
+        assert!(
+            output.contains(&format!("\n- member.py:{line}\n")),
+            "{output}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn tight_budget_omits_the_scoped_section_atomically() {
     let dir = temp_repo("budget_coherence");
     let calls = (0..20)

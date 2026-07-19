@@ -37,6 +37,13 @@ impl OccurrenceCollector {
     }
 
     fn push(&mut self, line: u32, lines: &[&str]) {
+        if self
+            .occurrences
+            .iter()
+            .any(|occurrence| occurrence.line == line)
+        {
+            return;
+        }
         if self.occurrences.len() >= self.cap {
             self.omitted += 1;
             return;
@@ -393,6 +400,22 @@ mod tests {
             DEFAULT_SCOPED_OCCURRENCE_CAP,
         )
         .is_none());
+    }
+
+    #[test]
+    fn coalesces_multiple_occurrences_on_one_line() {
+        let source = "function helper() {} helper(); helper();\n";
+        let scoped = extract_scoped_occurrences(
+            source,
+            Lang::JavaScript,
+            &decision_flow::TargetSelector::Symbol("helper".to_string()),
+            DEFAULT_SCOPED_OCCURRENCE_CAP,
+        )
+        .unwrap();
+
+        assert_eq!(scoped.occurrences.len(), 1);
+        assert_eq!(scoped.occurrences[0].line, 1);
+        assert_eq!(scoped.omitted, 0);
     }
 
     #[test]

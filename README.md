@@ -14,12 +14,13 @@ one binary, zero config.
 ## What it does
 
 - **Show** — read files, line ranges, symbols, headings, and capped raw pages.
-- **Discover** — find definitions, usages, files, text, comments, and
-  field/member access evidence.
+- **Discover** — find definitions, text-matched name occurrences, files, text,
+  comments, and field/member access evidence.
 - **Trace** — inspect callers and callees with bounded depth, hub guards,
   unresolved-call labels, and bounded direct-call evidence.
-- **Context** — build one-target packets with Flow Maps, local structural links,
-  call neighborhoods, and exact next commands.
+- **Context** — build one-target packets with Flow Maps, bounded same-file scoped
+  name occurrences when structurally reliable, local structural links, call
+  neighborhoods, and exact next commands.
 - **Review & diff** — turn Git changes into bounded evidence packets for changed
   files, symbols, and untracked files.
 - **Compare & assess** — compare two known targets structurally, or scan blast
@@ -200,7 +201,7 @@ $ srcwalk src/evidence/next_action.rs --section "NextAction,render_next_actions,
 </details>
 
 <details>
-<summary><b>Context packet — Flow Map + call neighborhood</b></summary>
+<summary><b>Context packet — Flow Map + scoped occurrences + call neighborhood</b></summary>
 
 ```
 $ srcwalk context src/evidence/next_action.rs:ordered_unique --budget 1400
@@ -240,6 +241,17 @@ N7 return :159 end
 
 ## Exits
 - :159 end
+
+## Scoped name occurrences (1)
+target: ordered_unique
+scope: src/evidence/next_action.rs:1-200
+
+- src/evidence/next_action.rs:132
+  let actions = ordered_unique(actions);
+  source: AST identifier
+  confidence: same-file structural scope candidate
+
+> Caveat: scoped occurrences are not binding-, type-, or runtime-resolved references.
 
 ## Call Neighborhood
 ### Callees (ordered)
@@ -308,13 +320,13 @@ hunks:
 
 ```
 $ srcwalk discover "render_next_actions, Anchor" --scope src/evidence --scope src/commands --limit 2
-# Search: "render_next_actions" in 2 scopes — 2 matches (1 definitions, 1 usages)
+# Search: "render_next_actions" in 2 scopes — 2 matches (1 definitions, 1 name occurrences)
 Scopes on this page: src/evidence (2), src/commands (0)
   [fn] render_next_actions src/evidence/next_action.rs:131-141
   source: ast · kind: definition · confidence: structural syntax
 
-## src/evidence/mod.rs:14 [usage]
-source: text · kind: usage · confidence: text evidence
+## src/evidence/mod.rs:14 [name occurrence]
+source: text · kind: name occurrence · confidence: text evidence
 → [14]   pub(crate) use next_action::{render_next_actions, NextAction};
 
 ## Confirmed next context targets
@@ -326,7 +338,7 @@ source: text · kind: usage · confidence: text evidence
 > Next: choose a confirmed context target above, or read exact hit evidence with `srcwalk show <path>:<line> -C 10`.
 
 ---
-# Search: "Anchor" in 2 scopes — 2 matches (1 definitions, 1 usages)
+# Search: "Anchor" in 2 scopes — 2 matches (1 definitions, 1 name occurrences)
 Scopes on this page: src/evidence (2), src/commands (0)
 
 ### File overview: src/evidence/anchor.rs (106 lines)
@@ -359,8 +371,8 @@ Scopes on this page: src/evidence (2), src/commands (0)
   [struct] Anchor src/evidence/anchor.rs:6-9
   source: ast · kind: definition · confidence: structural syntax
 
-## src/evidence/anchor.rs:18 [usage]
-source: text · kind: usage · confidence: text evidence
+## src/evidence/anchor.rs:18 [name occurrence]
+source: text · kind: name occurrence · confidence: text evidence
 → [18]   impl Anchor {
   [6-9]        struct Anchor
   [12-16]      enum AnchorRange
@@ -437,7 +449,7 @@ mod.rs  ~82
 | Operation | ~30 files | ~1000 files |
 |-----------|-----------|-------------|
 | File read + outline | ~18ms | ~18ms |
-| Find definitions/usages | ~27ms | — |
+| Find definitions/name occurrences | ~27ms | — |
 | Overview | ~21ms | ~240ms |
 
 Bloom-filter pruning + length-sorted memchr + tree-sitter parse cache.

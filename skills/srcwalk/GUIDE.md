@@ -12,7 +12,7 @@ Keep `--scope` narrow. Use raw `rg`, `read`, `fd`, or shell filesystem tools onl
 4. Do not overclaim: text/file hits are literal evidence; structural hits are navigation evidence; neither proves runtime behavior, security, correctness, aliases, types, or dynamic dispatch unless explicitly supported.
 5. Verify after edits: use `srcwalk review --staged` or the relevant srcwalk route before tests; use `rg` only for final raw text or regex confirmation.
 
-Do not infer definitions, usages, callers, dependencies, or code paths from shell path lists or broad grep alone.
+Do not infer definitions, name occurrences, callers, dependencies, or code paths from shell path lists or broad grep alone.
 
 ## Before grep/rg
 
@@ -173,7 +173,7 @@ find <dir> -type f -mtime -1
 fd -HI -t f -x stat
 ```
 
-Do not infer definitions, usages, callers, deps, or code paths from shell path lists. Do not convert identifiers into paths without evidence.
+Do not infer definitions, name occurrences, callers, deps, or code paths from shell path lists. Do not convert identifiers into paths without evidence.
 
 ## Artifact routes
 

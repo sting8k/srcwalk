@@ -4,6 +4,15 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+### Added
+- Added bounded same-file scoped name-occurrence candidates to exact `context` targets when the declaration target and scope are structurally reliable.
+
+### Changed
+- Split symbol discovery evidence into parser-backed definitions, text-matched name occurrences, and literal text matches, with caveats instead of implying binding-resolved references.
+
+### Fixed
+- Prevented Python attribute and subscript assignment targets from being treated as local bindings that hide valid outer-name occurrences.
+
 ## [1.1.0] - 2026-07-13
 
 ### Added

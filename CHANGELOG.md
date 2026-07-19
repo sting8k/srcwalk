@@ -4,6 +4,8 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [1.2.0] - 2026-07-19
+
 ### Added
 - Added bounded same-file scoped name-occurrence candidates to exact `context` targets when the declaration target and scope are structurally reliable.
 

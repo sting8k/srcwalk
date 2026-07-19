@@ -25,22 +25,9 @@ pub(crate) fn run_flow(
 ) -> Result<String, SrcwalkError> {
     use std::fmt::Write as _;
 
-    if artifact.enabled() {
-        if is_exact_path_context_target(target, scope) {
-            let output = run_flow(
-                target,
-                scope,
-                None,
-                cache,
-                depth,
-                filter,
-                ArtifactMode::Source,
-            )?;
-            return Ok(apply_context_budget(
-                label_structural_artifact_context(output),
-                budget_tokens,
-            ));
-        }
+    let structural_artifact_context =
+        artifact.enabled() && is_exact_path_context_target(target, scope);
+    if artifact.enabled() && !structural_artifact_context {
         return run_artifact_flow(target, scope, budget_tokens, cache, filter, artifact);
     }
 
@@ -51,12 +38,16 @@ pub(crate) fn run_flow(
         source: e,
     })?;
     let types::FileType::Code(lang) = lang::detect_file_type(&resolved.path) else {
-        return Ok(format!("# Context Packet: {target}\n\n(not a code file)"));
+        let mut out = format!("# Context Packet: {target}");
+        append_structural_artifact_header(&mut out, structural_artifact_context);
+        out.push_str("\n\n(not a code file)");
+        return Ok(out);
     };
 
     let display_path = format::display_path(&resolved.path);
     let confidence = confidence_label_for(EvidenceSource::Ast);
     let mut out = format!("# Context Packet: {target}");
+    append_structural_artifact_header(&mut out, structural_artifact_context);
     out.push_str("\nconfidence: ");
     out.push_str(confidence);
     out.push_str("\ncaveat: source-evidence navigation only; no runtime proof");
@@ -66,12 +57,13 @@ pub(crate) fn run_flow(
         match decision_flow::render_flow_map(&resolved, &content, lang, packet_budget) {
             Ok(flow_map) => {
                 append_context_flow_map(&mut out, &resolved.path, &flow_map);
-                let occurrence_artifact =
-                    if crate::artifact::should_auto_artifact_file(&resolved.path) {
-                        ArtifactMode::Artifact
-                    } else {
-                        ArtifactMode::Source
-                    };
+                let occurrence_artifact = if structural_artifact_context
+                    || crate::artifact::should_auto_artifact_file(&resolved.path)
+                {
+                    ArtifactMode::Artifact
+                } else {
+                    ArtifactMode::Source
+                };
                 append_scoped_name_occurrences(
                     &mut out,
                     &resolved.path,
@@ -163,18 +155,12 @@ fn is_exact_path_context_target(target: &str, scope: &Path) -> bool {
         })
 }
 
-fn label_structural_artifact_context(mut output: String) -> String {
-    if let Some(header_end) = output.find('\n') {
-        output.insert_str(
-            header_end,
+fn append_structural_artifact_header(out: &mut String, enabled: bool) {
+    if enabled {
+        out.push_str(
             "\nsource: artifact AST\nartifact caveat: parser-backed artifact scope only; no source-map or original-source identity",
         );
     }
-    output = output.replace("source: AST identifier", "source: artifact AST identifier");
-    output.replace(
-        "> Caveat: scoped occurrences are not binding-, type-, or runtime-resolved references.",
-        "> Caveat: scoped occurrences are not binding-, type-, or runtime-resolved references; artifact AST anchors imply no source-map or original-source identity.",
-    )
 }
 
 fn append_context_flow_map(

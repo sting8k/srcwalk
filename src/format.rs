@@ -46,10 +46,10 @@ pub(crate) fn search_count_parts(total: usize, counts: SearchEvidenceCounts) -> 
             format!("{total} matches ({} in comments)", counts.comments)
         }
     } else {
-        let mut details = vec![
-            format!("{} definitions", counts.definitions),
-            format!("{} name occurrences", counts.name_occurrences),
-        ];
+        let mut details = vec![format!("{} definitions", counts.definitions)];
+        if counts.name_occurrences > 0 {
+            details.push(format!("{} name occurrences", counts.name_occurrences));
+        }
         if counts.text_matches > 0 {
             details.push(format!("{} text matches", counts.text_matches));
         }
@@ -155,5 +155,25 @@ fn short_path(path: &Path) -> String {
         file.to_string()
     } else {
         path.display().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_count_parts_omits_zero_name_occurrence_bucket() {
+        let counts = SearchEvidenceCounts {
+            definitions: 1,
+            name_occurrences: 0,
+            text_matches: 1,
+            comments: 0,
+        };
+
+        assert_eq!(
+            search_count_parts(2, counts),
+            "2 matches (1 definitions, 1 text matches)"
+        );
     }
 }

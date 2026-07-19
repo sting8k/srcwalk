@@ -150,6 +150,10 @@ fn parseable_artifact_context_uses_the_shared_scoped_extractor() {
     assert!(exact.contains("## Scoped name occurrences (2)"), "{exact}");
     assert!(exact.contains("source: artifact AST identifier"), "{exact}");
     assert!(
+        !exact.contains("source: AST identifier"),
+        "exact artifact context must emit artifact labels directly:\n{exact}"
+    );
+    assert!(
         exact.contains("no source-map or original-source identity"),
         "{exact}"
     );

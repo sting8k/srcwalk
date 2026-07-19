@@ -48,7 +48,7 @@ pub(crate) struct Cli {
 }
 
 pub(crate) const ROOT_HELP: &str = "\
-Start here:\n  srcwalk guide                         Full embedded, version-matched agent guide for agents\n\nCommon:\n  srcwalk overview                      Show repo orientation and dependency groups\n  srcwalk context <symbol-or-file:line> Understand one known target\n  srcwalk trace callers <symbol>        Show who calls a symbol\n  srcwalk trace callees <symbol>        Show what a symbol calls\n  srcwalk deps <file>                   Show imports and dependents\n  srcwalk assess <symbol>               Heuristic blast-radius triage\n  srcwalk review <range-or-staged>      Review a change set with Flow Map evidence\n  srcwalk compare <target-a> <target-b> Compare two known source targets structurally\n  srcwalk discover <query>              Find candidate symbols/usages/text\n  srcwalk discover <glob> --as file     Find files by glob\n  srcwalk show <path>:<line> -C 10      Read exact evidence with extra line context\n  srcwalk <path>                        Read a file smartly\n  srcwalk <path>:<line>                 Read around a line\n  srcwalk version                       Show version; add --check for latest";
+Start here:\n  srcwalk guide                         Full embedded, version-matched agent guide for agents\n\nCommon:\n  srcwalk overview                      Show repo orientation and dependency groups\n  srcwalk context <symbol-or-file:line> Understand one known target\n  srcwalk trace callers <symbol>        Show who calls a symbol\n  srcwalk trace callees <symbol>        Show what a symbol calls\n  srcwalk deps <file>                   Show imports and dependents\n  srcwalk assess <symbol>               Heuristic blast-radius triage\n  srcwalk review <range-or-staged>      Review a change set with Flow Map evidence\n  srcwalk compare <target-a> <target-b> Compare two known source targets structurally\n  srcwalk discover <query>              Find candidate symbols/name occurrences/text\n  srcwalk discover <glob> --as file     Find files by glob\n  srcwalk show <path>:<line> -C 10      Read exact evidence with extra line context\n  srcwalk <path>                        Read a file smartly\n  srcwalk <path>:<line>                 Read around a line\n  srcwalk version                       Show version; add --check for latest";
 
 pub(crate) const GUIDE: &str = include_str!("../skills/srcwalk/GUIDE.md");
 
@@ -70,7 +70,7 @@ pub(crate) enum Command {
     Review(ReviewCmd),
     /// Compare two known source targets structurally.
     Compare(CompareCmd),
-    /// Find candidate symbols, usages, text, field/member access, or files.
+    /// Find candidate symbols, name occurrences, text, field/member access, or files.
     Discover(DiscoverCmd),
     /// Read exact file, line, range, section, or comma-separated locations.
     Show(ShowCmd),

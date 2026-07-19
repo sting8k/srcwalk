@@ -324,7 +324,7 @@ fn append_annotations(
 fn annotation_group_label(kind: EvidenceKind) -> &'static str {
     match kind {
         EvidenceKind::Definition => "definitions",
-        EvidenceKind::Usage => "usages",
+        EvidenceKind::NameOccurrence => "name occurrences",
         EvidenceKind::Text => "text",
         EvidenceKind::File => "files",
         EvidenceKind::Call => "calls",

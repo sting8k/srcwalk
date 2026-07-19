@@ -390,8 +390,13 @@ fn merge_scope_results(
     Ok(types::SearchResult {
         query: query.to_string(),
         scope: common_scope(scopes),
-        matches,
         total_found,
+        definition_candidates: definitions,
+        name_occurrence_candidates: matches
+            .iter()
+            .filter(|m| m.is_name_occurrence_candidate())
+            .count(),
+        matches,
         definitions,
         usages: total_found.saturating_sub(definitions + comments),
         comments,
@@ -402,12 +407,7 @@ fn merge_scope_results(
 
 fn multi_scope_search_header(result: &types::SearchResult, scopes: &[PathBuf]) -> String {
     let total = result.matches.len();
-    let parts = match (result.definitions, result.usages, result.comments) {
-        (0, _, 0) => format!("{total} matches"),
-        (0, _, c) => format!("{total} matches ({c} in comments)"),
-        (d, u, 0) => format!("{total} matches ({d} definitions, {u} usages)"),
-        (d, u, c) => format!("{total} matches ({d} definitions, {u} usages, {c} in comments)"),
-    };
+    let parts = format::search_count_parts(total, result.page_evidence_counts());
     let scope_list = if scopes_overlap(scopes) {
         scopes
             .iter()

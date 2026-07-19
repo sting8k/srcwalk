@@ -520,6 +520,11 @@ pub(crate) fn run_cooccurrence_filtered_with_artifact(
         query: query.to_string(),
         scope: scope.to_path_buf(),
         total_found: matches.len(),
+        definition_candidates: definitions,
+        name_occurrence_candidates: matches
+            .iter()
+            .filter(|m| m.is_name_occurrence_candidate())
+            .count(),
         matches,
         definitions,
         usages,

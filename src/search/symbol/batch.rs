@@ -66,15 +66,16 @@ pub(super) fn search_batch(
         let defs = defs_by_q[i].clone();
         let usages = usages_by_q[i].clone();
         let mut merged: Vec<Match> = defs;
-        let def_count = merged.len();
+        let definition_pass_count = merged.len();
         for m in usages {
-            let dominated = merged[..def_count]
+            let dominated = merged[..definition_pass_count]
                 .iter()
                 .any(|d| d.path == m.path && d.line == m.line);
             if !dominated {
                 merged.push(m);
             }
         }
+        let def_count = merged.iter().filter(|m| m.is_definition).count();
         let total = merged.len();
         let comment_count = merged.iter().filter(|m| m.in_comment).count();
         let usage_count = total - def_count - comment_count;
@@ -82,8 +83,13 @@ pub(super) fn search_batch(
         out.push(SearchResult {
             query: (*query).to_string(),
             scope: scope.to_path_buf(),
-            matches: merged,
             total_found: total,
+            definition_candidates: def_count,
+            name_occurrence_candidates: merged
+                .iter()
+                .filter(|m| m.is_name_occurrence_candidate())
+                .count(),
+            matches: merged,
             definitions: def_count,
             usages: usage_count,
             comments: comment_count,

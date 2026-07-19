@@ -12,7 +12,7 @@ Keep `--scope` narrow. Use raw `rg`, `read`, `fd`, or shell filesystem tools onl
 4. Do not overclaim: text/file hits are literal evidence; structural hits are navigation evidence; neither proves runtime behavior, security, correctness, aliases, types, or dynamic dispatch unless explicitly supported.
 5. Verify after edits: use `srcwalk review --staged` or the relevant srcwalk route before tests; use `rg` only for final raw text or regex confirmation.
 
-Do not infer definitions, usages, callers, dependencies, or code paths from shell path lists or broad grep alone.
+Do not infer definitions, name occurrences, callers, dependencies, or code paths from shell path lists or broad grep alone.
 
 ## Before grep/rg
 
@@ -80,13 +80,13 @@ Intent inference: path-like globs infer file discovery; punctuation/path comma l
 
 For multiple literal text terms, use comma OR: `srcwalk discover 'foo,bar,baz' --match any --as text --scope <dir>`. Do not run separate grep commands first.
 
-Text discovery is literal evidence. `--match any --as text` is comma literal OR; `--match all` is same-file co-occurrence, not semantic relation proof.
+Symbol discovery separates parser-backed definition candidates from text-matched name occurrences. Name occurrences are navigation candidates, not binding-resolved references; repeated same-name definitions receive an ambiguity caveat. Text discovery remains literal evidence. `--match any --as text` is comma literal OR; `--match all` is same-file co-occurrence, not semantic relation proof.
 
 If discover prints `## Confirmed next context targets`, those are structural candidates from the match context; run one that matches your intent. If it only prints raw hit drilldowns, use `srcwalk show <path>:<line> -C 10` first. `discover <field> --as access` is syntax only: no runtime order, type proof, alias proof, or call relation proof.
 
 ### Understand and read exact evidence
 
-Use `context` for one known target before review or trace chains. Use `show` for exact source after srcwalk gives a path/line/range, or when you already know the target.
+Use `context` for one known target before review or trace chains. Supported exact structural definitions may include a bounded `Scoped name occurrences` section; these same-file AST candidates are not binding-, type-, or runtime-resolved references. Use `show` for exact source after srcwalk gives a path/line/range, or when you already know the target.
 
 ```bash
 srcwalk context <file>:<symbol>
@@ -173,7 +173,7 @@ find <dir> -type f -mtime -1
 fd -HI -t f -x stat
 ```
 
-Do not infer definitions, usages, callers, deps, or code paths from shell path lists. Do not convert identifiers into paths without evidence.
+Do not infer definitions, name occurrences, callers, deps, or code paths from shell path lists. Do not convert identifiers into paths without evidence.
 
 ## Artifact routes
 

@@ -98,10 +98,10 @@ pub fn search_with_artifact(
     // Deduplicate: remove usage matches that overlap with definition matches.
     // Linear scan — max ~30 defs from EARLY_QUIT_THRESHOLD, no allocation needed.
     let mut merged: Vec<Match> = defs;
-    let def_count = merged.len();
+    let definition_pass_count = merged.len();
 
     for m in usages {
-        let dominated = merged[..def_count]
+        let dominated = merged[..definition_pass_count]
             .iter()
             .any(|d| d.path == m.path && d.line == m.line);
         if !dominated {
@@ -109,6 +109,7 @@ pub fn search_with_artifact(
         }
     }
 
+    let def_count = merged.iter().filter(|m| m.is_definition).count();
     let total = merged.len();
     let comment_count = merged.iter().filter(|m| m.in_comment).count();
     let usage_count = total - def_count - comment_count;
@@ -118,8 +119,13 @@ pub fn search_with_artifact(
     Ok(SearchResult {
         query: query.to_string(),
         scope: scope.to_path_buf(),
-        matches: merged,
         total_found: total,
+        definition_candidates: def_count,
+        name_occurrence_candidates: merged
+            .iter()
+            .filter(|m| m.is_name_occurrence_candidate())
+            .count(),
+        matches: merged,
         definitions: def_count,
         usages: usage_count,
         comments: comment_count,

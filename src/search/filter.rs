@@ -101,9 +101,18 @@ pub fn apply_general_filter(
         .matches
         .retain(|m| filters.iter().all(|f| f.matches(m, scope, cache)));
     result.total_found = result.matches.len();
-    result.definitions = result.matches.iter().filter(|m| m.is_definition).count();
+    result.definition_candidates = result.matches.iter().filter(|m| m.is_definition).count();
+    result.name_occurrence_candidates = result
+        .matches
+        .iter()
+        .filter(|m| m.is_name_occurrence_candidate())
+        .count();
+    result.definitions = result.definition_candidates;
     result.comments = result.matches.iter().filter(|m| m.in_comment).count();
-    result.usages = result.matches.len().saturating_sub(result.definitions);
+    result.usages = result
+        .matches
+        .len()
+        .saturating_sub(result.definitions + result.comments);
     result.has_more = false;
     result.offset = 0;
     Ok(())

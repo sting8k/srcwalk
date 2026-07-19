@@ -160,6 +160,8 @@ pub fn search_with_artifact(
         scope: scope.to_path_buf(),
         matches: all_matches,
         total_found: total,
+        definition_candidates: 0,
+        name_occurrence_candidates: 0,
         definitions: 0,
         usages: total,
         comments: 0,

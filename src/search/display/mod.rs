@@ -30,7 +30,7 @@ pub(super) use semantic::best_semantic_candidate;
 
 pub(super) fn match_kind_label(m: &Match, cache: &OutlineCache) -> Option<&'static str> {
     if m.in_comment {
-        return Some("comment");
+        return Some("comment occurrence");
     }
     if !m.is_definition {
         return Some(non_definition_label(m));
@@ -73,7 +73,7 @@ pub(super) fn document_outline_kind_label(kind: OutlineKind) -> Option<&'static 
 
 fn displayed_evidence_kind_label(m: &Match) -> &'static str {
     if m.in_comment {
-        "comment"
+        "comment occurrence"
     } else if m.impl_target.is_some() {
         "impl"
     } else if m.base_target.is_some() {
@@ -191,7 +191,7 @@ fn format_compact_facet_matches(
             format_compact_non_definition_match(group[0], scope, out);
             continue;
         }
-        let noun = non_definition_group_noun(path);
+        let noun = non_definition_group_noun(group[0]);
         let _ = write!(
             out,
             "\n  {} [{} {noun}]",
@@ -201,11 +201,7 @@ fn format_compact_facet_matches(
         append_match_provenance(group[0], out, "    ");
         for m in group {
             let atom = m.to_evidence_atom();
-            let kind = if m.in_comment {
-                "comment"
-            } else {
-                non_definition_label(m)
-            };
+            let kind = non_definition_label(m);
             let _ = write!(
                 out,
                 "\n    [{kind}] :{} | {}",
@@ -218,11 +214,7 @@ fn format_compact_facet_matches(
 
 fn format_compact_non_definition_match(m: &Match, scope: &Path, out: &mut String) {
     let atom = m.to_evidence_atom();
-    let kind = if m.in_comment {
-        "comment"
-    } else {
-        non_definition_label(m)
-    };
+    let kind = non_definition_label(m);
     let _ = write!(
         out,
         "\n  [{kind}] {} | {}",
@@ -301,8 +293,8 @@ enum MatchGroup<'a> {
 fn group_matches<'a>(matches: &'a [Match], _cache: &OutlineCache) -> Vec<MatchGroup<'a>> {
     let mut groups: Vec<MatchGroup<'a>> = Vec::new();
     let mut seen_defs: HashSet<DefKey<'_>> = HashSet::new();
-    // Collect usages per file (preserving order of first occurrence)
-    let mut file_usages: IndexMap<&Path, Vec<&'a Match>> = IndexMap::new();
+    // Collect non-definitions by file and honest evidence label, preserving first occurrence order.
+    let mut file_matches: IndexMap<(&Path, &'static str), Vec<&'a Match>> = IndexMap::new();
 
     for m in matches {
         if m.is_definition || m.impl_target.is_some() {
@@ -318,16 +310,19 @@ fn group_matches<'a>(matches: &'a [Match], _cache: &OutlineCache) -> Vec<MatchGr
             }
             groups.push(MatchGroup::Single(m));
         } else {
-            file_usages.entry(m.path.as_path()).or_default().push(m);
+            file_matches
+                .entry((m.path.as_path(), non_definition_label(m)))
+                .or_default()
+                .push(m);
         }
     }
 
-    // Emit file-grouped usages after definitions
-    for (_path, usages) in file_usages {
-        if usages.len() == 1 {
-            groups.push(MatchGroup::Single(usages[0]));
+    // Emit file-grouped non-definitions after definitions.
+    for ((_path, _label), matches) in file_matches {
+        if matches.len() == 1 {
+            groups.push(MatchGroup::Single(matches[0]));
         } else {
-            groups.push(MatchGroup::FileGroup(usages));
+            groups.push(MatchGroup::FileGroup(matches));
         }
     }
 
@@ -337,20 +332,38 @@ fn group_matches<'a>(matches: &'a [Match], _cache: &OutlineCache) -> Vec<MatchGr
 /// Format a file-level group of usages: one header, outline once, compact list with fn names.
 pub(super) fn non_definition_label(m: &Match) -> &'static str {
     if m.impl_target.is_some() {
-        return "impl";
-    }
-    match crate::lang::detect_file_type(&m.path) {
-        crate::types::FileType::Other | crate::types::FileType::Log => "text",
-        _ => "usage",
+        "impl"
+    } else if m.in_comment {
+        "comment occurrence"
+    } else {
+        m.to_evidence_atom().kind().as_str()
     }
 }
 
-fn non_definition_group_noun(path: &Path) -> &'static str {
-    match crate::lang::detect_file_type(path) {
-        crate::types::FileType::Other | crate::types::FileType::Log => "matches",
-        _ => "usages",
+fn non_definition_group_noun(m: &Match) -> &'static str {
+    match non_definition_label(m) {
+        "name occurrence" => "name occurrences",
+        "comment occurrence" => "comment occurrences",
+        _ => "text matches",
     }
 }
+
+fn non_definition_facet_heading(matches: &[Match], same_package: bool) -> &'static str {
+    let has_text = matches.iter().any(|m| non_definition_label(m) == "text");
+    let has_name_occurrence = matches
+        .iter()
+        .any(|m| non_definition_label(m) == "name occurrence");
+
+    match (has_text, has_name_occurrence, same_package) {
+        (true, false, true) => "Text matches — same package",
+        (true, false, false) => "Text matches — other",
+        (false, true, true) => "Name occurrences — same package",
+        (false, true, false) => "Name occurrences — other",
+        (_, _, true) => "Matches — same package",
+        (_, _, false) => "Matches — other",
+    }
+}
+
 fn format_file_group(
     group: &[&Match],
     scope: &Path,
@@ -361,7 +374,7 @@ fn format_file_group(
     let first = group[0];
     let path_str = rel_nonempty(&first.path, scope);
 
-    let noun = non_definition_group_noun(&first.path);
+    let noun = non_definition_group_noun(first);
     let _ = write!(out, "\n\n## {path_str} [{} {noun}]", group.len());
 
     append_match_provenance(first, out, "");
@@ -447,6 +460,16 @@ fn append_next_action(footer: &mut String, action: NextAction) {
     footer.push_str(&render_next_actions(&[action]));
 }
 
+pub(super) fn append_symbol_ambiguity_caveat(out: &mut String, result: &SearchResult) {
+    if result.definition_candidates > 1 && result.name_occurrence_candidates > 0 {
+        let _ = write!(
+            out,
+            "\n> Caveat: {} definition candidates share this name; text-matched name occurrences are not binding-resolved and may belong to different scopes.",
+            result.definition_candidates
+        );
+    }
+}
+
 /// Format a symbol/content search result.
 /// When an outline cache is available, wraps each match in the file's outline context.
 /// When `expand > 0`, the top N matches inline actual code (def body or ±10 lines).
@@ -463,9 +486,7 @@ pub(super) fn format_search_result(
         &result.query,
         &result.scope,
         result.matches.len(),
-        result.definitions,
-        result.usages,
-        result.comments,
+        result.page_evidence_counts(),
     );
     format_search_result_with_header(result, cache, session, bloom, expand, budget_tokens, header)
 }
@@ -480,6 +501,7 @@ pub(super) fn format_search_result_with_header(
     header: String,
 ) -> Result<String, SrcwalkError> {
     let mut out = header;
+    append_symbol_ambiguity_caveat(&mut out, result);
     let mut expand_remaining = expand;
     let mut expand_budget = ExpandBudget::new(expand, budget_tokens);
     let mut expanded_files = HashSet::new();
@@ -579,6 +601,7 @@ pub(super) fn format_search_result_with_header(
 
         if !faceted.tests.is_empty() {
             let _ = write!(out, "\n\n### Tests ({})", faceted.tests.len());
+            append_match_provenance(&faceted.tests[0], &mut out, "");
             // Compact test format — one line per match, no expand budget consumed
             for m in &faceted.tests {
                 let atom = m.to_evidence_atom();
@@ -593,6 +616,7 @@ pub(super) fn format_search_result_with_header(
 
         if !faceted.comments.is_empty() {
             let _ = write!(out, "\n\n### Comments ({})", faceted.comments.len());
+            append_match_provenance(&faceted.comments[0], &mut out, "");
             for m in &faceted.comments {
                 let atom = m.to_evidence_atom();
                 let _ = write!(
@@ -605,15 +629,7 @@ pub(super) fn format_search_result_with_header(
         }
 
         if !faceted.usages_local.is_empty() {
-            let header = if faceted
-                .usages_local
-                .iter()
-                .all(|m| non_definition_label(m) == "text")
-            {
-                "Text matches — same package"
-            } else {
-                "Usages — same package"
-            };
+            let header = non_definition_facet_heading(&faceted.usages_local, true);
             let _ = write!(out, "\n\n### {header} ({})", faceted.usages_local.len());
             if compact_facets {
                 format_compact_facet_matches(&faceted.usages_local, &result.scope, cache, &mut out);
@@ -635,15 +651,7 @@ pub(super) fn format_search_result_with_header(
         }
 
         if !faceted.usages_cross.is_empty() {
-            let header = if faceted
-                .usages_cross
-                .iter()
-                .all(|m| non_definition_label(m) == "text")
-            {
-                "Text matches — other"
-            } else {
-                "Usages — other"
-            };
+            let header = non_definition_facet_heading(&faceted.usages_cross, false);
             let _ = write!(out, "\n\n### {header} ({})", faceted.usages_cross.len());
             if compact_facets {
                 format_compact_facet_matches(&faceted.usages_cross, &result.scope, cache, &mut out);

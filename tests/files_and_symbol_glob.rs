@@ -29,7 +29,7 @@ fn norm_path_separators(s: &str) -> String {
 }
 
 #[test]
-fn discover_outputs_per_hit_provenance_for_structural_usage_and_text_hits() {
+fn discover_outputs_provenance_for_structural_occurrences_and_text_hits() {
     let dir = temp_repo("hit_provenance");
     write_file(
         &dir.join("src/lib.rs"),
@@ -57,20 +57,24 @@ pub fn beta() {
     );
     let symbol_stdout = norm_path_separators(&String::from_utf8_lossy(&symbol_out.stdout));
     assert!(
+        symbol_stdout.contains("3 matches (1 definitions, 1 name occurrences, 1 text matches)"),
+        "mixed aggregate labels must preserve evidence kinds:\n{symbol_stdout}"
+    );
+    assert!(
         symbol_stdout.contains("[fn] alpha src/lib.rs:1-4\n  source: ast · kind: definition · confidence: structural syntax"),
         "definition provenance should identify AST-backed structural evidence:\n{symbol_stdout}"
     );
     assert!(
         symbol_stdout.contains(
-            "## src/lib.rs:7 [usage]\nsource: text · kind: usage · confidence: text evidence"
+            "## src/lib.rs:7 [name occurrence]\nsource: text · kind: name occurrence · confidence: text evidence"
         ),
-        "usage provenance should identify text-backed usage evidence:\n{symbol_stdout}"
+        "occurrence provenance should identify text-backed name evidence:\n{symbol_stdout}"
     );
     assert!(
         symbol_stdout.contains(
             "## src/readme.txt:1 [text]\nsource: text · kind: text · confidence: text evidence"
         ),
-        "text-file provenance should not overclaim as usage evidence:\n{symbol_stdout}"
+        "text-file provenance should remain literal text evidence:\n{symbol_stdout}"
     );
 
     let text_out = srcwalk()
@@ -88,10 +92,47 @@ pub fn beta() {
     let text_stdout = norm_path_separators(&String::from_utf8_lossy(&text_out.stdout));
     assert!(
         text_stdout.contains(
-            "## src/lib.rs [2 usages]\nsource: text · kind: usage · confidence: text evidence"
+            "## src/lib.rs [2 text matches]\nsource: text · kind: text · confidence: text evidence"
         ),
-        "grouped usage provenance should stay visible at the group header:\n{text_stdout}"
+        "grouped text provenance should stay visible at the group header:\n{text_stdout}"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mixed_facets_use_neutral_heading_for_text_and_name_occurrences() {
+    let dir = temp_repo("mixed_evidence_facets");
+    write_file(
+        &dir.join("src/lib.rs"),
+        "pub fn alpha() {}\npub fn one() { alpha(); }\npub fn two() { alpha(); }\npub fn three() { alpha(); }\n",
+    );
+    write_file(
+        &dir.join("src/readme.txt"),
+        "alpha first\nalpha second\nalpha third\n",
+    );
+
+    let output = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "alpha", "--scope", "src", "--limit", "10"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = norm_path_separators(&String::from_utf8_lossy(&output.stdout));
+    assert!(
+        stdout.contains("7 matches (1 definitions, 3 name occurrences, 3 text matches)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("### Matches — other (6)"),
+        "mixed facet must not label text as name occurrences:\n{stdout}"
+    );
+    assert!(stdout.contains("[3 name occurrences]"), "{stdout}");
+    assert!(stdout.contains("[3 text matches]"), "{stdout}");
 
     let _ = fs::remove_dir_all(&dir);
 }

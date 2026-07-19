@@ -67,6 +67,8 @@ mod tests {
                 hit(3, false, false),
             ],
             total_found: 3,
+            definition_candidates: 1,
+            name_occurrence_candidates: 1,
             definitions: 1,
             usages: 1,
             comments: 1,
@@ -78,6 +80,8 @@ mod tests {
 
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.total_found, 3);
+        assert_eq!(result.definition_candidates, 1);
+        assert_eq!(result.name_occurrence_candidates, 1);
         assert_eq!(result.definitions, 0);
         assert_eq!(result.usages, 0);
         assert_eq!(result.comments, 1);

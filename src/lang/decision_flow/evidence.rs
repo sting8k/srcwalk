@@ -168,6 +168,22 @@ fn parameters_node(function: Node<'_>) -> Option<Node<'_>> {
     find_parameters_node(function, 0)
 }
 
+pub(super) fn function_has_parameter_named(
+    function: Node<'_>,
+    source: &str,
+    expected: &str,
+) -> bool {
+    let Some(parameters) = parameters_node(function) else {
+        return false;
+    };
+    let mut cursor = parameters.walk();
+    let found = parameters.named_children(&mut cursor).any(|parameter| {
+        parameter_name_node(parameter)
+            .is_some_and(|name| compact_node_text(name, source) == expected)
+    });
+    found
+}
+
 fn find_parameters_node(node: Node<'_>, depth: usize) -> Option<Node<'_>> {
     if depth > PARAMETER_SEARCH_MAX_DEPTH {
         return None;

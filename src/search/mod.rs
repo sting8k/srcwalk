@@ -40,8 +40,8 @@ use self::io::{parse_pattern, walker};
 use self::pagination::paginate;
 
 use self::display::{
-    append_expand_budget_note, format_matches, format_search_result,
-    format_search_result_with_header, ExpandBudget,
+    append_expand_budget_note, append_symbol_ambiguity_caveat, format_matches,
+    format_search_result, format_search_result_with_header, ExpandBudget,
 };
 
 /// Append a `> Did you mean: …` line when a symbol search returned 0 hits and
@@ -161,7 +161,7 @@ pub fn search_symbol_with_artifact(
     }
     if result.usages >= 5 {
         actions.push(NextAction::guidance(
-            "for precise call sites use `srcwalk trace callers <symbol>` instead of text-based usages",
+            "for precise call sites use `srcwalk trace callers <symbol>` instead of text-matched name occurrences",
             "precise caller drilldown",
             50,
         ));
@@ -329,10 +329,9 @@ pub fn search_multi_symbol_expanded(
             &result.query,
             &result.scope,
             result.matches.len(),
-            result.definitions,
-            result.usages,
-            result.comments,
+            result.page_evidence_counts(),
         );
+        append_symbol_ambiguity_caveat(&mut out, &result);
         let mut budget = expand_per_query;
         format_matches(
             &result.matches,

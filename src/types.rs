@@ -240,14 +240,22 @@ pub struct Match {
 }
 
 impl Match {
-    pub(crate) fn to_evidence_atom(&self) -> EvidenceAtom {
-        let kind = if self.is_definition {
+    pub(crate) fn evidence_kind(&self) -> EvidenceKind {
+        if self.is_definition {
             EvidenceKind::Definition
-        } else if self.exact {
-            EvidenceKind::Usage
-        } else {
+        } else if !self.exact || !crate::lang::detect_file_type(&self.path).is_code() {
             EvidenceKind::Text
-        };
+        } else {
+            EvidenceKind::NameOccurrence
+        }
+    }
+
+    pub(crate) fn is_name_occurrence_candidate(&self) -> bool {
+        !self.in_comment && self.evidence_kind() == EvidenceKind::NameOccurrence
+    }
+
+    pub(crate) fn to_evidence_atom(&self) -> EvidenceAtom {
+        let kind = self.evidence_kind();
         let source = if self.is_definition {
             EvidenceSource::Ast
         } else {
@@ -273,6 +281,10 @@ pub struct SearchResult {
     pub scope: PathBuf,
     pub matches: Vec<Match>,
     pub total_found: usize,
+    /// Definition candidates before pagination; retained so ambiguity stays visible on every page.
+    pub definition_candidates: usize,
+    /// Text-matched name occurrences before pagination; excludes literal text-search matches.
+    pub name_occurrence_candidates: usize,
     pub definitions: usize,
     pub usages: usize,
     pub comments: usize,
@@ -280,6 +292,40 @@ pub struct SearchResult {
     pub has_more: bool,
     /// Current offset (0-based) into the full result set.
     pub offset: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SearchEvidenceCounts {
+    pub definitions: usize,
+    pub name_occurrences: usize,
+    pub text_matches: usize,
+    pub comments: usize,
+}
+
+impl SearchResult {
+    pub(crate) fn page_evidence_counts(&self) -> SearchEvidenceCounts {
+        let mut counts = SearchEvidenceCounts {
+            definitions: 0,
+            name_occurrences: 0,
+            text_matches: 0,
+            comments: 0,
+        };
+
+        for matched in &self.matches {
+            if matched.in_comment {
+                counts.comments += 1;
+                continue;
+            }
+            match matched.evidence_kind() {
+                EvidenceKind::Definition => counts.definitions += 1,
+                EvidenceKind::NameOccurrence => counts.name_occurrences += 1,
+                EvidenceKind::Text => counts.text_matches += 1,
+                _ => unreachable!("Match::evidence_kind returned a non-search evidence kind"),
+            }
+        }
+
+        counts
+    }
 }
 
 /// A single entry in a code outline.
@@ -407,5 +453,46 @@ mod tests {
         assert_eq!(lang.id(), LangId::new("lang.example"));
         assert_eq!(lang.label(), "Example");
         assert_ne!(Lang::Provider(lang), Lang::Rust);
+    }
+
+    fn evidence_match(path: &str, exact: bool) -> Match {
+        Match {
+            path: PathBuf::from(path),
+            line: 1,
+            text: "token".to_string(),
+            is_definition: false,
+            exact,
+            file_lines: 1,
+            mtime: SystemTime::UNIX_EPOCH,
+            def_range: None,
+            def_name: None,
+            def_weight: 0,
+            impl_target: None,
+            base_target: None,
+            in_comment: false,
+        }
+    }
+
+    #[test]
+    fn match_evidence_kind_distinguishes_symbol_occurrences_from_literal_text() {
+        assert_eq!(
+            evidence_match("src/lib.rs", true).evidence_kind(),
+            EvidenceKind::NameOccurrence
+        );
+        assert_eq!(
+            evidence_match("notes.txt", true).evidence_kind(),
+            EvidenceKind::Text
+        );
+        assert_eq!(
+            evidence_match("src/lib.rs", false).evidence_kind(),
+            EvidenceKind::Text
+        );
+        for path in ["README.md", "config.json", "table.csv"] {
+            assert_eq!(
+                evidence_match(path, true).evidence_kind(),
+                EvidenceKind::Text,
+                "{path}"
+            );
+        }
     }
 }

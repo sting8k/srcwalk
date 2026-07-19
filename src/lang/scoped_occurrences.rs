@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use crate::lang::{decision_flow, treesitter};
+use crate::lang::{decision_flow, outline::outline_language, treesitter};
 use crate::types::Lang;
 
 pub(crate) const DEFAULT_SCOPED_OCCURRENCE_CAP: usize = 12;
@@ -55,7 +55,7 @@ pub(crate) fn extract_scoped_occurrences(
     selector: &decision_flow::TargetSelector,
     cap: usize,
 ) -> Option<ScopedOccurrences> {
-    let language = decision_flow::parser_language(lang)?;
+    let language = outline_language(lang)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).ok()?;
     let tree = parser.parse(source, None)?;

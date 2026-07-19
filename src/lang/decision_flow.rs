@@ -161,16 +161,13 @@ pub(crate) fn find_unique_flow_target_definition<'tree>(
     lang: Lang,
     selector: &TargetSelector,
 ) -> Option<Node<'tree>> {
-    let rules = active_flow_rules(lang)?;
-    let lines = source.lines().collect::<Vec<_>>();
     let mut candidates = Vec::new();
-    collect_unique_function_nodes(root, &rules, &mut candidates);
+    collect_unique_function_nodes(root, lang, &mut candidates);
 
     match selector {
         TargetSelector::Symbol(symbol) => {
             candidates.retain(|candidate| {
-                provider_rules::function_display_name(&rules, *candidate, source, &lines)
-                    .is_some_and(|name| name == *symbol)
+                function_display_name(*candidate, source, lang).is_some_and(|name| name == *symbol)
             });
         }
         TargetSelector::LineRange { start, end } => {
@@ -201,9 +198,7 @@ pub(crate) fn find_unique_flow_target_definition<'tree>(
 }
 
 pub(crate) fn is_function_like_node(node: Node<'_>, lang: Lang) -> bool {
-    active_flow_rules(lang)
-        .and_then(|rules| normalized_function_node(node, &rules))
-        .is_some()
+    normalized_function_node(node, lang).is_some()
 }
 
 pub(crate) fn function_has_parameter_named(
@@ -700,10 +695,10 @@ fn find_target_function<'tree>(
 
 fn collect_unique_function_nodes<'tree>(
     node: Node<'tree>,
-    rules: &ActiveFlowRules,
+    lang: Lang,
     candidates: &mut Vec<Node<'tree>>,
 ) {
-    if let Some(candidate) = normalized_function_node(node, rules) {
+    if let Some(candidate) = normalized_function_node(node, lang) {
         if !candidates
             .iter()
             .any(|existing| existing.id() == candidate.id())
@@ -714,7 +709,7 @@ fn collect_unique_function_nodes<'tree>(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_unique_function_nodes(child, rules, candidates);
+        collect_unique_function_nodes(child, lang, candidates);
     }
 }
 

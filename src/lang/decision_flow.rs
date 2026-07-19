@@ -155,6 +155,65 @@ fn is_supported_decision_flow_lang(lang: Lang) -> bool {
     )
 }
 
+pub(crate) fn find_unique_flow_target_definition<'tree>(
+    root: Node<'tree>,
+    source: &str,
+    lang: Lang,
+    selector: &TargetSelector,
+) -> Option<Node<'tree>> {
+    let rules = active_flow_rules(lang)?;
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    collect_unique_function_nodes(root, &rules, &mut candidates);
+
+    match selector {
+        TargetSelector::Symbol(symbol) => {
+            candidates.retain(|candidate| {
+                provider_rules::function_display_name(&rules, *candidate, source, &lines)
+                    .is_some_and(|name| name == *symbol)
+            });
+        }
+        TargetSelector::LineRange { start, end } => {
+            let exact = candidates
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    line_start(*candidate) == *start && line_end(*candidate) == *end
+                })
+                .collect::<Vec<_>>();
+            if exact.len() == 1 {
+                return exact.into_iter().next();
+            }
+            candidates.retain(|candidate| {
+                declaration_name_node(*candidate)
+                    .is_some_and(|name| node_intersects_range(name, (*start, *end)))
+            });
+        }
+        TargetSelector::FocusedLineRange { start, end } => {
+            candidates.retain(|candidate| {
+                declaration_name_node(*candidate)
+                    .is_some_and(|name| node_intersects_range(name, (*start, *end)))
+            });
+        }
+    }
+
+    (candidates.len() == 1).then(|| candidates[0])
+}
+
+pub(crate) fn is_function_like_node(node: Node<'_>, lang: Lang) -> bool {
+    active_flow_rules(lang)
+        .and_then(|rules| normalized_function_node(node, &rules))
+        .is_some()
+}
+
+pub(crate) fn function_has_parameter_named(
+    function: Node<'_>,
+    source: &str,
+    expected: &str,
+) -> bool {
+    evidence::function_has_parameter_named(function, source, expected)
+}
+
 fn build_graph(
     target: &FlowTarget,
     source: &str,
@@ -637,6 +696,31 @@ fn find_target_function<'tree>(
     collect_function_nodes(root, source, lang, selector, &mut matches);
     matches.sort_by_key(|node| (node.end_byte() - node.start_byte(), line_start(*node)));
     matches.into_iter().next()
+}
+
+fn collect_unique_function_nodes<'tree>(
+    node: Node<'tree>,
+    rules: &ActiveFlowRules,
+    candidates: &mut Vec<Node<'tree>>,
+) {
+    if let Some(candidate) = normalized_function_node(node, rules) {
+        if !candidates
+            .iter()
+            .any(|existing| existing.id() == candidate.id())
+        {
+            candidates.push(candidate);
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_unique_function_nodes(child, rules, candidates);
+    }
+}
+
+fn declaration_name_node(node: Node<'_>) -> Option<Node<'_>> {
+    node.child_by_field_name("name")
+        .or_else(|| node.child_by_field_name("declarator"))
 }
 
 fn collect_function_nodes<'tree>(

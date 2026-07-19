@@ -3,6 +3,7 @@ pub(crate) mod decision_flow;
 pub mod detection;
 pub(crate) mod document;
 pub mod outline;
+pub(crate) mod scoped_occurrences;
 pub mod treesitter;
 
 use std::path::Path;

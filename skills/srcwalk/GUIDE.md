@@ -86,7 +86,7 @@ If discover prints `## Confirmed next context targets`, those are structural can
 
 ### Understand and read exact evidence
 
-Use `context` for one known target before review or trace chains. Use `show` for exact source after srcwalk gives a path/line/range, or when you already know the target.
+Use `context` for one known target before review or trace chains. Supported exact structural definitions may include a bounded `Scoped name occurrences` section; these same-file AST candidates are not binding-, type-, or runtime-resolved references. Use `show` for exact source after srcwalk gives a path/line/range, or when you already know the target.
 
 ```bash
 srcwalk context <file>:<symbol>

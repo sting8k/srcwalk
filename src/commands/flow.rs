@@ -26,6 +26,21 @@ pub(crate) fn run_flow(
     use std::fmt::Write as _;
 
     if artifact.enabled() {
+        if is_exact_path_context_target(target, scope) {
+            let output = run_flow(
+                target,
+                scope,
+                None,
+                cache,
+                depth,
+                filter,
+                ArtifactMode::Source,
+            )?;
+            return Ok(apply_context_budget(
+                label_structural_artifact_context(output),
+                budget_tokens,
+            ));
+        }
         return run_artifact_flow(target, scope, budget_tokens, cache, filter, artifact);
     }
 
@@ -51,6 +66,21 @@ pub(crate) fn run_flow(
         match decision_flow::render_flow_map(&resolved, &content, lang, packet_budget) {
             Ok(flow_map) => {
                 append_context_flow_map(&mut out, &resolved.path, &flow_map);
+                let occurrence_artifact =
+                    if crate::artifact::should_auto_artifact_file(&resolved.path) {
+                        ArtifactMode::Artifact
+                    } else {
+                        ArtifactMode::Source
+                    };
+                append_scoped_name_occurrences(
+                    &mut out,
+                    &resolved.path,
+                    scope,
+                    &resolved.selector,
+                    &content,
+                    lang,
+                    occurrence_artifact,
+                );
                 (
                     Some((flow_map.entry_start, flow_map.entry_end)),
                     Some(flow_map.entry_label.clone()),
@@ -120,7 +150,31 @@ pub(crate) fn run_flow(
     if !rendered.is_empty() {
         let _ = write!(out, "\n\n{rendered}");
     }
-    Ok(apply_optional_budget(out, packet_budget))
+    Ok(apply_context_budget(out, packet_budget))
+}
+
+fn is_exact_path_context_target(target: &str, scope: &Path) -> bool {
+    resolve_decision_flow_target(target, scope)
+        .ok()
+        .is_some_and(|resolved| match resolved.selector {
+            TargetSelector::FocusedLineRange { .. } => true,
+            TargetSelector::Symbol(_) => target.contains(':'),
+            TargetSelector::LineRange { .. } => false,
+        })
+}
+
+fn label_structural_artifact_context(mut output: String) -> String {
+    if let Some(header_end) = output.find('\n') {
+        output.insert_str(
+            header_end,
+            "\nsource: artifact AST\nartifact caveat: parser-backed artifact scope only; no source-map or original-source identity",
+        );
+    }
+    output = output.replace("source: AST identifier", "source: artifact AST identifier");
+    output.replace(
+        "> Caveat: scoped occurrences are not binding-, type-, or runtime-resolved references.",
+        "> Caveat: scoped occurrences are not binding-, type-, or runtime-resolved references; artifact AST anchors imply no source-map or original-source identity.",
+    )
 }
 
 fn append_context_flow_map(
@@ -147,6 +201,66 @@ fn append_context_flow_map(
         for exit in &flow_map.exits {
             let _ = write!(out, "\n- {exit}");
         }
+    }
+}
+
+fn append_scoped_name_occurrences(
+    out: &mut String,
+    path: &Path,
+    scope: &Path,
+    selector: &TargetSelector,
+    content: &str,
+    lang: types::Lang,
+    artifact: ArtifactMode,
+) {
+    use std::fmt::Write as _;
+
+    let Some(scoped) = lang::scoped_occurrences::extract_scoped_occurrences(
+        content,
+        lang,
+        selector,
+        lang::scoped_occurrences::DEFAULT_SCOPED_OCCURRENCE_CAP,
+    ) else {
+        return;
+    };
+    if scoped.occurrences.is_empty() {
+        return;
+    }
+
+    let total = scoped.occurrences.len() + scoped.omitted;
+    let display_path = format::rel_nonempty(path, scope);
+    let _ = write!(
+        out,
+        "\n\n## Scoped name occurrences ({total})\ntarget: {}\nscope: {display_path}:{}-{}",
+        scoped.name, scoped.scope_start, scoped.scope_end
+    );
+    let source_label = if artifact.enabled() {
+        "artifact AST identifier"
+    } else {
+        "AST identifier"
+    };
+    for occurrence in &scoped.occurrences {
+        let _ = write!(
+            out,
+            "\n\n- {display_path}:{}\n  {}\n  source: {source_label}\n  confidence: same-file structural scope candidate",
+            occurrence.line, occurrence.text
+        );
+    }
+    if artifact.enabled() {
+        out.push_str(
+            "\n\n> Caveat: scoped occurrences are not binding-, type-, or runtime-resolved references; artifact AST anchors imply no source-map or original-source identity.",
+        );
+    } else {
+        out.push_str(
+            "\n\n> Caveat: scoped occurrences are not binding-, type-, or runtime-resolved references.",
+        );
+    }
+    if scoped.omitted > 0 {
+        let _ = write!(
+            out,
+            "\n> {} additional candidates omitted by the scoped-occurrence cap.",
+            scoped.omitted
+        );
     }
 }
 
@@ -501,7 +615,8 @@ fn run_artifact_flow(
     use std::fmt::Write as _;
 
     let bloom = index::bloom::BloomFilterCache::new();
-    let def_match = find_primary_definition_with_artifact(target, scope, artifact)?;
+    let (def_match, unique_target) =
+        find_primary_definition_with_artifact(target, scope, artifact)?;
     let content = std::fs::read_to_string(&def_match.path).map_err(|e| SrcwalkError::IoError {
         path: def_match.path.clone(),
         source: e,
@@ -523,6 +638,17 @@ fn run_artifact_flow(
         format::display_path(&def_match.path),
         target
     );
+    if unique_target && def_match.def_range.is_some() {
+        append_scoped_name_occurrences(
+            &mut out,
+            &def_match.path,
+            scope,
+            &TargetSelector::Symbol(target.to_string()),
+            &content,
+            lang,
+            ArtifactMode::Artifact,
+        );
+    }
 
     let mut sites = search::callees::extract_call_sites_for_artifact_target(
         &content,
@@ -602,7 +728,36 @@ fn run_artifact_flow(
         out.push_str("\n> ");
         out.push_str(note);
     }
-    Ok(apply_optional_budget(out, budget_tokens))
+    Ok(apply_context_budget(out, budget_tokens))
+}
+
+fn apply_context_budget(mut output: String, budget_tokens: Option<u64>) -> String {
+    let Some(budget) = budget_tokens else {
+        return output;
+    };
+
+    if types::estimate_tokens(output.len() as u64) > budget
+        && remove_scoped_occurrence_section(&mut output)
+    {
+        output.push_str("\n> Note: scoped name occurrences omitted by context budget.");
+    }
+    apply_optional_budget(output, Some(budget))
+}
+
+fn remove_scoped_occurrence_section(output: &mut String) -> bool {
+    const HEADER: &str = "\n\n## Scoped name occurrences";
+    let Some(start) = output.find(HEADER) else {
+        return false;
+    };
+    let section_body = &output[start + HEADER.len()..];
+    let end_offset = ["\n\n## ", "\n\n-> ", "\n\n<- ", "\n-> calls"]
+        .iter()
+        .filter_map(|marker| section_body.find(marker))
+        .min()
+        .unwrap_or(section_body.len());
+    let end = start + HEADER.len() + end_offset;
+    output.replace_range(start..end, "");
+    true
 }
 
 fn append_artifact_call_site(out: &mut String, site: &search::callees::CallSite) {
@@ -622,17 +777,20 @@ fn find_primary_definition_with_artifact(
     target: &str,
     scope: &Path,
     artifact: ArtifactMode,
-) -> Result<types::Match, SrcwalkError> {
+) -> Result<(types::Match, bool), SrcwalkError> {
     let raw = search::search_symbol_raw_with_artifact(target, scope, None, artifact)?;
-    raw.matches
+    let mut definitions = raw
+        .matches
         .into_iter()
-        .find(|m| m.is_definition && m.def_range.is_some())
-        .ok_or_else(|| SrcwalkError::NoMatches {
-            query: target.to_string(),
-            scope: scope.to_path_buf(),
-            suggestion: symbol_or_file_suggestion(scope, target, None),
-            guidance: None,
-        })
+        .filter(|candidate| candidate.is_definition && candidate.def_range.is_some());
+    let primary = definitions.next().ok_or_else(|| SrcwalkError::NoMatches {
+        query: target.to_string(),
+        scope: scope.to_path_buf(),
+        suggestion: symbol_or_file_suggestion(scope, target, None),
+        guidance: None,
+    })?;
+    let unique = definitions.next().is_none();
+    Ok((primary, unique))
 }
 
 fn prioritize_flow_resolves(

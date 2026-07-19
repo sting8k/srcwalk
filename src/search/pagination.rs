@@ -67,6 +67,8 @@ mod tests {
                 hit(3, false, false),
             ],
             total_found: 3,
+            definition_candidates: 1,
+            name_occurrence_candidates: 2,
             definitions: 1,
             usages: 1,
             comments: 1,

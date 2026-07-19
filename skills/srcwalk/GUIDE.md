@@ -80,7 +80,7 @@ Intent inference: path-like globs infer file discovery; punctuation/path comma l
 
 For multiple literal text terms, use comma OR: `srcwalk discover 'foo,bar,baz' --match any --as text --scope <dir>`. Do not run separate grep commands first.
 
-Text discovery is literal evidence. `--match any --as text` is comma literal OR; `--match all` is same-file co-occurrence, not semantic relation proof.
+Symbol discovery separates parser-backed definition candidates from text-matched name occurrences. Name occurrences are navigation candidates, not binding-resolved references; repeated same-name definitions receive an ambiguity caveat. Text discovery remains literal evidence. `--match any --as text` is comma literal OR; `--match all` is same-file co-occurrence, not semantic relation proof.
 
 If discover prints `## Confirmed next context targets`, those are structural candidates from the match context; run one that matches your intent. If it only prints raw hit drilldowns, use `srcwalk show <path>:<line> -C 10` first. `discover <field> --as access` is syntax only: no runtime order, type proof, alias proof, or call relation proof.
 

@@ -184,7 +184,7 @@ fn find_explicit_relative_missing_path_still_fails_as_path() {
 }
 
 #[test]
-fn compact_usage_facets_group_repeated_hits_by_path() {
+fn compact_name_occurrence_facets_group_repeated_hits_by_path() {
     let dir = temp_repo("path_display_grouped_find");
     fs::create_dir_all(dir.join("tool-tags")).unwrap();
     fs::write(
@@ -217,14 +217,20 @@ pi.registerTool({ name: "read_more" });
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let normalized = norm_path_separators(&stdout);
-    assert!(normalized.contains("  index.ts [4 usages]"), "{stdout}");
-    assert!(stdout.contains("    [usage] :1 | pi.on"), "{stdout}");
     assert!(
-        normalized.contains("  tool-tags/read.ts [2 usages]"),
+        normalized.contains("  index.ts [4 name occurrences]"),
         "{stdout}"
     );
     assert!(
-        !normalized.contains("  [usage] index.ts:1 |"),
+        stdout.contains("    [name occurrence] :1 | pi.on"),
+        "{stdout}"
+    );
+    assert!(
+        normalized.contains("  tool-tags/read.ts [2 name occurrences]"),
+        "{stdout}"
+    );
+    assert!(
+        !normalized.contains("  [name occurrence] index.ts:1 |"),
         "repeated path hits should be grouped, got:\n{stdout}"
     );
 

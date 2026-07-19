@@ -12,7 +12,7 @@ pub(crate) struct EvidenceAtom {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EvidenceKind {
     Definition,
-    Usage,
+    NameOccurrence,
     Text,
     File,
     Write,
@@ -84,7 +84,7 @@ impl EvidenceKind {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Definition => "definition",
-            Self::Usage => "usage",
+            Self::NameOccurrence => "name occurrence",
             Self::Text => "text",
             Self::File => "file",
             Self::Write => "write",
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn atom_names_dependency_features() {
         assert_eq!(EvidenceKind::Definition.as_str(), "definition");
-        assert_eq!(EvidenceKind::Usage.as_str(), "usage");
+        assert_eq!(EvidenceKind::NameOccurrence.as_str(), "name occurrence");
         assert_eq!(EvidenceKind::Text.as_str(), "text");
         assert_eq!(EvidenceKind::Dependency.as_str(), "dependency");
         assert_eq!(EvidenceKind::File.as_str(), "file");

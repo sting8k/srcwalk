@@ -1,7 +1,7 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use crate::types::{estimate_tokens, ViewMode};
+use crate::types::{estimate_tokens, SearchEvidenceCounts, ViewMode};
 
 /// Build the standard header line:
 /// `# path/to/file.ts (N lines, ~X.Xk tokens) [mode]`
@@ -32,17 +32,32 @@ pub fn search_header(
     query: &str,
     scope: &Path,
     total: usize,
-    defs: usize,
-    usages: usize,
-    comments: usize,
+    counts: SearchEvidenceCounts,
 ) -> String {
-    let parts = match (defs, usages, comments) {
-        (0, _, 0) => format!("{total} matches"),
-        (0, _, c) => format!("{total} matches ({c} in comments)"),
-        (d, u, 0) => format!("{total} matches ({d} definitions, {u} usages)"),
-        (d, u, c) => format!("{total} matches ({d} definitions, {u} usages, {c} in comments)"),
-    };
+    let parts = search_count_parts(total, counts);
     format!("# Search: \"{query}\" in {} — {parts}", display_path(scope))
+}
+
+pub(crate) fn search_count_parts(total: usize, counts: SearchEvidenceCounts) -> String {
+    if counts.definitions == 0 {
+        if counts.comments == 0 {
+            format!("{total} matches")
+        } else {
+            format!("{total} matches ({} in comments)", counts.comments)
+        }
+    } else {
+        let mut details = vec![
+            format!("{} definitions", counts.definitions),
+            format!("{} name occurrences", counts.name_occurrences),
+        ];
+        if counts.text_matches > 0 {
+            details.push(format!("{} text matches", counts.text_matches));
+        }
+        if counts.comments > 0 {
+            details.push(format!("{} in comments", counts.comments));
+        }
+        format!("{total} matches ({})", details.join(", "))
+    }
 }
 
 /// Human-readable file size. Integer math only — no floats.

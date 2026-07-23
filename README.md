@@ -42,6 +42,9 @@ npm install -g srcwalk    # or: npx srcwalk
 # If npm appears stuck, show the postinstall binary download:
 npm install -g srcwalk --foreground-scripts
 
+# The npm installer requires HTTPS redirects and verifies the release SHA-256
+# before extracting the single-binary archive.
+
 # crates.io
 cargo install srcwalk --locked
 

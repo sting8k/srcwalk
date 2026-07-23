@@ -41,7 +41,13 @@ cargo test --locked
 cargo clippy -- -D warnings
 cargo fmt --check
 cargo install --path .       # -> ~/.cargo/bin/srcwalk
+node npm/install.test.js      # npm installer guard tests
+(cd npm && npm pack --dry-run)
 ```
+
+When changing `npm/install.js`, also run it end-to-end against the matching
+published release and verify `node npm/run.js --version`; remove the generated
+`npm/bin/` directory afterward.
 
 Formatting workflow: after editing Rust source or tests, run `cargo fmt` before
 `cargo fmt --check` or full verification. Use `cargo fmt --check` first only when

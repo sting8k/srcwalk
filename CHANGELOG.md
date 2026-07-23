@@ -4,6 +4,13 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+### Added
+- Added cross-platform npm installer guard tests and an npm-package README.
+
+### Changed
+- Hardened npm binary installation with HTTPS-only bounded redirects, request timeouts, streaming size limits, published SHA-256 verification, strict single-binary archive validation, staged extraction, and atomic final placement.
+- Pinned third-party CI actions to reviewed commit SHAs and added Linux/Windows npm installer guard jobs across the declared Node.js 14 floor and the release Node.js 20 runtime.
+
 ## [1.2.0] - 2026-07-19
 
 ### Added

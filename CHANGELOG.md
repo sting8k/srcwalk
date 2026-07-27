@@ -6,15 +6,62 @@ All notable changes to srcwalk are documented here.
 
 ## [1.3.0] - 2026-07-27
 
-### Added
-- Added same-file inline range batches, bounded multi-target context reads, and parser-backed source frames for supported exact numeric reads.
-- Added confirmed structural follow-up targets and compact next actions across discovery, context, trace, overview, and change-review output.
+This release reduces the number of steps needed to move from discovery output to exact source evidence.
 
-### Changed
-- Improved overview orientation, evidence-budget allocation, completion hints, and the embedded agent routing guide for faster target selection with explicit trust bounds.
+### Navigation
 
-### Fixed
-- Made completion next actions and executable usage assertions portable across supported platforms.
+**Discovery stopped at raw locations.**
+Discovery returned `path:line` hits without a concrete follow-up command, so agents had to manually construct `show` targets, often guessing ranges or opening too much context.
+→ Discovery now emits bounded `show` targets when structural ranges are reliable.
+
+**Exact reads lacked structural context.**
+`show file:44-50` returned raw lines without saying whether the range covered a complete function, a partial function, or no enclosing function at all.
+→ Exact numeric reads now include source frames for enclosing and partial functions, without making runtime claims.
+
+**Multiple reads in one file required multiple commands.**
+Reading two ranges in the same file required separate `show` calls.
+→ Same-file ranges can now be read as `show file:a,b` through the section reader.
+
+**Context was single-target only.**
+Comparing nearby exact targets required repeated `context` calls.
+→ `context` now accepts up to three exact targets with one shared budget.
+
+**Large overviews buried the useful areas.**
+Broad overviews listed too many same-depth directories and made agents hunt for representative entry points.
+→ Overview now prioritizes representative areas and emits concrete dependency follow-ups.
+
+### Output bounds
+
+**One large target could hide the rest.**
+Batched reads could let the largest target consume the whole response budget.
+→ Batched reads now share one budget and redistribute unused space across targets.
+
+**Next actions could be too broad.**
+Suggestions such as `show file:1-500` forced agents to narrow again before getting useful evidence.
+→ Next actions now omit overly broad ranges and rank remaining commands by evidence quality.
+
+**The default budget clipped useful packets.**
+The 5,000-token default truncated some evidence packets that were still useful.
+→ The default budget is now 6,000 tokens.
+
+### Command recovery
+
+Several near-valid inputs previously failed with generic errors:
+
+| Input | Previous behavior | New behavior |
+| --- | --- | --- |
+| `show file/a file/b` | Reported an unrecognized argument | Hints to use comma-separated targets |
+| `discover foo --scope src --scope tests` | Rejected the repeated scopes without naming the valid form | Explains when repeated symbol scopes are supported |
+| `context file:1-10,file:20-30` | Failed without explaining the unsupported shorthand | Explains that context targets need explicit paths |
+
+Corrections are only shown when srcwalk can identify a specific valid replacement.
+
+### Reliability
+
+- Incomplete glob hints now fail cleanly instead of reaching an invalid internal state.
+- Caller recovery is preserved when target grammar is accepted but no callers are found.
+- Generated follow-up commands now quote paths containing spaces or apostrophes.
+- Executable usage assertions are portable across supported platforms.
 
 ## [1.2.0] - 2026-07-19
 

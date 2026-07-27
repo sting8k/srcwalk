@@ -13,7 +13,9 @@ one binary, zero config.
 
 ## What it does
 
-- **Show** — read files, line ranges, symbols, headings, and capped raw pages.
+- **Show** — read files, line ranges, same-file inline range batches, symbols,
+  headings, capped raw pages, and parser-backed source frames for supported exact
+  numeric reads and numeric multi-section blocks.
 - **Discover** — find definitions, text-matched name occurrences, files, text,
   comments, and field/member access evidence.
 - **Trace** — inspect callers and callees with bounded depth, hub guards,
@@ -71,11 +73,19 @@ curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarc
 
 </details>
 
-**Agent skill** — install the srcwalk skill into your agent environment.
+**Agent integration** — two ways to help agents use srcwalk:
 
-```sh
-npx skills add sting8k/srcwalk
-```
+1. **System prompt (preferred):** add this line to your agent's system prompt:
+
+   ```text
+   - Prefer `srcwalk` over `rg`, `grep`, `cat`, and similar tools. Start with `srcwalk guide`.
+   ```
+
+2. **Installable skill (fallback):** if the agent does not pick up srcwalk from the system prompt, install the skill:
+
+   ```sh
+   npx skills add sting8k/srcwalk
+   ```
 
 After installing the CLI, `srcwalk guide` prints the full embedded, version-matched agent guide. The installable skill entry is [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md); it bootstraps agents to that embedded guide in the installed binary.
 
@@ -92,6 +102,7 @@ full command and flag reference; agent routing lives in `srcwalk guide`.
 # Read and drill into source
 srcwalk src/auth.ts
 srcwalk src/auth.ts:72
+srcwalk src/auth.ts:44-50,72-80
 srcwalk src/auth.ts --section handleAuth
 
 # Find and follow code
@@ -461,7 +472,7 @@ Bloom-filter pruning + length-sorted memchr + tree-sitter parse cache.
 
 - **Intent-first analysis** — `discover`, `review`, `context`, `trace callers`,
   `trace callees`, `assess`, `deps`, `overview`.
-- **Target-first reading** — `srcwalk <path>`, `<path>:<line>`, and `--section <symbol|range>`.
+- **Target-first reading** — `srcwalk <path>`, `<path>:<line>`, same-file `<path>:a,b`, and `--section <symbol|range>`.
 - **Multi-hop caller BFS** — up to 5 hops, hub guard, collision detection.
 - **Forward callees** — resolved/unresolved calls, detailed ordered call sites, bounded unique-target argument mappings, and depth support.
 - **Search ergonomics** — cross-naming-convention Did-you-mean, bare-filename auto-pick, typo tolerance.

@@ -24,6 +24,8 @@ pub struct GlobResult {
     pub available_extensions: Vec<String>,
     pub offset: usize,
     pub limit: usize,
+    /// Resolved only for a zero-result file-glob reinterpretation of `path:symbol`.
+    pub path_symbol_target: Option<crate::read::PathSymbolTarget>,
     /// Set when `total_found >= WARN_THRESHOLD`. Formatter surfaces this so
     /// agents know the match set is huge (slow walks, memory pressure).
     pub oversized: bool,
@@ -65,6 +67,11 @@ pub fn search_with_scope_glob(
         reason: e.to_string(),
     })?;
     let matcher = glob.compile_matcher();
+    let path_symbol_parts = path_symbol_pattern_parts(pattern);
+    let path_symbol_matcher = path_symbol_parts
+        .as_ref()
+        .and_then(|(path, _)| Glob::new(path).ok())
+        .map(|glob| glob.compile_matcher());
     let exclude_matcher = exclude
         .map(|pattern| {
             Glob::new(pattern)
@@ -79,6 +86,7 @@ pub fn search_with_scope_glob(
     let collected: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
     let total_found = std::sync::atomic::AtomicUsize::new(0);
     let extensions: std::sync::Mutex<HashSet<String>> = std::sync::Mutex::new(HashSet::new());
+    let path_symbol_candidates: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
     let walker = super::walker(scope, scope_glob)?;
 
@@ -88,6 +96,8 @@ pub fn search_with_scope_glob(
         let collected = &collected;
         let total_found = &total_found;
         let extensions = &extensions;
+        let path_symbol_matcher = &path_symbol_matcher;
+        let path_symbol_candidates = &path_symbol_candidates;
 
         Box::new(move |entry| {
             let Ok(entry) = entry else {
@@ -118,6 +128,14 @@ pub fn search_with_scope_glob(
                 {
                     return ignore::WalkState::Continue;
                 }
+            }
+            if path_symbol_matcher.as_ref().is_some_and(|matcher| {
+                matcher.is_match(path) || matcher.is_match(rel) || matcher.is_match(name)
+            }) {
+                path_symbol_candidates
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(path.to_path_buf());
             }
 
             if matcher.is_match(name) || matcher.is_match(rel) {
@@ -176,6 +194,24 @@ pub fn search_with_scope_glob(
         Vec::new()
     };
 
+    let path_symbol_target = if total == 0 {
+        let mut candidates = path_symbol_candidates
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        candidates.sort();
+        path_symbol_parts.as_ref().and_then(|(_, symbol)| {
+            candidates.into_iter().find_map(|path| {
+                crate::read::resolve_path_symbol_target(
+                    &format!("{}:{symbol}", path.display()),
+                    scope,
+                )
+                .filter(|target| target.range.is_some())
+            })
+        })
+    } else {
+        None
+    };
+
     Ok(GlobResult {
         pattern: pattern.to_string(),
         files,
@@ -183,8 +219,23 @@ pub fn search_with_scope_glob(
         available_extensions,
         offset: effective_offset,
         limit: effective_limit,
+        path_symbol_target,
         oversized: total >= WARN_THRESHOLD,
     })
+}
+
+fn path_symbol_pattern_parts(pattern: &str) -> Option<(String, String)> {
+    let (path, symbol) = pattern.rsplit_once(':')?;
+    if path.is_empty() || symbol.is_empty() {
+        return None;
+    }
+    if path.len() == 1
+        && path.as_bytes()[0].is_ascii_alphabetic()
+        && (symbol.starts_with('/') || symbol.starts_with('\\'))
+    {
+        return None;
+    }
+    Some((path.to_string(), symbol.to_string()))
 }
 
 /// Quick preview: approximate token count plus a one-line summary for code/text files.

@@ -1005,11 +1005,19 @@ pub fn search_callers_expanded_with_artifact(
     }
 
     if callers.is_empty() {
-        let next = render_next_actions(&[NextAction::guidance(
-            format!("use `srcwalk discover {target}` or search interface/trait/implementor names."),
-            "caller miss recovery",
-            40,
-        )]);
+        let recovery = crate::read::resolve_path_symbol_target(target, scope)
+            .filter(|resolved| resolved.range.is_some())
+            .map_or_else(
+                || format!("use `srcwalk discover {target}` or search interface/trait/implementor names."),
+                |resolved| {
+                    format!(
+                        "use `srcwalk discover {}` or search interface/trait/implementor names; trace accepts bare symbols; `path:symbol` is `context` grammar.",
+                        resolved.symbol
+                    )
+                },
+            );
+        let next =
+            render_next_actions(&[NextAction::guidance(recovery, "caller miss recovery", 40)]);
         return Ok(format!(
             "# Callers of \"{}\" in {} — no call sites found\n\n\
              > Caveat: direct by-name search only; misses dynamic dispatch, reflection, macros.\n\

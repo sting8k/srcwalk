@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
@@ -7,7 +7,7 @@ use indexmap::IndexMap;
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
 use crate::evidence::{
-    confidence_label_for, evidence_source_label_for, render_next_actions, Anchor, EvidenceSource,
+    confidence_label_for, evidence_source_label_for, render_next_actions, EvidenceSource,
     NextAction,
 };
 use crate::format;
@@ -23,8 +23,39 @@ mod expand;
 mod glob_result;
 mod match_item;
 mod semantic;
+mod structural_targets;
 
 pub(super) use expand::{append_expand_budget_note, ExpandBudget};
+pub(super) use structural_targets::has_confirmed_structural_targets;
+
+#[derive(Default)]
+pub(super) struct RenderedSourceLines {
+    lines: HashSet<(PathBuf, u32)>,
+}
+
+impl RenderedSourceLines {
+    pub(super) fn record_code_block(&mut self, path: &Path, code: &str) {
+        for line in code.lines().filter_map(rendered_code_line_number) {
+            self.lines.insert((path.to_path_buf(), line));
+        }
+    }
+
+    fn contains(&self, path: &Path, line: u32) -> bool {
+        self.lines.contains(&(path.to_path_buf(), line))
+    }
+}
+
+fn rendered_code_line_number(segment: &str) -> Option<u32> {
+    let fence_pos = segment.find('│')?;
+    segment[..fence_pos].trim().parse::<u32>().ok()
+}
+
+pub(super) fn shown_name_occurrence_line(m: &Match, rendered: &RenderedSourceLines) -> bool {
+    m.is_name_occurrence_candidate()
+        && !m.text.contains("--section bytes:")
+        && rendered.contains(&m.path, m.line)
+        && !crate::artifact::should_auto_artifact_file(&m.path)
+}
 #[cfg(test)]
 pub(super) use semantic::best_semantic_candidate;
 
@@ -236,6 +267,7 @@ pub(super) fn format_matches(
     expand_budget: &mut ExpandBudget,
     expanded_files: &mut HashSet<PathBuf>,
     context_shown_files: &mut HashSet<PathBuf>,
+    rendered_source_lines: &mut RenderedSourceLines,
     smart_truncated: &mut bool,
     out: &mut String,
 ) {
@@ -260,13 +292,21 @@ pub(super) fn format_matches(
                     expand_budget,
                     expanded_files,
                     context_shown_files,
+                    rendered_source_lines,
                     smart_truncated,
                     multi_file,
                     out,
                 );
             }
             MatchGroup::FileGroup(usages) => {
-                format_file_group(usages, scope, cache, context_shown_files, out);
+                format_file_group(
+                    usages,
+                    scope,
+                    cache,
+                    context_shown_files,
+                    rendered_source_lines,
+                    out,
+                );
             }
         }
     }
@@ -369,6 +409,7 @@ fn format_file_group(
     scope: &Path,
     cache: &OutlineCache,
     context_shown_files: &mut HashSet<PathBuf>,
+    rendered_source_lines: &RenderedSourceLines,
     out: &mut String,
 ) {
     let first = group[0];
@@ -389,68 +430,19 @@ fn format_file_group(
     // Compact list: one line per hit with enclosing fn annotation
     for m in group {
         let atom = m.to_evidence_atom();
-        let fn_name = semantic::enclosing_fn_name(&m.path, atom.anchor().start_line(), cache);
-        if let Some(name) = fn_name {
-            let _ = write!(
-                out,
-                "\n- :{:<6} {} ← {name}",
-                atom.anchor().start_line(),
-                atom.snippet().trim()
-            );
+        let line = atom.anchor().start_line();
+        let snippet = if shown_name_occurrence_line(m, rendered_source_lines) {
+            "[name occurrence · source shown above]"
         } else {
-            let _ = write!(
-                out,
-                "\n- :{:<6} {}",
-                atom.anchor().start_line(),
-                atom.snippet().trim()
-            );
-        }
-    }
-}
-
-fn append_context_next_targets(
-    out: &mut String,
-    result: &SearchResult,
-    cache: &OutlineCache,
-) -> bool {
-    let mut actions = Vec::new();
-    let mut seen = BTreeSet::new();
-    for m in &result.matches {
-        let Some(target) = semantic::context_target_for_match(m, cache) else {
-            continue;
+            atom.snippet().trim()
         };
-        let key = (m.path.clone(), target.start_line, target.end_line);
-        if !seen.insert(key) {
-            continue;
-        }
-
-        let anchor = Anchor::lines(&m.path, target.start_line, target.end_line);
-        actions.push(NextAction::from_evidence(
-            format!(
-                "srcwalk context {}",
-                anchor.display_relative_to(&result.scope)
-            ),
-            "confirmed structural context target",
-            10 + actions.len() as u16,
-            EvidenceSource::Ast,
-            anchor,
-        ));
-        if actions.len() == 3 {
-            break;
+        let fn_name = semantic::enclosing_fn_name(&m.path, line, cache);
+        if let Some(name) = fn_name {
+            let _ = write!(out, "\n- :{line:<6} {snippet} ← {name}");
+        } else {
+            let _ = write!(out, "\n- :{line:<6} {snippet}");
         }
     }
-
-    if actions.is_empty() {
-        return false;
-    }
-
-    out.push_str("\n\n## Confirmed next context targets");
-    let rendered = render_next_actions(&actions);
-    if !rendered.is_empty() {
-        out.push('\n');
-        out.push_str(&rendered);
-    }
-    true
 }
 
 fn append_next_action(footer: &mut String, action: NextAction) {
@@ -506,6 +498,7 @@ pub(super) fn format_search_result_with_header(
     let mut expand_budget = ExpandBudget::new(expand, budget_tokens);
     let mut expanded_files = HashSet::new();
     let mut context_shown_files = HashSet::new();
+    let mut rendered_source_lines = RenderedSourceLines::default();
     let mut smart_truncated = false;
 
     let compact_facets = result.matches.len() > 5 && expand == 0;
@@ -542,6 +535,7 @@ pub(super) fn format_search_result_with_header(
                     &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
+                    &mut rendered_source_lines,
                     &mut smart_truncated,
                     &mut out,
                 );
@@ -572,6 +566,7 @@ pub(super) fn format_search_result_with_header(
                     &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
+                    &mut rendered_source_lines,
                     &mut smart_truncated,
                     &mut out,
                 );
@@ -593,6 +588,7 @@ pub(super) fn format_search_result_with_header(
                     &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
+                    &mut rendered_source_lines,
                     &mut smart_truncated,
                     &mut out,
                 );
@@ -644,6 +640,7 @@ pub(super) fn format_search_result_with_header(
                     &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
+                    &mut rendered_source_lines,
                     &mut smart_truncated,
                     &mut out,
                 );
@@ -666,6 +663,7 @@ pub(super) fn format_search_result_with_header(
                     &mut expand_budget,
                     &mut expanded_files,
                     &mut context_shown_files,
+                    &mut rendered_source_lines,
                     &mut smart_truncated,
                     &mut out,
                 );
@@ -683,12 +681,14 @@ pub(super) fn format_search_result_with_header(
             &mut expand_budget,
             &mut expanded_files,
             &mut context_shown_files,
+            &mut rendered_source_lines,
             &mut smart_truncated,
             &mut out,
         );
     }
 
-    let has_context_next_targets = append_context_next_targets(&mut out, result, cache);
+    let has_structural_next_targets =
+        structural_targets::append_structural_next_targets(&mut out, result, cache);
 
     let mut footer = String::new();
     if result.has_more {
@@ -724,8 +724,8 @@ pub(super) fn format_search_result_with_header(
     }
 
     if result.total_found > 0 {
-        let guidance = if has_context_next_targets {
-            "choose a confirmed context target above, or read exact hit evidence with `srcwalk show <path>:<line> -C 10`."
+        let guidance = if has_structural_next_targets {
+            "read the confirmed structural target above, or use `srcwalk context <target>` only when you need a Flow Map or call neighborhood."
         } else {
             "read exact hit evidence with `srcwalk show <path>:<line> -C 10`."
         };

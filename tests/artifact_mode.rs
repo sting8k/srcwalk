@@ -1021,7 +1021,10 @@ fn artifact_flow_shows_calls_callers_and_byte_drilldowns() {
     assert!(stdout.contains("helper"), "{stdout}");
     assert!(stdout.contains("<- callers (artifact)"), "{stdout}");
     assert!(stdout.contains("--section bytes:"), "{stdout}");
-    assert!(stdout.contains("byte-level bundle evidence"), "{stdout}");
+    assert!(
+        stdout.contains("byte-level bundle evidence, not sourcemap/source semantics."),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -1052,7 +1055,10 @@ fn artifact_impact_shows_byte_level_blast_radius() {
     );
     assert!(stdout.contains("  bundle.min.js\n"), "{stdout}");
     assert!(stdout.contains("bytes:"), "{stdout}");
-    assert!(stdout.contains("not source-level blast radius"), "{stdout}");
+    assert!(
+        stdout.contains("byte-level bundle evidence, not source-level blast radius."),
+        "{stdout}"
+    );
 }
 
 #[test]

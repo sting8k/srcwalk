@@ -67,6 +67,7 @@ fn resolve_path_target(target: &str, scope: &Path) -> Result<Option<FlowTarget>,
             return Err(SrcwalkError::NotFound {
                 path: scope.join(path_part),
                 suggestion: None,
+                guidance: None,
             });
         }
     }

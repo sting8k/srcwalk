@@ -137,7 +137,7 @@ pub fn apply_preserving_footer(output: &str, budget: u64) -> String {
         return output.to_string();
     }
 
-    let Some((body, footer)) = split_trailing_footer(output) else {
+    let Some((body, footer)) = crate::format::split_trailing_footer(output) else {
         return apply(output, budget);
     };
 
@@ -149,31 +149,6 @@ pub fn apply_preserving_footer(output: &str, budget: u64) -> String {
 
     let budgeted_body = apply(body, budget);
     format!("{}\n\n{}", budgeted_body.trim_end(), footer)
-}
-
-fn split_trailing_footer(output: &str) -> Option<(&str, &str)> {
-    let mut cursor = output.trim_end_matches(['\r', '\n']).len();
-    let mut footer_start = cursor;
-    let mut saw_footer = false;
-
-    while cursor > 0 {
-        let line_start = output[..cursor].rfind('\n').map_or(0, |index| index + 1);
-        let line = output[line_start..cursor].trim_end_matches('\r');
-        if line.starts_with("> ") {
-            saw_footer = true;
-            footer_start = line_start;
-            cursor = line_start.saturating_sub(1);
-            continue;
-        }
-        if saw_footer && line.trim().is_empty() {
-            footer_start = line_start;
-            cursor = line_start.saturating_sub(1);
-            continue;
-        }
-        break;
-    }
-
-    saw_footer.then(|| output.split_at(footer_start))
 }
 
 #[cfg(test)]

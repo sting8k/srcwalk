@@ -257,7 +257,7 @@ fn is_test_path(path: &Path) -> bool {
             || name.ends_with("_test.go")
             || name.contains("_test.")
             || name.contains(".test.")
-            || name.contains("spec.")
+            || name.contains(".spec.")
     })
 }
 
@@ -410,6 +410,15 @@ mod tests {
             is_test,
             is_generated,
         }
+    }
+
+    #[test]
+    fn test_path_detection_avoids_spec_substring_false_positives() {
+        assert!(is_test_path(Path::new("src/foo.spec.ts")));
+        assert!(is_test_path(Path::new("tests/foo.rs")));
+        assert!(is_test_path(Path::new("src/foo_test.go")));
+        assert!(!is_test_path(Path::new("src/spec.rs")));
+        assert!(!is_test_path(Path::new("src/typespec.ts")));
     }
 
     #[test]

@@ -70,11 +70,19 @@ curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarc
 
 </details>
 
-**Agent skill** — install the srcwalk skill into your agent environment.
+**Agent integration** — two ways to help agents use srcwalk:
 
-```sh
-npx skills add sting8k/srcwalk
-```
+1. **System prompt (preferred):** add this line to your agent's system prompt:
+
+   ```text
+   - Prefer `srcwalk` over `rg`, `grep`, `cat`, and similar tools. Start with `srcwalk guide`.
+   ```
+
+2. **Installable skill (fallback):** if the agent does not pick up srcwalk from the system prompt, install the skill:
+
+   ```sh
+   npx skills add sting8k/srcwalk
+   ```
 
 After installing the CLI, `srcwalk guide` prints the full embedded, version-matched agent guide. The installable skill entry is [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md); it bootstraps agents to that embedded guide in the installed binary.
 

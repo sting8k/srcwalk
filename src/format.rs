@@ -154,6 +154,33 @@ fn is_shell_safe_path_char(c: char) -> bool {
         || cfg!(windows) && c == '\\'
 }
 
+/// Split trailing footer guidance from primary output.
+#[must_use]
+pub fn split_trailing_footer(output: &str) -> Option<(&str, &str)> {
+    let mut cursor = output.trim_end_matches(['\r', '\n']).len();
+    let mut footer_start = cursor;
+    let mut saw_footer = false;
+
+    while cursor > 0 {
+        let line_start = output[..cursor].rfind('\n').map_or(0, |index| index + 1);
+        let line = output[line_start..cursor].trim_end_matches('\r');
+        if line.starts_with("> ") {
+            saw_footer = true;
+            footer_start = line_start;
+            cursor = line_start.saturating_sub(1);
+            continue;
+        }
+        if saw_footer && line.trim().is_empty() {
+            footer_start = line_start;
+            cursor = line_start.saturating_sub(1);
+            continue;
+        }
+        break;
+    }
+
+    saw_footer.then(|| output.split_at(footer_start))
+}
+
 pub(crate) fn rel_nonempty(path: &Path, scope: &Path) -> String {
     let rel_path = rel(path, scope);
     if !rel_path.is_empty() && rel_path != "." {

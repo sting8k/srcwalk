@@ -1008,7 +1008,7 @@ fn apply_cli_token_budget_inner(
     }
 
     if preserve_footer {
-        if let Some((body, footer)) = split_trailing_footer(&output) {
+        if let Some((body, footer)) = srcwalk::format::split_trailing_footer(&output) {
             let footer = footer.trim();
             let footer_tokens = estimate_tokens(footer.len() as u64 + 2);
             if !body.trim_end().is_empty() && !footer.is_empty() && footer_tokens < budget {
@@ -1038,31 +1038,6 @@ fn apply_cli_token_budget_inner(
     truncate_utf8(&mut output, max_bytes - marker.len());
     output.push_str(marker);
     output
-}
-
-fn split_trailing_footer(output: &str) -> Option<(&str, &str)> {
-    let mut cursor = output.trim_end_matches(['\r', '\n']).len();
-    let mut footer_start = cursor;
-    let mut saw_footer = false;
-
-    while cursor > 0 {
-        let line_start = output[..cursor].rfind('\n').map_or(0, |index| index + 1);
-        let line = output[line_start..cursor].trim_end_matches('\r');
-        if line.starts_with("> ") {
-            saw_footer = true;
-            footer_start = line_start;
-            cursor = line_start.saturating_sub(1);
-            continue;
-        }
-        if saw_footer && line.trim().is_empty() {
-            footer_start = line_start;
-            cursor = line_start.saturating_sub(1);
-            continue;
-        }
-        break;
-    }
-
-    saw_footer.then(|| output.split_at(footer_start))
 }
 
 #[cfg(test)]

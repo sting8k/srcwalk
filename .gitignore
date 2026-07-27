@@ -2,6 +2,8 @@
 /target
 /result
 /result-*
+/npm/bin/
+/npm/*.tgz
 
 # Internal docs (reviews, feedback, specs)
 /docs

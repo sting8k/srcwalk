@@ -6,10 +6,12 @@
     "srcwalk": "run.js"
   },
   "scripts": {
-    "postinstall": "node install.js"
+    "postinstall": "node install.js",
+    "test": "node install.test.js"
   },
   "files": [
     "install.js",
+    "install.test.js",
     "run.js",
     "README.md"
   ],

@@ -11,6 +11,26 @@ const OUTLINE_KEYWORDS: &[&str] = &[
     "interface ",
     "type ",
 ];
+const HARD_CAP_MARKER: &str = "\n... truncated";
+
+fn apply_hard_cap(mut output: String, budget: u64) -> String {
+    let max_bytes = usize::try_from(budget.saturating_mul(4)).unwrap_or(usize::MAX);
+    if output.len() <= max_bytes {
+        return output;
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+
+    if HARD_CAP_MARKER.len() >= max_bytes {
+        return HARD_CAP_MARKER[..HARD_CAP_MARKER.floor_char_boundary(max_bytes)].to_string();
+    }
+
+    let prefix_bytes = output.floor_char_boundary(max_bytes - HARD_CAP_MARKER.len());
+    output.truncate(prefix_bytes);
+    output.push_str(HARD_CAP_MARKER);
+    output
+}
 
 /// Apply token budget to output. Works backwards from the cap:
 /// 1. Reserve 50 tokens for header
@@ -44,7 +64,18 @@ pub fn apply(output: &str, budget: u64) -> String {
         .lines()
         .next()
         .is_some_and(|l| l.ends_with("[outline]"));
-    let min_entries = if is_outline { 5usize } else { 0usize };
+    let min_entries = if is_outline {
+        body.lines()
+            .filter(|line| {
+                OUTLINE_KEYWORDS
+                    .iter()
+                    .any(|keyword| line.contains(keyword))
+            })
+            .take(5)
+            .count()
+    } else {
+        0
+    };
 
     // Build a progressive prefix line-by-line. For outlines we may exceed the
     // raw byte cap slightly so that at least `min_entries` symbols are kept.
@@ -87,8 +118,11 @@ pub fn apply(output: &str, budget: u64) -> String {
 
     let omitted_bytes = output.len().saturating_sub(header_end + cut_point);
     let remaining_tokens = estimate_tokens(omitted_bytes as u64);
-    format!(
-        "{header}{clean_body}\n\n... truncated ({remaining_tokens} tokens omitted, budget: {budget})"
+    apply_hard_cap(
+        format!(
+            "{header}{clean_body}\n\n... truncated ({remaining_tokens} tokens omitted, budget: {budget})"
+        ),
+        budget,
     )
 }
 
@@ -103,7 +137,7 @@ pub fn apply_preserving_footer(output: &str, budget: u64) -> String {
         return output.to_string();
     }
 
-    let Some((body, footer)) = split_trailing_footer(output) else {
+    let Some((body, footer)) = crate::format::split_trailing_footer(output) else {
         return apply(output, budget);
     };
 
@@ -117,36 +151,29 @@ pub fn apply_preserving_footer(output: &str, budget: u64) -> String {
     format!("{}\n\n{}", budgeted_body.trim_end(), footer)
 }
 
-fn split_trailing_footer(output: &str) -> Option<(&str, &str)> {
-    let mut footer_start = output.len();
-    let mut saw_footer = false;
-
-    for line in output.lines().rev() {
-        let line_start = footer_start.saturating_sub(line.len());
-        if line.starts_with("> ") {
-            saw_footer = true;
-            footer_start = line_start;
-            if footer_start > 0 && output.as_bytes()[footer_start - 1] == b'\n' {
-                footer_start -= 1;
-            }
-            continue;
-        }
-        if saw_footer && line.trim().is_empty() {
-            footer_start = line_start;
-            if footer_start > 0 && output.as_bytes()[footer_start - 1] == b'\n' {
-                footer_start -= 1;
-            }
-            continue;
-        }
-        break;
-    }
-
-    saw_footer.then(|| output.split_at(footer_start))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::apply_preserving_footer;
+    use super::{apply, apply_preserving_footer};
+
+    #[test]
+    fn outline_without_structural_entries_still_respects_budget() {
+        let body = (0..200)
+            .map(|i| format!("plain outline fallback line {i}: lots of generated content"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = format!("# notes.txt [outline]\n{body}");
+
+        for budget in [0, 1, 10, 49, 80] {
+            let rendered = apply(&output, budget);
+            assert!(
+                crate::types::estimate_tokens(rendered.len() as u64) <= budget,
+                "budget {budget}: {rendered}"
+            );
+            if budget == 80 {
+                assert!(rendered.contains("... truncated"), "{rendered}");
+            }
+        }
+    }
 
     #[test]
     fn preserving_footer_keeps_footer_after_truncation() {
@@ -180,6 +207,23 @@ mod tests {
         assert!(rendered.contains("... truncated"), "{rendered}");
         assert!(
             rendered.ends_with("> Related: src/a.rs, src/b.rs\n> Next: use `srcwalk deps <file>`"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn preserving_footer_handles_trailing_newline() {
+        let body = (0..200)
+            .map(|i| format!("line {i}: lots of generated content"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = format!("# Header\n{body}\n\n> Caveat: partial\n> Next: use --expand next\n");
+
+        let rendered = apply_preserving_footer(&output, 80);
+
+        assert!(rendered.contains("... truncated"), "{rendered}");
+        assert!(
+            rendered.ends_with("> Caveat: partial\n> Next: use --expand next"),
             "{rendered}"
         );
     }

@@ -108,7 +108,7 @@ pub(crate) enum MatchMode {
 
 #[derive(Args)]
 pub(crate) struct DiscoverCmd {
-    /// Symbol name, field/member name, symbol-name glob, text, or file glob to discover.
+    /// Symbol name, 2-5 comma-separated symbol batch (use --as symbol), field/member name, symbol-name glob, text, or file glob to discover. Symbol discovery may repeat --scope; text/file/access modes use one scope.
     pub(crate) query: String,
     #[command(flatten)]
     pub(crate) common: CommonArgs,
@@ -278,7 +278,7 @@ pub(crate) struct DecisionFlowCmd {
 
 #[derive(Args)]
 pub(crate) struct ContextCmd {
-    /// Symbol, file:symbol, file:line, or file:start-end target.
+    /// Symbol, file:symbol, file:line, file:start-end, or up to 3 comma-separated exact path targets.
     pub(crate) symbol: String,
     #[command(flatten)]
     pub(crate) common: CommonArgs,
@@ -329,7 +329,7 @@ pub(crate) struct MapCmd {
 
 #[derive(Args)]
 pub(crate) struct CommonArgs {
-    /// Scope root for search and relative path resolution.
+    /// Scope root for search and relative path resolution. Use one unless command help explicitly supports multiple roots.
     #[arg(long, default_value = ".", action = ArgAction::Append)]
     pub(crate) scope: Vec<PathBuf>,
     /// Max tokens in response. Reduces detail to fit. Default: 6000.

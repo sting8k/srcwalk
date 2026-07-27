@@ -243,17 +243,68 @@ fn map_auto_depth_retries_lower_depth_to_fit_cap() {
         stdout
             .lines()
             .next()
-            .is_some_and(|line| line.contains("(depth auto→1")),
-        "expected reduced auto depth header, got:\n{stdout}"
+            .is_some_and(|line| line.contains("(auto orientation")),
+        "expected orientation header for oversized auto overview, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("# Note: depth reduced to fit cap."),
-        "expected short reduced-depth note, got:\n{stdout}"
+        stdout.contains("large auto overview summarized")
+            && stdout.contains("## Areas")
+            && stdout.contains("## Navigation candidates")
+            && stdout.contains("more areas")
+            && stdout.contains("more source files omitted from candidates")
+            && stdout.contains("srcwalk overview --scope"),
+        "expected bounded orientation packet with omitted counts and drilldowns, got:\n{stdout}"
     );
 
+    let glob_out = srcwalk()
+        .arg("overview")
+        .arg("--scope")
+        .arg(&dir)
+        .arg("--glob")
+        .arg("*.rs")
+        .output()
+        .unwrap();
+    assert!(glob_out.status.success());
+    let glob_stdout = String::from_utf8_lossy(&glob_out.stdout);
+    assert!(
+        glob_stdout.contains("--glob '*.rs'") || glob_stdout.contains("--glob *.rs"),
+        "orientation drilldowns should preserve glob filters:\n{glob_stdout}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn map_directory_only_rollup_does_not_claim_scope_is_empty() {
+    let dir = temp_repo("map_directory_only_rollup");
+    let nested = dir.join("area").join("deeper").join("deepest");
+    fs::create_dir_all(&nested).unwrap();
+    for i in 0..101 {
+        fs::write(
+            nested.join(format!("file_{i:03}.rs")),
+            format!("pub fn value_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let out = srcwalk()
+        .arg("overview")
+        .arg("--scope")
+        .arg(&dir)
+        .arg("--symbols")
+        .output()
+        .unwrap();
+
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("area/"), "{stdout}");
+    assert!(
+        !stdout.contains("No overview entries found"),
+        "directory rollups are valid overview entries:\n{stdout}"
+    );
+    assert!(stdout.contains("narrow with --scope"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
 #[test]
 fn map_filters_to_source_files_only() {
     let dir = temp_repo("map_source_filter");
@@ -381,6 +432,8 @@ fn map_hard_cap_aborts_without_partial_output() {
         .arg("overview")
         .arg("--scope")
         .arg(&dir)
+        .arg("--depth")
+        .arg("1")
         .output()
         .unwrap();
 
@@ -423,6 +476,8 @@ fn map_degrades_to_structure_only_when_relations_exceed_cap() {
         .arg("overview")
         .arg("--scope")
         .arg(&dir)
+        .arg("--depth")
+        .arg("1")
         .output()
         .unwrap();
 
@@ -643,6 +698,12 @@ fn map_shows_outbound_go_deps_when_scope_is_narrow() {
             && !stdout.contains("sdk/cliproxy/executor"),
         "expected outbound deps grouped by source/target modules, got:\n{stdout}"
     );
+    assert!(
+        stdout.contains("> Next: srcwalk deps")
+            && stdout.contains("examples/custom-provider/main.go")
+            && !stdout.contains("srcwalk deps <file>"),
+        "expected paste-ready deps action for the exact outbound source file:\n{stdout}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -800,9 +861,11 @@ fn map_footer_describes_no_cross_group_relations() {
     assert!(out.status.success(), "expected overview to succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("no cross-group relations shown")
+        stdout.contains("> Next: srcwalk deps")
+            && stdout.contains("main.ts")
+            && !stdout.contains("srcwalk deps <file>")
             && !stdout.contains("no in-scope relations shown"),
-        "expected precise no-relations footer, got:\n{stdout}"
+        "expected precise concrete no-relations footer, got:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);

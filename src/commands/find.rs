@@ -21,6 +21,9 @@ const TEXT_OR_COMPACT_MIN_TERMS: usize = 3;
 const TEXT_OR_COMPACT_MIN_MATCHES: usize = 30;
 const TEXT_OR_ROLLUP_FILE_LIMIT: usize = 8;
 const TEXT_OR_ROLLUP_LINE_LIMIT: usize = 6;
+const TEXT_OR_WINDOW_CONTEXT_LINES: u32 = 10;
+const TEXT_OR_WINDOW_LIMIT: usize = 3;
+const TEXT_OR_WINDOW_MAX_SPAN: u32 = 80;
 
 fn comma_terms(query: &str) -> Vec<&str> {
     query
@@ -195,10 +198,14 @@ pub(crate) fn run_text_or_filtered_with_artifact(
 
     let compact =
         terms.len() >= TEXT_OR_COMPACT_MIN_TERMS || total_found > TEXT_OR_COMPACT_MIN_MATCHES;
-    let rendered = if compact {
-        render_text_or_file_rollup(&term_results, scope)
+    let (rendered, has_specific_next) = if compact {
+        let rollup = render_text_or_file_rollup(&term_results, scope);
+        (rollup.body, rollup.has_specific_next)
     } else {
-        render_text_or_term_details(&term_results, term_limit, scope)
+        (
+            render_text_or_term_details(&term_results, term_limit, scope),
+            false,
+        )
     };
 
     let mut output = format!(
@@ -211,7 +218,7 @@ pub(crate) fn run_text_or_filtered_with_artifact(
         text_or_file_word(total_files.len()),
         rendered
     );
-    if total_found > 0 {
+    if total_found > 0 && (!has_specific_next || artifact.enabled()) {
         let rendered = render_next_actions(&[NextAction::guidance(
             "read raw hit evidence with `srcwalk show <path>:<line> -C 10`.",
             "text-or hit drilldown",
@@ -272,7 +279,15 @@ fn render_text_or_term_details(
     rendered
 }
 
-fn render_text_or_file_rollup(term_results: &[TextOrTermResult], scope: &Path) -> String {
+struct TextOrRollupRender {
+    body: String,
+    has_specific_next: bool,
+}
+
+fn render_text_or_file_rollup(
+    term_results: &[TextOrTermResult],
+    scope: &Path,
+) -> TextOrRollupRender {
     use std::fmt::Write as _;
 
     let mut by_path: BTreeMap<PathBuf, TextOrFileRollup> = BTreeMap::new();
@@ -284,6 +299,12 @@ fn render_text_or_file_rollup(term_results: &[TextOrTermResult], scope: &Path) -
             *entry.term_counts.entry(result.term.clone()).or_insert(0) += 1;
             entry.shown_matches += 1;
             entry.lines.insert(m.line);
+            *entry
+                .line_terms
+                .entry(m.line)
+                .or_default()
+                .entry(result.term.clone())
+                .or_insert(0) += 1;
         }
     }
 
@@ -298,6 +319,7 @@ fn render_text_or_file_rollup(term_results: &[TextOrTermResult], scope: &Path) -
     });
 
     let mut rendered = String::new();
+    let mut has_specific_next = false;
     rendered.push_str("\n\n## Files ranked by term coverage");
     if files.is_empty() {
         rendered.push_str("\n(no files matched shown terms)");
@@ -334,12 +356,47 @@ fn render_text_or_file_rollup(term_results: &[TextOrTermResult], scope: &Path) -
                 file.lines.len() - TEXT_OR_ROLLUP_LINE_LIMIT
             );
         }
-        if let (Some(start), Some(end)) = (file.lines.first(), file.lines.last()) {
-            let _ = write!(
-                rendered,
-                "\n  > Next: srcwalk show {rel}:{start}-{end} -C 20"
-            );
+        let windows = text_or_select_hit_windows(file);
+        if !windows.is_empty() {
+            let summaries = windows
+                .iter()
+                .map(text_or_window_summary)
+                .collect::<Vec<_>>()
+                .join("; ");
+            let sections = windows
+                .iter()
+                .map(text_or_window_range)
+                .collect::<Vec<_>>()
+                .join(",");
+            let omitted_windows = text_or_hit_windows(file)
+                .len()
+                .saturating_sub(windows.len());
+            let _ = write!(rendered, "\n  windows: {summaries}");
+            if let (Some(rel_arg), Some(section_arg)) = (
+                format::shell_quote_arg(&rel),
+                format::shell_quote_arg(&sections),
+            ) {
+                let _ = write!(
+                    rendered,
+                    "\n  > Next: srcwalk show {rel_arg} --section {section_arg} -C 10"
+                );
+                has_specific_next = true;
+            }
+            if omitted_windows > 0 {
+                let _ = write!(
+                    rendered,
+                    "\n  > Note: {omitted_windows} lower-ranked hit windows omitted from next read; use shown hits above or narrow terms."
+                );
+            }
         }
+    }
+    if files
+        .iter()
+        .any(|file| !text_or_hit_windows(file).is_empty())
+    {
+        rendered.push_str(
+            "\n> Caveat: hit-window proximity is literal navigation evidence, not semantic relation proof.",
+        );
     }
     if files.len() > TEXT_OR_ROLLUP_FILE_LIMIT {
         let _ = write!(
@@ -364,7 +421,10 @@ fn render_text_or_file_rollup(term_results: &[TextOrTermResult], scope: &Path) -
             let _ = write!(rendered, "; {} omitted by per-term limit", result.omitted);
         }
     }
-    rendered
+    TextOrRollupRender {
+        body: rendered,
+        has_specific_next,
+    }
 }
 
 struct TextOrFileRollup {
@@ -372,6 +432,7 @@ struct TextOrFileRollup {
     term_counts: BTreeMap<String, usize>,
     shown_matches: usize,
     lines: BTreeSet<u32>,
+    line_terms: BTreeMap<u32, BTreeMap<String, usize>>,
     is_test: bool,
 }
 
@@ -383,9 +444,141 @@ impl TextOrFileRollup {
             term_counts: BTreeMap::new(),
             shown_matches: 0,
             lines: BTreeSet::new(),
+            line_terms: BTreeMap::new(),
             is_test,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct TextOrHitWindow {
+    start: u32,
+    end: u32,
+    term_counts: BTreeMap<String, usize>,
+    hit_count: usize,
+}
+
+impl TextOrHitWindow {
+    fn new(line: u32, terms: &BTreeMap<String, usize>) -> Self {
+        let mut window = Self {
+            start: line,
+            end: line,
+            term_counts: BTreeMap::new(),
+            hit_count: 0,
+        };
+        window.add_line(line, terms);
+        window
+    }
+
+    fn add_line(&mut self, line: u32, terms: &BTreeMap<String, usize>) {
+        self.end = self.end.max(line);
+        for (term, count) in terms {
+            *self.term_counts.entry(term.clone()).or_insert(0) += *count;
+            self.hit_count += *count;
+        }
+    }
+
+    fn term_count(&self) -> usize {
+        self.term_counts.len()
+    }
+
+    fn span(&self) -> u32 {
+        self.end.saturating_sub(self.start) + 1
+    }
+}
+
+fn text_or_hit_windows(file: &TextOrFileRollup) -> Vec<TextOrHitWindow> {
+    let mut windows = Vec::new();
+    let mut current: Option<TextOrHitWindow> = None;
+    let merge_gap = TEXT_OR_WINDOW_CONTEXT_LINES
+        .saturating_mul(2)
+        .saturating_add(1);
+
+    for (line, terms) in &file.line_terms {
+        match current.as_mut() {
+            Some(window)
+                if *line <= window.end.saturating_add(merge_gap)
+                    && line.saturating_sub(window.start).saturating_add(1)
+                        <= TEXT_OR_WINDOW_MAX_SPAN =>
+            {
+                window.add_line(*line, terms);
+            }
+            Some(_) => {
+                windows.push(current.take().expect("current window exists"));
+                current = Some(TextOrHitWindow::new(*line, terms));
+            }
+            None => current = Some(TextOrHitWindow::new(*line, terms)),
+        }
+    }
+
+    if let Some(window) = current {
+        windows.push(window);
+    }
+
+    windows
+}
+
+fn text_or_select_hit_windows(file: &TextOrFileRollup) -> Vec<TextOrHitWindow> {
+    let mut remaining = text_or_hit_windows(file);
+    let mut selected = Vec::new();
+    let mut covered_terms = BTreeSet::new();
+
+    while selected.len() < TEXT_OR_WINDOW_LIMIT
+        && !remaining.is_empty()
+        && (covered_terms.len() < file.term_counts.len()
+            || remaining.iter().any(|window| window.term_count() > 1))
+    {
+        let best_idx = remaining
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| text_or_compare_windows(a, b, &covered_terms))
+            .map(|(idx, _)| idx)
+            .expect("remaining is not empty");
+        let window = remaining.remove(best_idx);
+        covered_terms.extend(window.term_counts.keys().cloned());
+        selected.push(window);
+    }
+
+    selected.sort_by_key(|window| window.start);
+    selected
+}
+
+fn text_or_compare_windows(
+    a: &TextOrHitWindow,
+    b: &TextOrHitWindow,
+    covered_terms: &BTreeSet<String>,
+) -> std::cmp::Ordering {
+    let a_new_terms = a
+        .term_counts
+        .keys()
+        .filter(|term| !covered_terms.contains(*term))
+        .count();
+    let b_new_terms = b
+        .term_counts
+        .keys()
+        .filter(|term| !covered_terms.contains(*term))
+        .count();
+
+    a_new_terms
+        .cmp(&b_new_terms)
+        .then(a.term_count().cmp(&b.term_count()))
+        .then(a.hit_count.cmp(&b.hit_count))
+        .then(b.span().cmp(&a.span()))
+        .then(b.start.cmp(&a.start))
+}
+
+fn text_or_window_range(window: &TextOrHitWindow) -> String {
+    format!("{}-{}", window.start, window.end)
+}
+
+fn text_or_window_summary(window: &TextOrHitWindow) -> String {
+    let terms = window
+        .term_counts
+        .iter()
+        .map(|(term, count)| format!("{term}({count})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(":{}-{} terms={terms}", window.start, window.end)
 }
 
 fn text_or_file_word(count: usize) -> &'static str {

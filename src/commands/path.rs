@@ -71,6 +71,7 @@ fn resolve_exact_path(query: &str, scope: &Path) -> Result<std::path::PathBuf, S
             .cloned()
             .unwrap_or_else(|| scope.join(query)),
         suggestion: None,
+        guidance: None,
     })
 }
 
@@ -116,6 +117,24 @@ pub(crate) fn run_path_exact_with_artifact_and_context(
     context_lines: Option<usize>,
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
+    if section.is_none() {
+        if let Some(target) = read::resolve_path_symbol_target(query, scope) {
+            let suggestion = target.range.map(|(start, end)| {
+                format!(
+                    "{}:{start}-{end}",
+                    crate::format::rel_nonempty(&target.path, scope)
+                )
+            });
+            return Err(SrcwalkError::NotFound {
+                path: scope.join(query),
+                suggestion,
+                guidance: Some(
+                    "`show` takes line ranges; `path:symbol` is `context` grammar.".to_string(),
+                ),
+            });
+        }
+    }
+
     let (query, inline_section) = split_inline_section(query, scope, section);
     let section = inline_section.as_deref();
     let path = resolve_exact_path(&query, scope)?;

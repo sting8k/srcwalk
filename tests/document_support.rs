@@ -81,6 +81,14 @@ More setup.
         !stdout.contains("secret.md"),
         "fenced link became a dep:\n{stdout}"
     );
+    assert!(
+        stdout.contains("drill into a heading with --section \"# Heading\" or a line range"),
+        "document outline should route to headings/ranges, not source symbols:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("drill into a symbol with --section <name>"),
+        "document outline should not imply source symbol navigation:\n{stdout}"
+    );
 
     let out = srcwalk()
         .args(["discover", "Install", "--scope"])

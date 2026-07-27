@@ -229,3 +229,144 @@ fn multi_symbol_search_keeps_repeated_definition_ambiguity() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn expanded_discover_compacts_rendered_source_occurrences_without_hiding_recursive_calls() {
+    let dir = temp_repo("expanded_compact_rendered_occurrences");
+    write_file(
+        &dir.join("recur.rs"),
+        "pub fn recur(n: u32) {\n    if n > 0 { recur(n - 1); }\n}\npub fn outside() { recur(1); }\n",
+    );
+
+    let stdout = run_discover(&dir, &["recur", "--scope", "recur.rs", "--expand=1"]);
+
+    assert!(
+        stdout.contains("3 matches (1 definitions, 2 name occurrences)"),
+        "counts must not change:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("   2 │     if n > 0 { recur(n - 1); }"),
+        "recursive call source must still be visible in expanded definition:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("- :2      [name occurrence · source shown above] ← recur"),
+        "recursive occurrence anchor must remain, compacted only because source is shown above:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("inside shown definitions"),
+        "old omission wording must not return:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn compacted_single_occurrence_does_not_repeat_context_or_source_expansion() {
+    let dir = temp_repo("expanded_compact_single_no_repeat");
+    let mut source = String::from("pub fn recur(n: u32) {\n    if n > 0 { recur(n - 1); }\n");
+    for i in 1..=55 {
+        source.push_str(&format!("    let filler_{i:02} = {i};\n"));
+    }
+    source.push_str("}\n");
+    write_file(&dir.join("recur.rs"), &source);
+
+    let stdout = run_discover(&dir, &["recur", "--scope", "recur.rs", "--expand=2"]);
+
+    assert!(
+        stdout.contains("→ [2]   [name occurrence · source shown above]"),
+        "fixture must compact the recursive occurrence:\n{stdout}"
+    );
+    assert_eq!(
+        stdout
+            .matches("   2 │     if n > 0 { recur(n - 1); }")
+            .count(),
+        1,
+        "compacted occurrence must not repeat its source expansion:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("\n→ [1-58]"),
+        "compacted occurrence must not repeat outline context:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn expanded_discover_keeps_unshown_external_occurrence_snippet() {
+    let dir = temp_repo("expanded_unshown_external_occurrence");
+    let mut source = String::from("pub fn target() {\n    let value = 1;\n}\n");
+    for i in 0..260 {
+        source.push_str(&format!(
+            "// filler {i:03} to force def-range expansion instead of full-file expansion\n"
+        ));
+    }
+    source.push_str("pub fn outside() { target(); }\n");
+    write_file(&dir.join("large.rs"), &source);
+
+    let stdout = run_discover(&dir, &["target", "--scope", "large.rs", "--expand=1"]);
+
+    assert!(
+        stdout.contains("pub fn outside() { target(); }"),
+        "unshown external occurrence must keep its source snippet:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("[name occurrence · source shown above]"),
+        "unshown occurrence must not be compacted:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn expanded_discover_keeps_smart_truncated_occurrence_snippet() {
+    let dir = temp_repo("expanded_smart_truncated_occurrence");
+    let mut source = String::from("pub fn needle() {\n");
+    for i in 0..90 {
+        source.push_str(&format!("    let filler_{i:03} = {i};\n"));
+    }
+    source.push_str("    let captured = needle;\n");
+    for i in 90..130 {
+        source.push_str(&format!("    let tail_{i:03} = {i};\n"));
+    }
+    source.push_str("}\n");
+    write_file(&dir.join("long.rs"), &source);
+
+    let stdout = run_discover(&dir, &["needle", "--scope", "long.rs", "--expand=1"]);
+
+    assert!(
+        stdout.contains("> Caveat: expanded source truncated."),
+        "fixture should exercise smart truncation:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("let captured = needle;"),
+        "occurrence line stripped from expanded source must still render as hit evidence:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("[name occurrence · source shown above]"),
+        "stripped occurrence line must not be compacted:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn expanded_text_search_does_not_use_name_occurrence_compaction() {
+    let dir = temp_repo("expanded_text_no_name_compaction");
+    write_file(&dir.join("text.rs"), "pub fn token() {\n    token();\n}\n");
+
+    let stdout = run_discover(
+        &dir,
+        &["token", "--as", "text", "--scope", "text.rs", "--expand=1"],
+    );
+
+    assert!(
+        stdout.contains("[2 text matches]") || stdout.contains("[3 text matches]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("token();") && !stdout.contains("[name occurrence · source shown above]"),
+        "literal text search must keep text evidence, not symbol compaction:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

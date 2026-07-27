@@ -680,6 +680,68 @@ fn callers_count_by_zero_matches_uses_no_callers_diagnostic() {
         stdout.contains("no call sites found") && !stdout.contains("[group]"),
         "expected no-callers diagnostic, got:\n{stdout}"
     );
+    assert_eq!(
+        stdout
+            .lines()
+            .find(|line| line.starts_with("> Next:")),
+        Some("> Next: use `srcwalk discover missingCall` or search interface/trait/implementor names."),
+        "bare-symbol recovery must remain unchanged:\n{stdout}"
+    );
+}
+
+#[test]
+fn callers_path_symbol_zero_matches_recovers_with_bare_symbol() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lib.rs"), "fn target() {}\n").unwrap();
+
+    let out = srcwalk()
+        .args(["trace", "callers", "lib.rs:target", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "path-symbol miss must remain exit 0");
+    assert!(
+        stdout.starts_with("# Callers of \"lib.rs:target\"")
+            && stdout.contains("> Caveat: direct by-name search only;"),
+        "header and caveat must remain present:\n{stdout}"
+    );
+    let next = stdout
+        .lines()
+        .find(|line| line.starts_with("> Next:"))
+        .expect("no-callers output must retain recovery guidance");
+    assert!(
+        next.contains("use `srcwalk discover target`")
+            && next.contains("trace accepts bare symbols")
+            && next.contains("`path:symbol` is `context` grammar"),
+        "resolved path-symbol recovery must name the bare symbol:\n{stdout}"
+    );
+    assert!(
+        !next.contains("`srcwalk discover lib.rs:target`"),
+        "recovery command must not retain path-symbol grammar:\n{stdout}"
+    );
+}
+
+#[test]
+fn callers_unresolved_path_symbol_zero_matches_recovery_is_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let out = srcwalk()
+        .args(["trace", "callers", "nosuch.go:Nothing", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "unresolved miss must remain exit 0");
+    assert_eq!(
+        stdout
+            .lines()
+            .find(|line| line.starts_with("> Next:")),
+        Some("> Next: use `srcwalk discover nosuch.go:Nothing` or search interface/trait/implementor names."),
+        "unresolved path-symbol recovery must remain unchanged:\n{stdout}"
+    );
 }
 
 #[test]

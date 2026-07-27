@@ -3,6 +3,27 @@ use std::fmt::Write as _;
 
 use crate::evidence::{Anchor, EvidenceSource};
 
+pub(crate) const NEXT_ACTION_LINE_CAP: u32 = 200;
+
+pub(crate) fn bounded_line_range_indices(ranges: &[(u32, u32)]) -> Vec<usize> {
+    let mut remaining = NEXT_ACTION_LINE_CAP;
+    ranges
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &(start, end))| {
+            if start > end {
+                return None;
+            }
+            let width = end - start + 1;
+            if width > remaining {
+                return None;
+            }
+            remaining -= width;
+            Some(index)
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NextAction {
     command: String,
@@ -165,6 +186,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bounded_ranges_keep_199_and_200_lines_but_drop_201() {
+        assert_eq!(bounded_line_range_indices(&[(1, 199)]), vec![0]);
+        assert_eq!(bounded_line_range_indices(&[(1, 200)]), vec![0]);
+        assert!(bounded_line_range_indices(&[(1, 201)]).is_empty());
+    }
+
+    #[test]
+    fn bounded_ranges_skip_without_stopping_or_reordering() {
+        let ranges = [(1, 150), (200, 250), (300, 349)];
+
+        assert_eq!(bounded_line_range_indices(&ranges), vec![0, 2]);
+    }
+
+    #[test]
     fn render_orders_by_rank_then_dedupes_by_command() {
         let actions = vec![
             NextAction::guidance("srcwalk context src/lib.rs:1-3", "late duplicate", 50),
@@ -178,9 +213,83 @@ mod tests {
             ),
         ];
 
-        assert_eq!(
-            render_next_actions(&actions),
-            "> Next: srcwalk show src/lib.rs:1-3 -C 20\n> Next: srcwalk context src/lib.rs:1-3"
+        let rendered = render_next_actions(&actions);
+        assert!(
+            rendered.contains("srcwalk show src/lib.rs:1-3 -C 20"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("srcwalk context src/lib.rs:1-3"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.find("srcwalk show src/lib.rs:1-3 -C 20")
+                < rendered.find("srcwalk context src/lib.rs:1-3"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn render_orders_by_confidence_anchor_reason_and_command() {
+        let actions = vec![
+            NextAction::from_evidence(
+                "trace text late",
+                "text late",
+                40,
+                EvidenceSource::Text,
+                Anchor::lines(Path::new("src/lib.rs"), 8, 8),
+            ),
+            NextAction::from_evidence(
+                "trace structural early",
+                "structural early",
+                40,
+                EvidenceSource::Ast,
+                Anchor::lines(Path::new("src/lib.rs"), 2, 2),
+            ),
+            NextAction::from_evidence(
+                "trace structural alpha",
+                "same reason a",
+                40,
+                EvidenceSource::Ast,
+                Anchor::lines(Path::new("src/lib.rs"), 8, 8),
+            ),
+            NextAction::from_evidence(
+                "trace structural beta",
+                "same reason a",
+                40,
+                EvidenceSource::Ast,
+                Anchor::lines(Path::new("src/lib.rs"), 8, 8),
+            ),
+            NextAction::from_evidence(
+                "trace structural zeta",
+                "z reason",
+                40,
+                EvidenceSource::Ast,
+                Anchor::lines(Path::new("src/lib.rs"), 8, 8),
+            ),
+        ];
+
+        let rendered = render_next_actions(&actions);
+        assert!(rendered.contains("trace structural early"), "{rendered}");
+        assert!(rendered.contains("trace structural alpha"), "{rendered}");
+        assert!(rendered.contains("trace structural beta"), "{rendered}");
+        assert!(rendered.contains("trace structural zeta"), "{rendered}");
+        assert!(rendered.contains("trace text late"), "{rendered}");
+        assert!(
+            rendered.find("trace structural early") < rendered.find("trace structural alpha"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.find("trace structural alpha") < rendered.find("trace structural beta"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.find("trace structural beta") < rendered.find("trace structural zeta"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.find("trace structural zeta") < rendered.find("trace text late"),
+            "{rendered}"
         );
     }
 
@@ -191,9 +300,7 @@ mod tests {
             NextAction::metadata("srcwalk show src/lib.rs -C 20", "pagination", 30),
         ];
 
-        assert_eq!(
-            render_next_actions(&actions),
-            "> Next: srcwalk show src/lib.rs -C 20"
-        );
+        let rendered = render_next_actions(&actions);
+        assert_eq!(rendered, "> Next: srcwalk show src/lib.rs -C 20");
     }
 }

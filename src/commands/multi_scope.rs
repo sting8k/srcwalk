@@ -102,7 +102,7 @@ fn run_multi_scope_multi_symbol_find(
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
     let first_scope = scopes.first().expect("caller ensures at least one scope");
-    let mut sections = Vec::with_capacity(parts.len());
+    let mut results = Vec::with_capacity(parts.len());
     let mut total_found = 0;
 
     for part in parts {
@@ -126,7 +126,16 @@ fn run_multi_scope_multi_symbol_find(
         let mut result = multi_scope_search_result(part, &query_type, scopes, cache, glob, filter)?;
         total_found += result.total_found;
         search::rank::sort(&mut result.matches, part, &result.scope, None);
-        search::pagination::paginate(&mut result, limit, offset);
+        results.push(result);
+    }
+
+    let page_limit = search::multi_symbol_page_limit(
+        limit,
+        results.iter().map(|result| result.matches.len()).sum(),
+    );
+    let mut sections = Vec::with_capacity(results.len());
+    for mut result in results {
+        search::pagination::paginate(&mut result, page_limit, offset);
         let header = multi_scope_search_header(&result, scopes);
         sections.push(search::format_raw_result_with_header(
             &result, cache, header,

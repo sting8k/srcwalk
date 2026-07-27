@@ -90,6 +90,30 @@ fn default_path_read_returns_outline_not_full() {
 }
 
 #[test]
+fn generated_read_exposes_exact_section_range_hint() {
+    let path = std::env::temp_dir().join("srcwalk_generated_hint.rs");
+    std::fs::write(&path, b"// DO NOT EDIT\nfn generated() {}").unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_file(&path, None, false, &cache).unwrap();
+
+    assert!(
+        out.contains("[generated — skipped]"),
+        "expected generated header: {out}"
+    );
+    assert!(
+        out.contains("generated file omitted; read exact lines with --section 1-2"),
+        "generated read should expose exact line-range drilldown: {out}"
+    );
+    assert!(
+        !out.contains("retry with --full"),
+        "generated fallback should not suggest --full because generated detection still wins: {out}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn explicit_full_fits_raw_caps() {
     let path = std::env::temp_dir().join("srcwalk_full_fits.rs");
     std::fs::write(&path, b"fn alpha() {}\nfn beta() {}\n").unwrap();
@@ -136,12 +160,44 @@ fn explicit_full_caps_after_raw_line_limit() {
         "expected 200-line page: {out}"
     );
     assert!(
-        out.contains("--section 201-<end>"),
+        out.contains("--section 201-251"),
         "expected next-page hint: {out}"
+    );
+    assert!(
+        !out.contains("<end>"),
+        "next-page hint should be an exact range, not a placeholder: {out}"
     );
     assert!(
         out.contains("func_0"),
         "expected first page body/outline: {out}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn explicit_full_caps_without_line_boundary_omits_invalid_range_hint() {
+    let path = std::env::temp_dir().join("srcwalk_full_single_long_line.txt");
+    std::fs::write(&path, "x".repeat(21_000)).unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_file(&path, None, true, &cache).unwrap();
+
+    assert!(
+        out.contains("full capped — tokens ~"),
+        "expected cap warning: {out}"
+    );
+    assert!(
+        !out.contains("--section 2-1"),
+        "must not emit an invalid EOF range: {out}"
+    );
+    assert!(
+        !out.contains("Continue from --section"),
+        "mid-line caps must not claim a safe line continuation: {out}"
+    );
+    assert!(
+        out.contains("> Next: use --section <symbol|range[,symbol|range]> for the needed parts, or retry with --budget <N>."),
+        "expected valid fallback next-step: {out}"
     );
 
     let _ = std::fs::remove_file(&path);
@@ -200,8 +256,12 @@ fn section_budget_controls_token_degradation() {
     );
 
     assert!(
-        low_budget.contains("use narrower --section or --budget <N>"),
-        "non-artifact source files should keep generic over-limit advice: {low_budget}"
+        low_budget.contains("read exact selected range(s) with --section 1-82 --budget "),
+        "source section over-limit should expose exact resolved range and concrete budget: {low_budget}"
+    );
+    assert!(
+        !low_budget.contains("--budget <N>"),
+        "source section over-limit should avoid placeholder budget advice: {low_budget}"
     );
 
     let high_budget =
@@ -209,6 +269,42 @@ fn section_budget_controls_token_degradation() {
     assert!(
         high_budget.contains("[section]") && high_budget.contains("padding padding"),
         "expected high budget to return source: {high_budget}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+#[test]
+fn over_limit_non_enclosed_numeric_section_does_not_emit_source_frame() {
+    let path = std::env::temp_dir().join("srcwalk_overlimit_non_enclosed_frame.rs");
+    let mut code = String::from("const VALUE: i32 = 1;\n\nfn first() {\n");
+    for i in 0..80 {
+        code.push_str(&format!(
+            "    let a_{i} = \"padding padding padding padding padding padding\";\n"
+        ));
+    }
+    code.push_str("}\n\nfn second() {\n");
+    for i in 0..80 {
+        code.push_str(&format!(
+            "    let b_{i} = \"padding padding padding padding padding padding\";\n"
+        ));
+    }
+    code.push_str("}\n");
+    std::fs::write(&path, code).unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_file_with_budget(&path, Some("1-170"), false, Some(100), &cache).unwrap();
+
+    assert!(
+        out.contains("[section, outline (over limit)]"),
+        "expected over-limit outline path: {out}"
+    );
+    assert!(
+        !out.contains("> Source frame:"),
+        "over-limit outline path must not emit a source frame: {out}"
+    );
+    assert!(
+        !out.contains("not enclosed"),
+        "over-limit outline path must not emit non-enclosed frame text: {out}"
     );
 
     let _ = std::fs::remove_file(&path);
@@ -536,6 +632,111 @@ fn multi_section_line_ranges_return_all_blocks() {
         !out.contains("l4"),
         "unrequested line should be omitted: {out}"
     );
+    assert!(
+        !out.contains("> Source frame:"),
+        "non-code multi-section should not emit source frames: {out}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+#[test]
+fn multi_section_line_ranges_emit_source_frames_per_block() {
+    let code = "fn first() {\n    let a = 1;\n}\n\nfn second() {\n    let b = 2;\n}\n";
+    let path = std::env::temp_dir().join("srcwalk_multi_ranges_with_frame.rs");
+    std::fs::write(&path, code).unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_section(&path, "1-3,5-7", None, &cache).unwrap();
+
+    assert!(
+        out.contains("2 sections, section"),
+        "expected multi-section output: {out}"
+    );
+    assert_eq!(
+        out.matches("> Source frame:").count(),
+        2,
+        "expected one source frame per rendered block: {out}"
+    );
+    assert!(
+        out.contains(
+            "> Source frame: requested 1-3; displayed 1-3; within fn first 1-3; complete."
+        ),
+        "expected first block frame: {out}"
+    );
+    assert!(
+        out.contains(
+            "> Source frame: requested 5-7; displayed 5-7; within fn second 5-7; complete."
+        ),
+        "expected second block frame: {out}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+#[test]
+fn multi_section_code_with_no_function_outline_emits_no_source_frame() {
+    let code = "const VALUE: i32 = 1;\nstruct Holder;\nconst OTHER: i32 = 3;\n";
+    let path = std::env::temp_dir().join("srcwalk_multi_empty_outline.rs");
+    std::fs::write(&path, code).unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_section(&path, "1-1,3-3", None, &cache).unwrap();
+
+    assert!(
+        out.contains("2 sections, section"),
+        "expected multi-section output: {out}"
+    );
+    assert!(
+        !out.contains("> Source frame:"),
+        "parser-supported code without function entries should not emit frames: {out}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn multi_section_code_with_empty_outline_emits_no_source_frame() {
+    let code = "// first\n\n// second\n";
+    let path = std::env::temp_dir().join("srcwalk_multi_true_empty_outline.rs");
+    std::fs::write(&path, code).unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_section(&path, "1-1,3-3", None, &cache).unwrap();
+
+    assert!(
+        out.contains("2 sections, section"),
+        "expected multi-section output: {out}"
+    );
+    assert!(
+        !out.contains("> Source frame:"),
+        "parser-supported code with empty outline should not emit frames: {out}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn multi_section_heading_block_classifies_displayed_bounds() {
+    let code = "# Alpha\ndef first():\n    return 1\n# Beta\ndef second():\n    return 2\n";
+    let path = std::env::temp_dir().join("srcwalk_multi_heading_block.py");
+    std::fs::write(&path, code).unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_section(&path, "# Alpha,second", None, &cache).unwrap();
+
+    assert!(
+        out.contains("## section: # Alpha [1-3]"),
+        "heading block should resolve to displayed bounds: {out}"
+    );
+    assert!(
+        out.contains("> Source frame: requested 1-3; displayed 1-3; spans 1 structural function; not enclosed."),
+        "heading block should classify from displayed bounds without overclaiming: {out}"
+    );
+    assert!(
+        out.contains(
+            "> Source frame: requested 5-6; displayed 5-6; within fn second 5-6; complete."
+        ),
+        "symbol block should still classify normally: {out}"
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -560,6 +761,16 @@ fn multi_section_mixes_symbol_and_line_range() {
     assert!(
         !out.contains("first()"),
         "unrequested symbol should be omitted: {out}"
+    );
+    assert!(
+        out.contains("> Source frame: requested 4; displayed 4; outside any function span."),
+        "range block should get an outside-any-function frame: {out}"
+    );
+    assert!(
+        out.contains(
+            "> Source frame: requested 5-7; displayed 5-7; within fn second 5-7; complete."
+        ),
+        "symbol block should get an enclosed frame: {out}"
     );
 
     let _ = std::fs::remove_file(&path);
@@ -607,6 +818,14 @@ fn over_budget_multi_section_returns_compact_bodies_and_missing_notes() {
     assert!(
         out.contains("lines omitted") && out.contains("compacted ~"),
         "compact output should include concise budget/omission metrics: {out}"
+    );
+    assert!(
+        !out.contains("> Source frame:"),
+        "compact over-limit multi-section output must not emit source frames: {out}"
+    );
+    assert!(
+        out.contains("--section 1-42,43-84 --budget "),
+        "compact multi-section output should expose exact merged ranges and concrete budget: {out}"
     );
     assert!(
         out.contains("Missing symbols") && out.contains("missing_fn"),
@@ -690,6 +909,79 @@ fn multi_section_labels_and_merges_overlapping_ranges() {
 }
 
 #[test]
+fn merged_code_multi_section_frame_uses_displayed_bounds() {
+    let code = "fn first() {\n    let a = 1;\n}\n\nfn second() {\n    let b = 2;\n}\n";
+    let path = std::env::temp_dir().join("srcwalk_multi_section_overlap_frame.rs");
+    std::fs::write(&path, code).unwrap();
+
+    let cache = OutlineCache::new();
+    let out = read_section(&path, "1-4,4-7", None, &cache).unwrap();
+
+    assert!(
+        out.contains("## section: 1-4, 4-7 [1-7]"),
+        "merged block should keep requested labels and displayed bounds: {out}"
+    );
+    assert_eq!(
+        out.matches("> Source frame:").count(),
+        1,
+        "merged rendered block should emit one frame: {out}"
+    );
+    assert!(
+        out.contains("> Source frame: requested 1-7; displayed 1-7; spans 2 structural functions; not enclosed."),
+        "merged frame should classify displayed bounds: {out}"
+    );
+    assert!(
+        !out.contains("within fn") && !out.contains("complete"),
+        "merged non-enclosed frame must not overclaim: {out}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn multi_section_source_frame_property_avoids_behavior_claims() {
+    let code =
+        "fn outer() {\n    let a = 1;\n    let b = 2;\n}\n\nfn sibling() {\n    let c = 3;\n}\n";
+    let path = std::env::temp_dir().join("srcwalk_multi_section_frame_property.rs");
+    std::fs::write(&path, code).unwrap();
+    let cache = OutlineCache::new();
+    let banned = [
+        "calls",
+        "returns",
+        "depends",
+        "runtime",
+        "owns",
+        "implements",
+        "invokes",
+        "because",
+    ];
+
+    for selector in ["1-2,3-4", "2-5,6-9", "5-5,7-8", "1-9,3-3"] {
+        let out = read_section(&path, selector, None, &cache).unwrap();
+        for line in out
+            .lines()
+            .filter(|line| line.starts_with("> Source frame:"))
+        {
+            let lower = line.to_ascii_lowercase();
+            for word in banned {
+                assert!(
+                    !lower.contains(word),
+                    "multi-section frame must not emit behavior word `{word}` for {selector}: {line}"
+                );
+            }
+            if line.contains("not enclosed") || line.contains("outside any function span") {
+                assert!(
+                    !line.contains("complete"),
+                    "non-enclosed multi-section frame must not claim complete for {selector}: {line}"
+                );
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn multi_section_all_invalid_ranges_error() {
     let code = "one\ntwo\n";
     let path = std::env::temp_dir().join("srcwalk_multi_section_oob.txt");
@@ -708,4 +1000,33 @@ fn multi_section_all_invalid_ranges_error() {
     );
 
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn path_symbol_target_reuses_section_resolution_and_rejects_drive_prefix() {
+    let dir = std::env::temp_dir().join(format!(
+        "srcwalk_path_symbol_unit_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.rs"), "fn target() {\n    let x = 1;\n}\n").unwrap();
+    std::fs::write(dir.join("C"), "fn a() {}\n").unwrap();
+
+    let resolved = resolve_path_symbol_target("lib.rs:target", &dir).unwrap();
+    assert_eq!(resolved.symbol, "target");
+    assert_eq!(resolved.range, Some((1, 3)));
+    assert_eq!(
+        resolve_path_symbol_target("lib.rs:missing", &dir)
+            .unwrap()
+            .range,
+        None
+    );
+    assert_eq!(resolve_path_symbol_target(r"C:\a", &dir), None);
+    assert_eq!(resolve_path_symbol_target("lib.rs:1-3", &dir), None);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

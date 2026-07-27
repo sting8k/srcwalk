@@ -1,6 +1,7 @@
 pub mod imports;
 pub mod outline;
 
+pub(crate) mod completion;
 mod directory;
 mod full;
 mod section;
@@ -19,6 +20,7 @@ use crate::lang::detect_file_type;
 use crate::types::{FileType, ViewMode};
 
 pub use full::{read_file_with_budget, read_file_with_budget_and_context};
+pub(crate) use section::{resolve_path_symbol_target, PathSymbolTarget};
 pub(crate) use suggest::edit_distance;
 pub use suggest::suggest_similar_file;
 
@@ -33,6 +35,26 @@ pub(super) fn document_packet_for_file_type(file_type: FileType, kind: &str) -> 
     matches!(file_type, FileType::Document(_))
         .then(|| evidence_packet_label_for(EvidenceSource::Document, kind))
 }
+fn generated_read_next_step(line_count: u32) -> String {
+    format!("generated file omitted; read exact lines with --section 1-{line_count}.")
+}
+
+fn outline_drilldown_action(file_type: FileType) -> NextAction {
+    if matches!(file_type, FileType::Document(_)) {
+        return NextAction::guidance(
+            "drill into a heading with --section \"# Heading\" or a line range",
+            "read document drilldown",
+            40,
+        );
+    }
+
+    NextAction::guidance(
+        "drill into a symbol with --section <name> or a line range",
+        "read outline drilldown",
+        40,
+    )
+}
+
 const RAW_LINE_CAP: u32 = 200;
 const FILE_SIZE_CAP: u64 = 500_000; // 500KB
 
@@ -48,6 +70,7 @@ pub fn read_file(
             return Err(SrcwalkError::NotFound {
                 path: path.to_path_buf(),
                 suggestion: suggest::suggest_similar(path),
+                guidance: None,
             });
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -109,12 +132,13 @@ pub fn read_file(
         || crate::lang::detection::is_generated_by_content(buf)
     {
         let line_count = memchr::memchr_iter(b'\n', buf).count() as u32 + 1;
-        return Ok(format::file_header(
-            path,
-            byte_len,
-            line_count,
-            ViewMode::Generated,
-        ));
+        let header = format::file_header(path, byte_len, line_count, ViewMode::Generated);
+        let next = render_next_actions(&[NextAction::guidance(
+            generated_read_next_step(line_count),
+            "read generated range",
+            30,
+        )]);
+        return Ok(format!("{header}\n\n{next}"));
     }
 
     let content = String::from_utf8_lossy(buf);
@@ -153,11 +177,7 @@ pub fn read_file(
     let header = format::file_header(path, byte_len, line_count, mode);
     let packet = document_packet_for_file_type(file_type, "outline");
     let next = render_next_actions(&[
-        NextAction::guidance(
-            "drill into a symbol with --section <name> or a line range",
-            "read outline drilldown",
-            40,
-        ),
+        outline_drilldown_action(file_type),
         NextAction::guidance(
             "need raw file text? retry with --full, or use --section <range> for a smaller slice.",
             "read raw or range slice",
@@ -177,5 +197,7 @@ pub fn would_outline(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| !m.is_dir() && m.len() > 0)
 }
 
+#[cfg(test)]
+mod completion_tests;
 #[cfg(test)]
 mod tests;

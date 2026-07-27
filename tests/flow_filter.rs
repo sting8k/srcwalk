@@ -51,6 +51,13 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
         .any(|word| word == needle)
 }
 
+fn assert_no_trace_routes(output: &str) {
+    assert!(
+        !output.contains("srcwalk trace callers") && !output.contains("srcwalk trace callees"),
+        "context abstention must not emit source relation routes:\n{output}"
+    );
+}
+
 #[test]
 fn flow_filter_slices_ordered_calls_and_resolves_matching_callee() {
     let dir = temp_dir("flow_filter");
@@ -222,13 +229,301 @@ fn helper() -> i32 { 1 }
     assert!(stdout.contains("# Context Packet:"), "{stdout}");
     assert!(stdout.contains("## Flow Map"), "{stdout}");
     assert!(stdout.contains("## Call Neighborhood"), "{stdout}");
+    assert!(stdout.contains("## Source Evidence"), "{stdout}");
+    assert!(stdout.contains("   1| fn entry() -> i32 {"), "{stdout}");
     assert!(stdout.contains("### Callees"), "{stdout}");
     assert!(stdout.contains("### Callers"), "{stdout}");
-    assert!(stdout.contains("> Next: srcwalk show"), "{stdout}");
+    assert!(
+        !stdout.contains("> Next: srcwalk show"),
+        "exact context with complete source evidence should not suggest same-target show:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("> Next: srcwalk trace callers entry"),
+        "context should expose upstream drilldown, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("> Next: srcwalk trace callees entry --detailed"),
+        "context should expose downstream drilldown, got:\n{stdout}"
+    );
     assert_eq!(
         stdout.matches("> Next: srcwalk show").count(),
+        0,
+        "exact context should not include same-target show next action:\n{stdout}"
+    );
+    assert_eq!(
+        stdout
+            .matches("> Next: srcwalk trace callers entry")
+            .count(),
         1,
-        "context show next action should not be duplicated:\n{stdout}"
+        "context callers next action should not be duplicated:\n{stdout}"
+    );
+    assert_eq!(
+        stdout
+            .matches("> Next: srcwalk trace callees entry --detailed")
+            .count(),
+        1,
+        "context callees next action should not be duplicated:\n{stdout}"
+    );
+}
+
+#[test]
+fn context_batches_comma_separated_exact_targets() {
+    let dir = temp_dir("context_multi_exact_targets");
+    let file = dir.join("lib.rs");
+    fs::write(
+        &file,
+        r#"fn first() -> i32 {
+    1
+}
+
+fn second() -> i32 {
+    first() + 1
+}
+
+fn unrelated() -> i32 {
+    3
+}
+"#,
+    )
+    .unwrap();
+
+    let target = "lib.rs:first,lib.rs:second";
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["context", target, "--scope", ".", "--no-budget"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "multi-target context should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("# Context: 2 exact targets"),
+        "expected multi-target header:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("# Context Packet:").count(),
+        2,
+        "expected one packet per exact target:\n{stdout}"
+    );
+    assert!(stdout.contains("## Target: lib.rs:first"), "{stdout}");
+    assert!(stdout.contains("## Target: lib.rs:second"), "{stdout}");
+    assert!(stdout.contains("fn first() -> i32"), "{stdout}");
+    assert!(stdout.contains("fn second() -> i32"), "{stdout}");
+    assert!(
+        stdout.contains("multi-target context splits one global budget"),
+        "expected budget caveat:\n{stdout}"
+    );
+}
+
+#[test]
+fn context_multi_target_rejects_same_file_range_shorthand() {
+    let dir = temp_dir("context_multi_reject_shorthand");
+    let file = dir.join("lib.rs");
+    fs::write(&file, "fn first() {}\nfn second() {}\n").unwrap();
+
+    let target = format!("{}:1-1,2-2", file.display());
+    let out = srcwalk()
+        .args(["context", &target, "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(), "expected shorthand rejection");
+    assert!(
+        stderr.contains("repeat the file path for each range"),
+        "expected exact-target guidance, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn context_multi_target_rejects_more_than_three_targets() {
+    let dir = temp_dir("context_multi_reject_cap");
+    let file = dir.join("lib.rs");
+    fs::write(&file, "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n").unwrap();
+
+    let target = format!(
+        "{}:a,{}:b,{}:c,{}:d",
+        file.display(),
+        file.display(),
+        file.display(),
+        file.display()
+    );
+    let out = srcwalk()
+        .args(["context", &target, "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(), "expected multi-target cap rejection");
+    assert!(
+        stderr.contains("at most 3 comma-separated exact targets"),
+        "expected cap guidance, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn context_multi_target_rejects_empty_list_members() {
+    let dir = temp_dir("context_multi_reject_empty_member");
+    let file = dir.join("lib.rs");
+    fs::write(&file, "fn first() {}\nfn second() {}\n").unwrap();
+
+    let target = format!("{}:first,", file.display());
+    let out = srcwalk()
+        .args(["context", &target, "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(), "expected empty member rejection");
+    assert!(
+        stderr.contains("empty context target in comma-separated list"),
+        "expected empty-list guidance, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn context_multi_target_rejects_budget_too_small_for_all_packets() {
+    let dir = temp_dir("context_multi_reject_tiny_budget");
+    fs::write(
+        dir.join("lib.rs"),
+        r#"fn first() -> i32 {
+    1
+}
+
+fn second() -> i32 {
+    first() + 1
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "context",
+            "lib.rs:first,lib.rs:second",
+            "--scope",
+            ".",
+            "--budget",
+            "320",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "expected too-small budget rejection, stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("multi-target context --budget 320 is too small"),
+        "expected budget-specific guidance, got:\n{stderr}"
+    );
+    assert!(stderr.contains("raise --budget"), "{stderr}");
+    assert!(stderr.contains("run targets separately"), "{stderr}");
+}
+
+#[test]
+fn context_multi_target_tight_boundary_keeps_target_identity_and_evidence() {
+    let dir = temp_dir("context_multi_tight_boundary");
+    fs::write(
+        dir.join("lib.rs"),
+        r#"fn first() -> i32 {
+    1
+}
+
+fn second() -> i32 {
+    first() + 1
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "context",
+            "lib.rs:first,lib.rs:second",
+            "--scope",
+            ".",
+            "--budget",
+            "370",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "tight multi-target context should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(stdout.contains("## Target: lib.rs:first"), "{stdout}");
+    assert!(
+        stdout.contains("# Context Packet: lib.rs:first"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("   1| fn first() -> i32 {"), "{stdout}");
+    assert!(stdout.contains("## Target: lib.rs:second"), "{stdout}");
+    assert!(
+        stdout.contains("# Context Packet: lib.rs:second"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("   5| fn second() -> i32 {"), "{stdout}");
+    assert!(
+        stdout.trim_end().len() <= 370 * 4,
+        "assembled packet should stay within approximate budget bytes, len={} stdout:\n{stdout}",
+        stdout.trim_end().len()
+    );
+}
+
+#[test]
+fn context_multi_target_applies_global_budget_to_assembled_packet() {
+    let dir = temp_dir("context_multi_global_budget");
+    fs::write(
+        dir.join("lib.rs"),
+        r#"fn first() -> i32 {
+    1
+}
+
+fn second() -> i32 {
+    first() + 1
+}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "context",
+            "lib.rs:first,lib.rs:second",
+            "--scope",
+            ".",
+            "--budget",
+            "370",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "multi-target budget context should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.trim_end().len() <= 370 * 4,
+        "assembled packet should stay within approximate budget bytes, len={} stdout:\n{stdout}",
+        stdout.trim_end().len()
     );
 }
 
@@ -755,7 +1050,8 @@ fn context_line_range_fallback_does_not_emit_symbol_trace_tips() {
     value: i32,
 }
 
-fn entry() -> i32 { 1 }
+fn entry() -> i32 { helper() }
+fn helper() -> i32 { 1 }
 "#,
     )
     .unwrap();
@@ -781,18 +1077,195 @@ fn entry() -> i32 { 1 }
         stdout.contains("### Callers\n- not available for non-symbol range targets"),
         "expected caller lookup to be skipped:\n{stdout}"
     );
-    assert!(
-        stdout.contains("> Next: srcwalk show") && stdout.contains(":1-3 -C 20"),
-        "expected exact show next read:\n{stdout}"
-    );
+    assert!(stdout.contains("## Source Evidence"), "{stdout}");
+    assert!(stdout.contains("   1| pub struct Config {"), "{stdout}");
     assert_eq!(
         stdout.matches("> Next: srcwalk show").count(),
-        1,
-        "range fallback show next action should not be duplicated:\n{stdout}"
+        0,
+        "range context with complete source evidence should not suggest same-target show:\n{stdout}"
     );
     assert!(
         !stdout.contains("trace callers 1-3") && !stdout.contains("trace callees 1-3"),
         "range target must not leak into trace tips:\n{stdout}"
+    );
+}
+
+#[test]
+fn context_unresolved_file_symbol_fallback_emits_resolution_caveat() {
+    let dir = temp_dir("context unresolved symbol fallback caveat");
+    let file = dir.join("lib file.rs");
+    fs::write(
+        &file,
+        r#"pub struct Config {
+    value: i32,
+}
+
+fn entry() -> i32 { helper() }
+fn helper() -> i32 { 1 }
+"#,
+    )
+    .unwrap();
+
+    let target = format!("{}:MissingSymbol", file.display());
+    let out = srcwalk()
+        .args(["context", &target, "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "context unresolved symbol fallback should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("caveat: requested symbol selector was not resolved to a structural function range; packet is file-level only"),
+        "expected unresolved-symbol fallback caveat:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "## Call Neighborhood\n- unavailable until the requested symbol resolves to a structural function target"
+        ),
+        "unresolved symbol fallback should not scan unrelated file-wide callees:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("### Callees (ordered)") && !stdout.contains("helper"),
+        "unresolved symbol fallback should not show unrelated file-wide call sites:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("srcwalk discover MissingSymbol --as symbol --scope"),
+        "expected discover retry guidance for unresolved symbol:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(" --scope '")
+            && stdout.contains("context unresolved symbol fallback caveat"),
+        "spaced scope in discover retry guidance should be shell-quoted:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("> Next: srcwalk show"),
+        "unresolved symbol fallback should not emit generic file-wide show guidance:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("srcwalk trace callers MissingSymbol")
+            && !stdout.contains("srcwalk trace callees MissingSymbol"),
+        "unresolved symbol fallback should not suggest trace routes before resolution:\n{stdout}"
+    );
+}
+
+#[test]
+fn context_exact_file_symbol_with_tight_budget_keeps_show_next() {
+    let dir = temp_dir("context_exact_budget_show_next");
+    let file = dir.join("lib.rs");
+    fs::write(
+        &file,
+        r#"fn entry() -> i32 {
+    helper()
+}
+
+fn helper() -> i32 { 1 }
+"#,
+    )
+    .unwrap();
+
+    let target = format!("{}:entry", file.display());
+    let out = srcwalk()
+        .args(["context", &target, "--scope"])
+        .arg(&dir)
+        .args(["--budget", "40"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "context budget target should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(stdout.contains("... truncated"), "{stdout}");
+    assert!(
+        stdout.contains("> Next: srcwalk show") && stdout.contains(":1-3 -C 20"),
+        "tight budget may omit source evidence, so exact show route must remain:\n{stdout}"
+    );
+}
+
+#[test]
+fn context_focused_range_inside_long_function_exposes_structural_completion() {
+    let dir = temp_dir("context_focused_range_selected_source");
+    let file = dir.join("lib.rs");
+    let mut content = String::from("fn entry() -> i32 {\n");
+    for line in 2..=100 {
+        content.push_str(&format!("    let v{line} = {line};\n"));
+    }
+    content.push_str("    0\n}\n");
+    fs::write(&file, content).unwrap();
+
+    let target = format!("{}:50-52", file.display());
+    let out = srcwalk()
+        .args(["context", &target, "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "context focused range should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(stdout.contains("## Source Evidence"), "{stdout}");
+    assert!(stdout.contains("  50|     let v50 = 50;"), "{stdout}");
+    assert!(stdout.contains("  52|     let v52 = 52;"), "{stdout}");
+    assert!(
+        !stdout.contains("   1| fn entry() -> i32"),
+        "focused range source evidence should not replay the whole containing function:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("partial inside structural function 1-102")
+            && stdout.contains("omitted lines 1-49,53-102"),
+        "partial exact range should expose omitted structural lines:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("> Next: srcwalk show") && stdout.contains("--section 1-49,53-102"),
+        "partial exact range should route to missing structural lines only:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(":50-52 -C 20"),
+        "complete selected source range should not suggest rereading the selected target:\n{stdout}"
+    );
+}
+
+#[test]
+fn context_exact_range_with_omitted_source_keeps_show_next() {
+    let dir = temp_dir("context_long_range_show_next");
+    let file = dir.join("lib.rs");
+    let mut content = String::new();
+    for line in 1..=90 {
+        content.push_str(&format!("// line {line}\n"));
+    }
+    fs::write(&file, content).unwrap();
+
+    let target = format!("{}:1-90", file.display());
+    let out = srcwalk()
+        .args(["context", &target, "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "context long range should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(stdout.contains("## Source Evidence"), "{stdout}");
+    assert!(
+        stdout.contains("shown: 1-80; omitted lines after 80: 10"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("> Next: srcwalk show") && stdout.contains(":1-90 -C 20"),
+        "omitted source evidence should keep exact show next read:\n{stdout}"
     );
 }
 
@@ -830,303 +1303,76 @@ struct ngx_http_core_loc_conf_s {
 }
 
 #[test]
-fn context_renders_bounded_rust_local_structural_links() {
-    let dir = temp_dir("context_rust_local_links");
-    let file = dir.join("lib.rs");
-    fs::write(
-        &file,
-        r#"
-struct Request { path: String }
+fn context_ambiguous_symbol_does_not_emit_trace_routes() {
+    let dir = temp_dir("context_ambiguous_no_trace_routes");
+    fs::create_dir_all(dir.join("a")).unwrap();
+    fs::create_dir_all(dir.join("b")).unwrap();
+    fs::write(dir.join("a/lib.rs"), "fn same() {}\n").unwrap();
+    fs::write(dir.join("b/lib.rs"), "fn same() {}\n").unwrap();
 
-fn open(_: String) {}
-
-fn handle(req: Request) {
-    let path = req.path;
-    let alias = path;
-    open(alias);
-}
-"#,
-    )
-    .unwrap();
-
-    let stdout = context_output(&dir, &file, "handle");
-    assert!(
-        stdout.contains("### Local structural links"),
-        "expected local structural link section:\n{stdout}"
-    );
-    assert!(stdout.contains("req.path -> path [field_read]"));
-    assert!(
-        stdout.contains("path -> alias [assignment/alias]"),
-        "expected alias predecessor link:\n{stdout}"
-    );
-    assert!(stdout.contains("alias -> open(alias) [argument_use]"));
-    assert!(stdout.contains("confidence: local structural syntax"));
-    assert!(stdout.contains("not runtime dataflow"));
-    assert_no_def_use_verdict_words(&stdout);
-
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn context_renders_javascript_and_multiline_call_result_links() {
-    let dir = temp_dir("context_js_local_links");
-    let js_file = dir.join("lib.js");
-    fs::write(
-        &js_file,
-        r#"
-function handle(req) {
-  const path = req.path;
-  const alias = path;
-  open(alias);
-}
-"#,
-    )
-    .unwrap();
-
-    let js_stdout = context_output(&dir, &js_file, "handle");
-    assert!(js_stdout.contains("req.path -> path [field_read]"));
-    assert!(js_stdout.contains("alias -> open(alias) [argument_use]"));
-
-    let rust_file = dir.join("call_result.rs");
-    fs::write(
-        &rust_file,
-        r#"
-fn load_config(_: &str) -> String { String::new() }
-fn open(_: String) {}
-
-fn handle(path: &str) {
-    let config = load_config(
-        path,
-    );
-    open(config);
-}
-"#,
-    )
-    .unwrap();
-
-    let rust_stdout = context_output(&dir, &rust_file, "handle");
-    assert!(
-        rust_stdout.contains("-> config [call_result]"),
-        "multiline call result identity must connect to its binding:\n{rust_stdout}"
-    );
-    assert!(rust_stdout.contains("config -> open(config) [argument_use]"));
-
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn context_abstains_on_ambiguous_local_predecessors() {
-    let dir = temp_dir("context_ambiguous_local_links");
-    let file = dir.join("lib.rs");
-    fs::write(
-        &file,
-        r#"
-struct Request { safe: String, user: String }
-fn open(_: String) {}
-
-fn handle(req: Request) {
-    let path = req.safe;
-    let path = req.user;
-    open(path);
-}
-"#,
-    )
-    .unwrap();
-
-    let stdout = context_output(&dir, &file, "handle");
-    assert!(
-        !stdout.contains("### Local structural links"),
-        "ambiguous predecessor must abstain instead of choosing a chain:\n{stdout}"
-    );
-
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn context_caps_local_structural_link_rows_with_omitted_count() {
-    let dir = temp_dir("context_capped_local_links");
-    let file = dir.join("lib.rs");
-    let mut source = String::from("struct Request { value: i32 }\n");
-    for index in 0..13 {
-        source.push_str(&format!("fn sink{index}(_: i32) {{}}\n"));
-    }
-    source.push_str("fn handle(req: Request) {\n");
-    for index in 0..13 {
-        source.push_str(&format!(
-            "    let value{index} = req.value;\n    sink{index}(value{index});\n"
-        ));
-    }
-    source.push_str("}\n");
-    fs::write(&file, source).unwrap();
-
-    let stdout = context_output(&dir, &file, "handle");
-    assert!(stdout.contains("### Local structural links"));
-    assert!(
-        stdout.contains("more local structural links omitted"),
-        "expected deterministic omitted count after row cap:\n{stdout}"
-    );
-    let rendered_rows = stdout
-        .lines()
-        .filter(|line| line.starts_with("- ") && line.contains("] ") && !line.contains("omitted"))
-        .count();
-    assert_eq!(
-        rendered_rows, 12,
-        "local-link rows must respect cap:\n{stdout}"
-    );
-
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn context_filter_limits_local_links_to_visible_calls() {
-    let dir = temp_dir("context_filtered_local_links");
-    let file = dir.join("lib.rs");
-    fs::write(
-        &file,
-        r#"
-struct Request { first: i32, second: i32 }
-fn one(_: i32) {}
-fn two(_: i32) {}
-
-fn handle(req: Request) {
-    let first = req.first;
-    one(first);
-    let second = req.second;
-    two(second);
-}
-"#,
-    )
-    .unwrap();
-
-    let target = format!("{}:handle", file.display());
-    let output = srcwalk()
-        .args(["context", &target, "--filter", "callee:two", "--scope"])
+    let out = srcwalk()
+        .args(["context", "same", "--scope"])
         .arg(&dir)
-        .arg("--no-budget")
         .output()
         .unwrap();
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let local_section = stdout
-        .split("### Local structural links")
-        .nth(1)
-        .and_then(|rest| rest.split("### Resolved local callees").next())
-        .expect("filtered call should retain one local-link section");
-    assert!(local_section.contains("req.second -> second [field_read]"));
-    assert!(local_section.contains("second -> two(second) [argument_use]"));
-    assert!(
-        !local_section.contains("req.first") && !local_section.contains("one(first)"),
-        "filtered local-link section leaked hidden call evidence:\n{local_section}"
-    );
-    let direct_section = stdout
-        .split("### Direct-call evidence")
-        .nth(1)
-        .and_then(|rest| rest.split("### Resolved local callees").next())
-        .expect("filtered call should retain one direct-call evidence section");
-    assert!(
-        direct_section.contains("two(second)"),
-        "filtered direct-call evidence should include the visible call:\n{direct_section}"
-    );
-    assert!(
-        !direct_section.contains("one(first)"),
-        "filtered direct-call evidence leaked hidden call evidence:\n{direct_section}"
-    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
 
-    let _ = fs::remove_dir_all(&dir);
+    assert!(!out.status.success(), "ambiguous context should fail");
+    assert!(stderr.contains("ambiguous symbol target"), "{stderr}");
+    assert_no_trace_routes(&stderr);
 }
 
 #[test]
-fn context_direct_call_evidence_is_limited_to_visible_call_rows() {
-    let dir = temp_dir("context_capped_direct_calls");
-    let file = dir.join("lib.rs");
-    let mut source = String::new();
-    for index in 0..13 {
-        source.push_str(&format!("fn helper{index}(value: i32) {{}}\n"));
-    }
-    source.push_str("fn handle(value: i32) {\n");
-    for index in 0..13 {
-        source.push_str(&format!("    helper{index}(value);\n"));
-    }
-    source.push_str("}\n");
-    fs::write(&file, source).unwrap();
+fn context_unresolved_symbol_does_not_emit_trace_routes() {
+    let dir = temp_dir("context_unresolved_no_trace_routes");
+    fs::write(dir.join("lib.rs"), "fn real() {}\n").unwrap();
 
-    let stdout = context_output(&dir, &file, "handle");
-    let direct_section = stdout
-        .split("### Direct-call evidence")
-        .nth(1)
-        .and_then(|rest| rest.split("### Resolved local callees").next())
-        .expect("context should render direct-call evidence");
-    let rendered_rows = direct_section
-        .lines()
-        .filter(|line| line.starts_with("- L") && line.contains("helper"))
-        .count();
-    assert_eq!(
-        rendered_rows, 12,
-        "direct-call evidence rows must follow the visible call-site cap:\n{direct_section}"
-    );
-    assert!(
-        stdout.contains("... 1 more call sites"),
-        "context should still report capped call-site rows:\n{stdout}"
-    );
-    assert!(
-        direct_section.contains("helper0(value)")
-            && direct_section.contains("arg0 `value` -> param0 `value`"),
-        "expected resolved mapping for a visible direct call:\n{direct_section}"
-    );
-    assert!(
-        !direct_section.contains("helper12(value)")
-            && !direct_section.contains("direct-call edges omitted"),
-        "direct-call evidence should be built only from visible call rows:\n{direct_section}"
-    );
+    let out = srcwalk()
+        .args(["context", "missing", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
 
-    let _ = fs::remove_dir_all(&dir);
+    assert!(!out.status.success(), "unresolved context should fail");
+    assert!(stderr.contains("no matches for \"missing\""), "{stderr}");
+    assert_no_trace_routes(&stderr);
 }
 
 #[test]
-fn context_local_links_ignore_calls_beyond_visible_neighborhood() {
-    let dir = temp_dir("context_hidden_call_local_links");
-    let file = dir.join("lib.rs");
-    let mut source = String::from(
-        "struct Request { hidden: i32 }\nfn sink(_: i32) {}\nfn handle(req: Request) {\n",
-    );
-    for index in 0..12 {
-        source.push_str(&format!("    sink({index});\n"));
+fn context_text_document_and_unsupported_targets_do_not_emit_trace_routes() {
+    let dir = temp_dir("context_non_code_no_trace_routes");
+    let doc = dir.join("guide.md");
+    let text = dir.join("notes.txt");
+    let css = dir.join("style.css");
+    fs::write(&doc, "# Guide\n").unwrap();
+    fs::write(&text, "plain text\n").unwrap();
+    fs::write(&css, "a { color: red; }\n").unwrap();
+
+    for path in [&doc, &text] {
+        let target = format!("{}:1", path.display());
+        let out = srcwalk()
+            .args(["context", &target, "--scope"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "non-code context should degrade:\n{stdout}"
+        );
+        assert!(stdout.contains("(not a code file)"), "{stdout}");
+        assert_no_trace_routes(&stdout);
     }
-    source.push_str("    let hidden = req.hidden;\n    sink(hidden);\n}\n");
-    fs::write(&file, source).unwrap();
 
-    let stdout = context_output(&dir, &file, "handle");
-    assert!(stdout.contains("... 1 more call sites"));
-    assert!(
-        !stdout.contains("### Local structural links")
-            && !stdout.contains("req.hidden -> hidden")
-            && !stdout.contains("hidden -> sink(hidden)"),
-        "hidden call must not influence visible local-link evidence:\n{stdout}"
-    );
-
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn context_local_links_reject_hidden_call_result_predecessors() {
-    let dir = temp_dir("context_hidden_call_result_predecessor");
-    let file = dir.join("lib.rs");
-    let mut source = String::from(
-        "fn build() -> i32 { 1 }\nfn sink(_: i32) {}\nfn handle() {\n    sink(value);\n",
-    );
-    for index in 0..11 {
-        source.push_str(&format!("    sink({index});\n"));
-    }
-    source.push_str("    let value = build();\n}\n");
-    fs::write(&file, source).unwrap();
-
-    let stdout = context_output(&dir, &file, "handle");
-    assert!(stdout.contains("... 1 more call sites"));
-    assert!(
-        !stdout.contains("### Local structural links")
-            && !stdout.contains("build() -> value [call_result]"),
-        "hidden call result must not enter a visible call predecessor chain:\n{stdout}"
-    );
-
-    let _ = fs::remove_dir_all(&dir);
+    let css_target = format!("{}:1", css.display());
+    let out = srcwalk()
+        .args(["context", &css_target, "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "unsupported CSS context should fail");
+    assert!(stderr.contains("Css is not supported"), "{stderr}");
+    assert_no_trace_routes(&stderr);
 }

@@ -58,6 +58,25 @@ pub(super) fn format_glob_result(
     );
 
     let mut out = header;
+    if result.total_found == 0 {
+        if let Some(target) = &result.path_symbol_target {
+            if let Some((start, end)) = target.range {
+                let original = result
+                    .pattern
+                    .strip_prefix("**/")
+                    .unwrap_or(&result.pattern);
+                let location = format!(
+                    "{}:{start}-{end}",
+                    crate::format::rel_nonempty(&target.path, scope)
+                );
+                let _ = write!(
+                    out,
+                    "\n> Caveat: `{original}` was matched as a file glob. `{symbol}` is defined at {location}; `path:symbol` is `context` grammar, not `discover` grammar.",
+                    symbol = target.symbol,
+                );
+            }
+        }
+    }
     if result.oversized {
         let _ = write!(
             out,

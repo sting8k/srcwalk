@@ -8,6 +8,7 @@ pub enum SrcwalkError {
     NotFound {
         path: PathBuf,
         suggestion: Option<String>,
+        guidance: Option<String>,
     },
     NoMatches {
         query: String,
@@ -44,10 +45,17 @@ pub enum SrcwalkError {
 impl std::fmt::Display for SrcwalkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotFound { path, suggestion } => {
+            Self::NotFound {
+                path,
+                suggestion,
+                guidance,
+            } => {
                 write!(f, "not found: {}", format::display_path(path))?;
                 if let Some(s) = suggestion {
                     write!(f, " — did you mean: {s}")?;
+                }
+                if let Some(guidance) = guidance {
+                    write!(f, "\n> {guidance}")?;
                 }
                 Ok(())
             }

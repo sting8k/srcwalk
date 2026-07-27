@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use memmap2::Mmap;
 
@@ -203,6 +203,7 @@ pub(super) fn read_section_with_context(
     // Resolve section address: line range, focused line, heading, symbol name,
     // or a comma-separated list of those addresses.
     let mut focus_line = None;
+    let requested_range = parse_requested_range(range);
     let (start, end) = if range.starts_with('#') {
         // Markdown heading. Try the full heading first so headings containing
         // commas still work; if that fails, fall through to comma-list parsing.
@@ -314,7 +315,14 @@ pub(super) fn read_section_with_context(
             if !filtered.is_empty() {
                 let body = format_section_outline(&filtered);
                 let next = render_next_actions(&[NextAction::guidance(
-                    section_over_limit_next_step(path, range, line_count, file_type),
+                    section_over_limit_next_step(
+                        path,
+                        range,
+                        (start32, end32),
+                        line_count,
+                        tok_est,
+                        file_type,
+                    ),
                     "section over-limit drilldown",
                     20,
                 )]);
@@ -332,7 +340,14 @@ pub(super) fn read_section_with_context(
 
         // Fallback: no structured outline available — return header + advice only
         let next = render_next_actions(&[NextAction::guidance(
-            section_over_limit_next_step(path, range, line_count, file_type),
+            section_over_limit_next_step(
+                path,
+                range,
+                (start32, end32),
+                line_count,
+                tok_est,
+                file_type,
+            ),
             "section over-limit fallback",
             20,
         )]);
@@ -355,16 +370,47 @@ pub(super) fn read_section_with_context(
     } else {
         format::number_lines(&selected, start as u32)
     };
-    match packet {
-        Some(packet) => Ok(format!("{header}\n\n{packet}\n\n{formatted}")),
-        None => Ok(format!("{header}\n\n{formatted}")),
+    let frame = requested_range.and_then(|(requested_start, requested_end)| {
+        let content = String::from_utf8_lossy(buf);
+        super::completion::structural_read_frame(
+            &content,
+            file_type,
+            requested_start as u32,
+            requested_end as u32,
+            s as u32 + 1,
+            e as u32,
+        )
+    });
+    let framed = match frame {
+        Some(frame) => format!("{frame}\n\n{formatted}"),
+        None => formatted,
+    };
+    let mut output = match packet {
+        Some(packet) => format!("{header}\n\n{packet}\n\n{framed}"),
+        None => format!("{header}\n\n{framed}"),
+    };
+    if parse_range(range).is_some() {
+        let content = String::from_utf8_lossy(buf);
+        if let Some(completion) = super::completion::partial_function_completion(
+            path,
+            &content,
+            file_type,
+            s as u32 + 1,
+            e as u32,
+        ) {
+            output.push_str("\n\n");
+            output.push_str(&completion);
+        }
     }
+    Ok(output)
 }
 
 fn section_over_limit_next_step(
     path: &Path,
     section: &str,
+    resolved_range: (u32, u32),
     line_count: u32,
+    tok_est: u64,
     file_type: FileType,
 ) -> String {
     if line_count <= 1 && is_js_ts_file_type(file_type) {
@@ -372,9 +418,28 @@ fn section_over_limit_next_step(
             "minified artifact? retry `srcwalk {} --artifact --section {}` or `--artifact --section bytes:<start>-<end>`.",
             crate::format::display_path(path),
             section
-);
+        );
     }
-    "use narrower --section or --budget <N>.".to_string()
+
+    let selector = format!("{}-{}", resolved_range.0, resolved_range.1);
+    section_budget_next_step(&selector, tok_est)
+}
+
+fn section_budget_next_step(selector: &str, tok_est: u64) -> String {
+    if selector.len() > 160 {
+        return format!("raise --budget {tok_est} to read selected range(s), or narrow --section.");
+    }
+    format!(
+        "read exact selected range(s) with --section {selector} --budget {tok_est}, or narrow --section."
+    )
+}
+
+fn merged_section_selector(blocks: &[(usize, usize, Option<usize>, String)]) -> String {
+    blocks
+        .iter()
+        .map(|(start, end, _, _)| format!("{start}-{end}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn is_js_ts_file_type(file_type: FileType) -> bool {
@@ -541,7 +606,8 @@ fn read_multi_section(
 
     let limit = section_token_limit(budget);
     let compact_line_cap = compact_section_line_cap(limit, merged_blocks.len());
-    let mut parts: Vec<String> = Vec::new();
+    let file_type = detect_file_type(path);
+    let mut rendered_blocks: Vec<(usize, usize, String, String)> = Vec::new();
     let mut compact_parts: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut total_lines: u32 = 0;
@@ -569,9 +635,7 @@ fn read_multi_section(
         } else {
             format::number_lines(&selected, *start as u32)
         };
-        parts.push(format!(
-            "## section: {label} [{start}-{end}]\n\n{formatted}"
-        ));
+        rendered_blocks.push((*start, *end, label.clone(), formatted));
         compact_parts.push(format_compact_section(
             &selected,
             *start,
@@ -582,7 +646,7 @@ fn read_multi_section(
         ));
     }
 
-    if parts.is_empty() {
+    if rendered_blocks.is_empty() {
         let noun = if all_symbol_names {
             "symbols"
         } else {
@@ -614,12 +678,13 @@ fn read_multi_section(
                 &format!("[{section_count} {plural}, compact (over limit)]"),
             );
         let body = compact_parts.join("\n\n---\n\n");
+        let selector = merged_section_selector(&merged_blocks);
         let next = render_next_actions(&[NextAction::guidance(
-            "narrow --section or raise --budget.",
+            section_budget_next_step(&selector, tok_est),
             "compact section drilldown",
             20,
         )]);
-        let packet = super::document_packet_for_file_type(detect_file_type(path), "section");
+        let packet = super::document_packet_for_file_type(file_type, "section");
         let body_with_packet = match packet {
             Some(packet) => format!("{header}\n\n{packet}\n\n{body}"),
             None => format!("{header}\n\n{body}"),
@@ -641,6 +706,31 @@ fn read_multi_section(
         return Ok(output);
     }
 
+    let structural_entries = file_type.is_code().then_some(()).and_then(|()| {
+        let lang = file_type.structural_lang()?;
+        crate::lang::outline::outline_language(lang)?;
+        let content = String::from_utf8_lossy(buf);
+        Some(lang_get_outline_entries(&content, lang))
+    });
+    let parts = rendered_blocks
+        .into_iter()
+        .map(|(start, end, label, formatted)| {
+            let frame = structural_entries.as_deref().and_then(|entries| {
+                super::completion::structural_read_frame_from_entries(
+                    entries,
+                    start as u32,
+                    end as u32,
+                    start as u32,
+                    end as u32,
+                )
+            });
+            let framed = match frame {
+                Some(frame) => format!("{frame}\n\n{formatted}"),
+                None => formatted,
+            };
+            format!("## section: {label} [{start}-{end}]\n\n{framed}")
+        })
+        .collect::<Vec<_>>();
     let section_count = parts.len();
     let noun = if all_symbol_names {
         "symbol"
@@ -656,11 +746,10 @@ fn read_multi_section(
     let header = header.replace("[section]", &format!("[{section_count} {plural}, section]"));
     let body = parts.join("\n\n---\n\n");
 
-    let body_with_packet =
-        match super::document_packet_for_file_type(detect_file_type(path), "section") {
-            Some(packet) => format!("{header}\n\n{packet}\n\n{body}"),
-            None => format!("{header}\n\n{body}"),
-        };
+    let body_with_packet = match super::document_packet_for_file_type(file_type, "section") {
+        Some(packet) => format!("{header}\n\n{packet}\n\n{body}"),
+        None => format!("{header}\n\n{body}"),
+    };
 
     if errors.is_empty() {
         Ok(body_with_packet)
@@ -834,6 +923,16 @@ fn parse_focused_line(s: &str) -> Option<usize> {
     (line > 0).then_some(line)
 }
 
+fn parse_requested_range(s: &str) -> Option<(usize, usize)> {
+    if !s.contains('-') {
+        let line = parse_focused_line(s)?;
+        return Some((line, line));
+    }
+
+    let (start, end, _) = parse_range(s)?;
+    Some((start, end))
+}
+
 /// Parse "45-89" or focused line "45". 1-indexed.
 fn parse_range(s: &str) -> Option<(usize, usize, Option<usize>)> {
     if !s.contains('-') {
@@ -851,6 +950,56 @@ fn parse_range(s: &str) -> Option<(usize, usize, Option<usize>)> {
         return None;
     }
     Some((start, end, None))
+}
+
+/// A path-qualified symbol resolved from the same AST outline used by `--section`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PathSymbolTarget {
+    pub(crate) path: PathBuf,
+    pub(crate) symbol: String,
+    pub(crate) range: Option<(usize, usize)>,
+}
+
+pub(crate) fn resolve_path_symbol_target(target: &str, scope: &Path) -> Option<PathSymbolTarget> {
+    let (path_part, symbol) = target.rsplit_once(':')?;
+    if path_part.is_empty()
+        || symbol.is_empty()
+        || parse_range(symbol).is_some()
+        || (path_part.len() == 1
+            && path_part.as_bytes()[0].is_ascii_alphabetic()
+            && (symbol.starts_with('/') || symbol.starts_with('\\')))
+    {
+        return None;
+    }
+    let path = resolve_existing_file(path_part, scope)?;
+    let buf = std::fs::read(&path).ok()?;
+    let range = resolve_symbol(&buf, &path, symbol);
+    Some(PathSymbolTarget {
+        path,
+        symbol: symbol.to_string(),
+        range,
+    })
+}
+
+fn resolve_existing_file(raw: &str, scope: &Path) -> Option<PathBuf> {
+    let path = Path::new(raw);
+    let mut candidates = Vec::new();
+    if path.is_absolute() {
+        candidates.push(path.to_path_buf());
+    } else {
+        candidates.push(scope.join(path));
+        if let Ok(cwd) = std::env::current_dir() {
+            let cwd_path = cwd.join(path);
+            if candidates.first() != Some(&cwd_path) {
+                candidates.push(cwd_path);
+            }
+        }
+    }
+    candidates.into_iter().find(|candidate| {
+        std::fs::metadata(candidate)
+            .ok()
+            .is_some_and(|meta| meta.is_file())
+    })
 }
 
 /// Resolve a symbol name to its line range using AST outline.

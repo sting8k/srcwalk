@@ -186,6 +186,74 @@ fn find_repeated_scopes_fail_fast_when_any_scope_is_invalid() {
 }
 
 #[test]
+fn comma_separated_scopes_name_repeated_flag_form() {
+    let dir = temp_repo("multi_scope_comma_hint");
+    write_file(&dir.join("src/lib.rs"), "pub fn shared_target() {}\n");
+    write_file(&dir.join("tests/lib.rs"), "pub fn shared_target() {}\n");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "shared_target", "--scope", "src,tests"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("invalid scope: src,tests")
+            && stderr.contains("--scope does not accept a comma-separated list")
+            && stderr.contains("--scope src --scope tests"),
+        "expected repeated-scope correction:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn existing_comma_named_scope_remains_valid_without_hint() {
+    let dir = temp_repo("multi_scope_existing_comma_dir");
+    write_file(&dir.join("a,b/lib.rs"), "pub fn shared_target() {}\n");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "shared_target", "--scope", "a,b"])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "existing comma scope should remain valid"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("hint:"), "{stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unrelated_comma_scope_keeps_plain_error() {
+    let dir = temp_repo("multi_scope_plain_comma_error");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "shared_target",
+            "--scope",
+            "missing,also-missing",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("invalid scope"), "{stderr}");
+    assert!(!stderr.contains("hint:"), "{stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn find_repeated_scopes_rejects_expand_with_minimal_hint() {
     let dir = temp_repo("multi_scope_expand");
     write_file(&dir.join("src/lib.rs"), "pub fn shared_target() {}\n");

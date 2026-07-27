@@ -184,6 +184,83 @@ fn guide_subcommand_prints_full_embedded_skill() {
 }
 
 #[test]
+fn guide_subcommand_surfaces_compact_decision_contract_and_guardrails() {
+    let output = srcwalk().arg("guide").output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "guide command failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("## Choose one route first"));
+    assert!(stdout.contains("unknown area | `srcwalk overview --scope <dir>`"));
+    assert!(
+        stdout.contains("unknown target in known area | `srcwalk discover <query> --scope <dir>`")
+    );
+    assert!(stdout.contains("known body/citation | `srcwalk show <path>:<line-or-range>`"));
+    assert!(stdout.contains("need rich local packet | `srcwalk context <target> --scope <dir>`"));
+    assert!(stdout.contains("## Batch by evidence dependency"));
+    assert!(stdout.contains("independent discoveries or exact reads in parallel"));
+    assert!(stdout.contains("Multi-root symbol discovery may repeat the flag"));
+    assert!(stdout.contains("`context` accepts up to 3 comma-separated exact"));
+    assert!(
+        stdout.contains("Structural syntax/source is navigation evidence, not runtime behavior")
+    );
+    let choose = stdout.find("## Choose one route first").unwrap();
+    let dependency_wave = stdout.find("## Batch by evidence dependency").unwrap();
+    let guardrails = stdout.find("## Command-shape guardrails").unwrap();
+    let trust = stdout.find("## Evidence trust bounds").unwrap();
+    let reference = stdout.find("## Routes and examples").unwrap();
+    assert!(
+        choose < dependency_wave
+            && dependency_wave < guardrails
+            && guardrails < trust
+            && trust < reference,
+        "routing contract must precede reference details:\n{stdout}"
+    );
+    assert!(!stdout.contains("## Default workflow"));
+    assert!(
+        stdout.lines().count() <= 155,
+        "embedded guide exceeded compactness budget:\n{stdout}"
+    );
+    assert!(!stdout.contains("srcwalk hints"));
+}
+
+#[test]
+fn discover_help_surfaces_symbol_batch_cap_and_repeatable_scope() {
+    let output = srcwalk().args(["discover", "--help"]).output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "discover help failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("2-5 comma-separated symbol batch"));
+    assert!(stdout.contains("use --as symbol"));
+    assert!(stdout.contains("comma-separated literal OR for text"));
+    assert!(stdout.contains("Symbol discovery may repeat --scope"));
+    assert!(stdout.contains("text/file/access modes use one scope"));
+}
+
+#[test]
+fn context_help_surfaces_multi_target_exact_limit() {
+    let output = srcwalk().args(["context", "--help"]).output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "context help failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("up to 3 comma-separated exact path targets"),
+        "context help should document multi-target exact syntax:\n{stdout}"
+    );
+}
+
+#[test]
 fn skill_entry_points_to_embedded_guide() {
     assert!(SKILL_ENTRY.contains("# srcwalk — bootstrap entry"));
     assert!(SKILL_ENTRY.contains("srcwalk guide"));

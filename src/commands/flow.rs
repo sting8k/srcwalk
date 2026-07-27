@@ -13,6 +13,8 @@ use crate::evidence::{
 use crate::lang::decision_flow::{self, TargetSelector};
 use crate::{format, index, lang, search, types};
 
+const CONTEXT_SOURCE_EXCERPT_LINE_LIMIT: usize = 80;
+
 /// Lab: compact downstream flow slice for a known symbol.
 pub(crate) fn run_flow(
     target: &str,
@@ -25,8 +27,8 @@ pub(crate) fn run_flow(
 ) -> Result<String, SrcwalkError> {
     use std::fmt::Write as _;
 
-    let structural_artifact_context =
-        artifact.enabled() && is_exact_path_context_target(target, scope);
+    let exact_path_context = looks_like_exact_path_context_target(target);
+    let structural_artifact_context = artifact.enabled() && exact_path_context;
     if artifact.enabled() && !structural_artifact_context {
         return run_artifact_flow(target, scope, budget_tokens, cache, filter, artifact);
     }
@@ -53,6 +55,7 @@ pub(crate) fn run_flow(
     out.push_str("\ncaveat: source-evidence navigation only; no runtime proof");
     let packet_budget = budget_tokens;
 
+    let mut symbol_level_fallback = false;
     let (focus_range, call_target) =
         match decision_flow::render_flow_map(&resolved, &content, lang, packet_budget) {
             Ok(flow_map) => {
@@ -79,6 +82,7 @@ pub(crate) fn run_flow(
                 )
             }
             Err(err) if is_flow_map_fallback_error(&err) => {
+                symbol_level_fallback = matches!(resolved.selector, TargetSelector::Symbol(_));
                 append_context_flow_map_fallback(&mut out, &display_path, &resolved.selector);
                 (
                     selector_range(&resolved.selector),
@@ -88,41 +92,90 @@ pub(crate) fn run_flow(
             Err(err) => return Err(err),
         };
 
-    append_context_neighborhood(
-        &mut out,
-        call_target.as_deref(),
-        &resolved.path,
-        &content,
-        lang,
-        focus_range,
-        scope,
-        cache,
-        &bloom,
-        depth,
-        filter,
-    )?;
+    let source_range = selector_range(&resolved.selector).or(focus_range);
+    let source_excerpt_complete = if exact_path_context && !structural_artifact_context {
+        source_range.is_some_and(|(start, end)| {
+            append_context_source_excerpt(&mut out, &content, start, end)
+        })
+    } else {
+        false
+    };
 
-    let show_anchor = focus_range.map(|(start, end)| Anchor::lines(&resolved.path, start, end));
+    let structural_completion =
+        if exact_path_context && !structural_artifact_context && source_excerpt_complete {
+            selector_range(&resolved.selector).and_then(|(start, end)| {
+                crate::read::completion::partial_function_completion(
+                    &resolved.path,
+                    &content,
+                    types::FileType::Code(lang),
+                    start,
+                    end,
+                )
+            })
+        } else {
+            None
+        };
+
+    if symbol_level_fallback {
+        append_unresolved_symbol_neighborhood(&mut out);
+    } else {
+        append_context_neighborhood(
+            &mut out,
+            call_target.as_deref(),
+            &resolved.path,
+            &content,
+            lang,
+            focus_range,
+            scope,
+            cache,
+            &bloom,
+            depth,
+            filter,
+        )?;
+    }
+
+    let show_anchor = source_range.map(|(start, end)| Anchor::lines(&resolved.path, start, end));
     let show_target = show_anchor
         .as_ref()
         .map_or_else(|| display_path.clone(), Anchor::display);
     let mut actions = Vec::new();
-    if let Some(anchor) = show_anchor {
-        actions.push(NextAction::from_evidence(
-            format!("srcwalk show {show_target} -C 20"),
-            "show the resolved context target source",
-            10,
-            EvidenceSource::Ast,
-            anchor,
-        ));
-    } else {
-        actions.push(NextAction::guidance(
-            format!("srcwalk show {show_target} -C 20"),
-            "show the resolved file source",
-            10,
-        ));
+    if !symbol_level_fallback {
+        if let Some(anchor) = show_anchor {
+            if !exact_path_context
+                || !source_excerpt_complete
+                || !context_body_fits_budget(&out, packet_budget)
+            {
+                actions.push(NextAction::from_evidence(
+                    format!("srcwalk show {show_target} -C 20"),
+                    "show omitted or non-exact context target source",
+                    10,
+                    EvidenceSource::Ast,
+                    anchor,
+                ));
+            }
+        } else {
+            actions.push(NextAction::guidance(
+                format!("srcwalk show {show_target} -C 20"),
+                "show the resolved file source",
+                10,
+            ));
+        }
     }
-    if let Some(call_target) = &call_target {
+    if symbol_level_fallback {
+        if let TargetSelector::Symbol(symbol) = &resolved.selector {
+            actions.push(NextAction::guidance(
+                format!(
+                    "srcwalk discover {} --as symbol --scope {}",
+                    format::shell_quote_arg(symbol).unwrap_or_else(|| "<symbol>".to_string()),
+                    format::shell_quote_arg(&format::display_path(scope))
+                        .unwrap_or_else(|| "<scope>".to_string())
+                ),
+                "resolve the requested symbol before asking for a context packet",
+                15,
+            ));
+        }
+    }
+    if let Some(call_target) = call_target.as_ref().filter(|_| !symbol_level_fallback) {
         actions.push(NextAction::from_evidence(
             format!("srcwalk trace callers {call_target}"),
             "inspect direct callers of the context target",
@@ -138,6 +191,9 @@ pub(crate) fn run_flow(
             Anchor::file(&resolved.path),
         ));
     }
+    if let Some(completion) = structural_completion {
+        let _ = write!(out, "\n\n{completion}");
+    }
     let rendered = render_next_actions(&actions);
     if !rendered.is_empty() {
         let _ = write!(out, "\n\n{rendered}");
@@ -145,14 +201,58 @@ pub(crate) fn run_flow(
     Ok(apply_context_budget(out, packet_budget))
 }
 
-fn is_exact_path_context_target(target: &str, scope: &Path) -> bool {
-    resolve_decision_flow_target(target, scope)
-        .ok()
-        .is_some_and(|resolved| match resolved.selector {
-            TargetSelector::FocusedLineRange { .. } => true,
-            TargetSelector::Symbol(_) => target.contains(':'),
-            TargetSelector::LineRange { .. } => false,
-        })
+fn append_context_source_excerpt(out: &mut String, content: &str, start: u32, end: u32) -> bool {
+    use std::fmt::Write as _;
+
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return false;
+    }
+    let clamped_start = start.max(1) as usize;
+    let clamped_end = (end as usize).min(lines.len());
+    if clamped_start > clamped_end {
+        return false;
+    }
+
+    let requested = clamped_end - clamped_start + 1;
+    let complete = requested <= CONTEXT_SOURCE_EXCERPT_LINE_LIMIT;
+    let shown_end = if complete {
+        clamped_end
+    } else {
+        clamped_start + CONTEXT_SOURCE_EXCERPT_LINE_LIMIT - 1
+    };
+
+    let _ = write!(out, "\n\n## Source Evidence\n");
+    if !complete {
+        let omitted = requested - CONTEXT_SOURCE_EXCERPT_LINE_LIMIT;
+        let _ = writeln!(
+            out,
+            "shown: {clamped_start}-{shown_end}; omitted lines after {shown_end}: {omitted}"
+        );
+    }
+    let _ = writeln!(out, "```text");
+    for line_no in clamped_start..=shown_end {
+        let line = lines[line_no - 1];
+        let _ = writeln!(out, "{line_no:>4}| {line}");
+    }
+    let _ = write!(out, "```");
+    complete
+}
+
+fn looks_like_exact_path_context_target(target: &str) -> bool {
+    target.rsplit_once(':').is_some_and(|(path_part, _)| {
+        !path_part.is_empty()
+            && (path_part.contains('/')
+                || path_part.contains('\\')
+                || Path::new(path_part).is_absolute()
+                || Path::new(path_part).extension().is_some())
+    })
+}
+fn context_body_fits_budget(out: &str, budget_tokens: Option<u64>) -> bool {
+    const NEXT_ACTION_RESERVE_BYTES: u64 = 512;
+    budget_tokens.is_none_or(|budget| {
+        types::estimate_tokens(out.len() as u64 + NEXT_ACTION_RESERVE_BYTES) <= budget
+    })
 }
 
 fn append_structural_artifact_header(out: &mut String, enabled: bool) {
@@ -266,6 +366,11 @@ fn append_context_flow_map_fallback(
     out.push_str(
         "\n\n## Flow Map\nfile-level evidence only; structural function map unavailable for this target",
     );
+    if let TargetSelector::Symbol(_) = selector {
+        out.push_str(
+            "\ncaveat: requested symbol selector was not resolved to a structural function range; packet is file-level only",
+        );
+    }
     out.push_str("\n\n## Exits\n- not available from structural parser");
 }
 
@@ -294,6 +399,12 @@ fn is_flow_map_fallback_error(err: &SrcwalkError) -> bool {
         }
         _ => false,
     }
+}
+
+fn append_unresolved_symbol_neighborhood(out: &mut String) {
+    out.push_str(
+        "\n\n## Call Neighborhood\n- unavailable until the requested symbol resolves to a structural function target",
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -722,19 +833,34 @@ fn apply_context_budget(mut output: String, budget_tokens: Option<u64>) -> Strin
         return output;
     };
 
-    if types::estimate_tokens(output.len() as u64) > budget
-        && remove_scoped_occurrence_section(&mut output)
-    {
-        output.push_str("\n> Note: scoped name occurrences omitted by context budget.");
+    if types::estimate_tokens(output.len() as u64) > budget {
+        if let Some(removed) = remove_scoped_occurrence_section(&mut output) {
+            use std::fmt::Write as _;
+            match removed.total {
+                Some(total) => {
+                    let _ = write!(
+                        output,
+                        "\n> Note: {total} scoped name occurrences omitted by context budget."
+                    );
+                }
+                None => {
+                    output.push_str("\n> Note: scoped name occurrences omitted by context budget.");
+                }
+            }
+        }
     }
     apply_optional_budget(output, Some(budget))
 }
 
-fn remove_scoped_occurrence_section(output: &mut String) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RemovedScopedOccurrenceSection {
+    total: Option<usize>,
+}
+
+fn remove_scoped_occurrence_section(output: &mut String) -> Option<RemovedScopedOccurrenceSection> {
     const HEADER: &str = "\n\n## Scoped name occurrences";
-    let Some(start) = output.find(HEADER) else {
-        return false;
-    };
+    let start = output.find(HEADER)?;
+    let total = parse_scoped_occurrence_total(&output[start..]);
     let section_body = &output[start + HEADER.len()..];
     let end_offset = ["\n\n## ", "\n\n-> ", "\n\n<- ", "\n-> calls"]
         .iter()
@@ -743,7 +869,13 @@ fn remove_scoped_occurrence_section(output: &mut String) -> bool {
         .unwrap_or(section_body.len());
     let end = start + HEADER.len() + end_offset;
     output.replace_range(start..end, "");
-    true
+    Some(RemovedScopedOccurrenceSection { total })
+}
+
+fn parse_scoped_occurrence_total(output: &str) -> Option<usize> {
+    let section = output.strip_prefix("\n\n## Scoped name occurrences (")?;
+    let total = section.split(')').next()?;
+    total.parse().ok()
 }
 
 fn append_artifact_call_site(out: &mut String, site: &search::callees::CallSite) {
@@ -853,4 +985,33 @@ pub(crate) fn is_test_path(path: &Path) -> bool {
         let s = c.as_os_str().to_string_lossy().to_ascii_lowercase();
         s == "test" || s == "tests" || s == "spec" || s == "specs" || s.contains("test")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_scoped_occurrence_total_from_header() {
+        assert_eq!(
+            parse_scoped_occurrence_total("\n\n## Scoped name occurrences (7)\ntarget: foo"),
+            Some(7)
+        );
+        assert_eq!(
+            parse_scoped_occurrence_total("\n\n## Scoped name occurrences"),
+            None
+        );
+    }
+
+    #[test]
+    fn removes_scoped_occurrence_section_and_keeps_neighbors() {
+        let mut output = String::from(
+            "\n\n## Target\n- file.rs:1-3\n\n## Scoped name occurrences (7)\ntarget: foo\nscope: file.rs:1-3\n\n- file.rs:4\n  foo\n\n> Caveat: scoped occurrences are not binding- or runtime-resolved references.\n> 5 additional candidates omitted by the scoped-occurrence cap.\n\n## Exits\n- none structurally detected",
+        );
+        let removed = remove_scoped_occurrence_section(&mut output).expect("section removed");
+        assert_eq!(removed.total, Some(7));
+        assert!(!output.contains("## Scoped name occurrences"), "{output}");
+        assert!(output.contains("## Target"), "{output}");
+        assert!(output.contains("## Exits"), "{output}");
+    }
 }

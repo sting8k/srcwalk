@@ -20,7 +20,7 @@ pub(crate) mod capabilities;
 pub(crate) mod classify;
 pub mod error;
 pub(crate) mod evidence;
-pub(crate) mod format;
+pub mod format;
 pub mod index;
 pub(crate) mod lang;
 pub mod map;

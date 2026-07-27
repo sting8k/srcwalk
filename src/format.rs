@@ -5,7 +5,7 @@ use crate::types::{estimate_tokens, SearchEvidenceCounts, ViewMode};
 
 /// Build the standard header line:
 /// `# path/to/file.ts (N lines, ~X.Xk tokens) [mode]`
-pub fn file_header(path: &Path, byte_len: u64, line_count: u32, mode: ViewMode) -> String {
+pub(crate) fn file_header(path: &Path, byte_len: u64, line_count: u32, mode: ViewMode) -> String {
     let tokens = estimate_tokens(byte_len);
     let token_str = if tokens >= 1000 {
         format!("~{}.{}k tokens", tokens / 1000, (tokens % 1000) / 100)
@@ -19,7 +19,7 @@ pub fn file_header(path: &Path, byte_len: u64, line_count: u32, mode: ViewMode) 
 }
 
 /// Build header for binary files: `# path (binary, size, mime) [skipped]`
-pub fn binary_header(path: &Path, byte_len: u64, mime: &str) -> String {
+pub(crate) fn binary_header(path: &Path, byte_len: u64, mime: &str) -> String {
     let size_str = format_size(byte_len);
     format!(
         "# {} (binary, {size_str}, {mime}) [skipped]",
@@ -28,7 +28,7 @@ pub fn binary_header(path: &Path, byte_len: u64, mime: &str) -> String {
 }
 
 /// Build header for search results.
-pub fn search_header(
+pub(crate) fn search_header(
     query: &str,
     scope: &Path,
     total: usize,
@@ -74,7 +74,7 @@ fn format_size(bytes: u64) -> String {
 }
 
 /// Prefix each line with its 1-indexed line number, right-aligned.
-pub fn number_lines(content: &str, start: u32) -> String {
+pub(crate) fn number_lines(content: &str, start: u32) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let last = (start as usize + lines.len()).max(1);
     let width = (last.ilog10() + 1) as usize;
@@ -129,7 +129,31 @@ fn normalize_display_path(path: String) -> String {
     }
 }
 
-/// Non-empty display path for headers/result rows.
+/// Return a paste-safe shell argument, or `None` when control characters make it unsafe.
+pub fn shell_quote_arg(value: &str) -> Option<String> {
+    if value.chars().any(char::is_control) {
+        return None;
+    }
+    if value.chars().all(is_shell_safe_path_char) {
+        return Some(value.to_string());
+    }
+
+    #[cfg(windows)]
+    {
+        Some(format!("'{}'", value.replace('\'', "''")))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(format!("'{}'", value.replace('\'', "'\\''")))
+    }
+}
+
+fn is_shell_safe_path_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(c, '_' | '-' | '.' | '/' | ':')
+        || cfg!(windows) && c == '\\'
+}
+
 pub(crate) fn rel_nonempty(path: &Path, scope: &Path) -> String {
     let rel_path = rel(path, scope);
     if !rel_path.is_empty() && rel_path != "." {

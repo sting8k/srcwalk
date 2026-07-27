@@ -88,21 +88,35 @@ pub(super) fn render_full_body(
     });
 
     let header = format::file_header(path, byte_len, line_count, ViewMode::Full);
-    let next_start = shown + 1;
+    let ended_on_line_boundary =
+        head_end < buf.len() && buf.get(head_end.saturating_sub(1)) == Some(&b'\n');
     let cap_text = match line_cap {
         Some(cap) => format!("{token_cap} tokens or {cap} lines"),
         None => format!("{token_cap} tokens"),
     };
     let next = render_next_actions(&[NextAction::guidance(
-        format!(
-            "use --section <symbol|range[,symbol|range]> for the needed parts, or retry with --budget <N>. Continue from --section {next_start}-<end>."
-        ),
+        capped_full_read_next_command(shown, line_count, ended_on_line_boundary),
         "continue capped full read",
         20,
     )]);
     Ok(format!(
         "{header}\n\n> Caveat: full capped — tokens ~{shown_tokens}/{raw_tokens} shown (cap {cap_text}); lines {shown}/{line_count}.\n\n{numbered_head}\n\n## Outline\n\n{outline}\n\n{next}"
     ))
+}
+
+fn capped_full_read_next_command(
+    shown: u32,
+    line_count: u32,
+    ended_on_line_boundary: bool,
+) -> String {
+    let base =
+        "use --section <symbol|range[,symbol|range]> for the needed parts, or retry with --budget <N>.";
+    let next_start = shown.saturating_add(1);
+    if ended_on_line_boundary && next_start <= line_count {
+        format!("{base} Continue from --section {next_start}-{line_count}.")
+    } else {
+        base.to_string()
+    }
 }
 
 pub fn read_file_with_budget(

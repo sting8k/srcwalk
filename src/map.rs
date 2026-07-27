@@ -12,7 +12,11 @@ use crate::read::{imports, outline};
 use crate::types::{estimate_tokens, FileType, Lang};
 use crate::ArtifactMode;
 
+mod orientation;
+
 const MAP_HARD_TOKEN_CAP: u64 = 15_000;
+const AUTO_OVERVIEW_DETAIL_TOKEN_TARGET: u64 = 5_000;
+const AUTO_OVERVIEW_DETAIL_LINE_TARGET: usize = 200;
 const DEFAULT_MAP_DEPTH: usize = 3;
 const WIDE_SCOPE_FILE_THRESHOLD: usize = 100;
 const MAX_ARTIFACT_MAP_FILES: usize = 40;
@@ -230,6 +234,7 @@ fn generate_auto_depth(
 ) -> Result<String, SrcwalkError> {
     let initial_depth = choose_auto_depth(scope, cfg, glob, artifact)?;
     let mut last_err = None;
+    let mut largest_fitting_detail = None;
     for depth in (1..=initial_depth).rev() {
         let result = generate_at_depth(
             scope,
@@ -243,16 +248,23 @@ fn generate_auto_depth(
             artifact,
         );
         match result {
-            Ok(out) => return Ok(out),
+            Ok(out) if fits_auto_detail_target(&out) => return Ok(out),
+            Ok(out) => largest_fitting_detail = Some(out),
             Err(err) if is_map_too_large(&err) => last_err = Some(err),
             Err(err) => return Err(err),
         }
     }
 
-    Err(last_err.unwrap_or_else(|| SrcwalkError::InvalidQuery {
-        query: "overview".to_string(),
-        reason: "output too large".to_string(),
-    }))
+    match orientation::generate(scope, cfg, cache, include_symbols, glob, artifact) {
+        Ok(out) => Ok(out),
+        Err(err) if is_map_too_large(&err) => largest_fitting_detail.ok_or_else(|| {
+            last_err.unwrap_or_else(|| SrcwalkError::InvalidQuery {
+                query: "overview".to_string(),
+                reason: "output too large".to_string(),
+            })
+        }),
+        Err(err) => Err(err),
+    }
 }
 
 fn generate_at_depth(
@@ -360,7 +372,11 @@ fn generate_at_depth(
             &totals,
             SymbolRenderMode::Compact,
         );
-        append_empty_overview_diagnostics(&mut out, scope);
+        if totals.is_empty() {
+            append_empty_overview_diagnostics(&mut out, scope);
+        } else {
+            append_map_footer(&mut out, artifact, include_symbols, false, false, None);
+        }
         enforce_hard_cap(&out, scope, depth)?;
         return Ok(out);
     }
@@ -409,6 +425,7 @@ fn generate_at_depth(
             include_symbols,
             relations.is_empty() && outbound_relations.is_empty() && visible_files.len() > 1,
             !outbound_relations.is_empty(),
+            visible_files.iter().min().map(PathBuf::as_path),
         );
         if enforce_hard_cap(&out, scope, depth).is_ok() {
             return Ok(out);
@@ -432,7 +449,14 @@ fn generate_at_depth(
                 degraded,
                 "\n# Note: relations omitted to fit {MAP_HARD_TOKEN_CAP} token cap; narrow --scope/--depth for relations."
             );
-            append_map_footer(&mut degraded, artifact, include_symbols, false, false);
+            append_map_footer(
+                &mut degraded,
+                artifact,
+                include_symbols,
+                false,
+                false,
+                visible_files.iter().min().map(PathBuf::as_path),
+            );
             if enforce_hard_cap(&degraded, scope, depth).is_ok() {
                 return Ok(degraded);
             }
@@ -489,6 +513,7 @@ fn append_map_footer(
     include_symbols: bool,
     show_no_relations_hint: bool,
     has_outbound_relations: bool,
+    deps_target: Option<&Path>,
 ) {
     if artifact.enabled() {
         out.push_str(
@@ -503,11 +528,9 @@ fn append_map_footer(
             40,
         ))
     } else if show_no_relations_hint {
-        Some(NextAction::guidance(
-            "no cross-group relations shown. Use `srcwalk deps <file>` for file-level deps, or adjust --scope/--depth.",
-            "overview relation drilldown",
-            40,
-        ))
+        deps_target.and_then(|path| {
+            deps_next_action(path, "inspect file-level dependencies from this overview")
+        })
     } else if has_outbound_relations {
         // Outbound preview already includes the relevant next action.
         None
@@ -533,6 +556,21 @@ fn append_map_footer(
     }
 }
 
+fn deps_next_action(path: &Path, reason: &str) -> Option<NextAction> {
+    let display = crate::format::display_path(path);
+    let target = crate::format::shell_quote_arg(&display)?;
+    Some(NextAction::guidance(
+        format!("srcwalk deps {target}"),
+        reason,
+        40,
+    ))
+}
+
+fn fits_auto_detail_target(out: &str) -> bool {
+    estimate_tokens(out.len() as u64) <= AUTO_OVERVIEW_DETAIL_TOKEN_TARGET
+        && out.lines().count() <= AUTO_OVERVIEW_DETAIL_LINE_TARGET
+}
+
 fn enforce_hard_cap(out: &str, scope: &Path, depth: usize) -> Result<(), SrcwalkError> {
     let estimated = estimate_tokens(out.len() as u64);
     if estimated <= MAP_HARD_TOKEN_CAP {
@@ -555,6 +593,7 @@ struct RelationEntry {
     from: String,
     to: String,
     count: usize,
+    source_file: PathBuf,
 }
 
 fn normalize_existing_path(path: PathBuf) -> PathBuf {
@@ -713,16 +752,30 @@ fn outbound_relation_base(scope: &Path, source: &Path, target: &Path) -> PathBuf
 fn relation_entries_from_edges(
     edges: BTreeSet<(String, String, PathBuf, PathBuf)>,
 ) -> Vec<RelationEntry> {
-    let mut counts = BTreeMap::<(String, String), usize>::new();
-    for (from, to, _, _) in edges {
-        if from != to {
-            *counts.entry((from, to)).or_insert(0) += 1;
+    let mut groups = BTreeMap::<(String, String), (usize, PathBuf)>::new();
+    for (from, to, source_file, _) in edges {
+        if from == to {
+            continue;
         }
+        groups
+            .entry((from, to))
+            .and_modify(|(count, representative)| {
+                *count += 1;
+                if source_file < *representative {
+                    representative.clone_from(&source_file);
+                }
+            })
+            .or_insert((1, source_file));
     }
 
-    let mut relations: Vec<RelationEntry> = counts
+    let mut relations: Vec<RelationEntry> = groups
         .into_iter()
-        .map(|((from, to), count)| RelationEntry { from, to, count })
+        .map(|((from, to), (count, source_file))| RelationEntry {
+            from,
+            to,
+            count,
+            source_file,
+        })
         .collect();
     relations.sort_by(|a, b| {
         b.count
@@ -1000,12 +1053,23 @@ fn format_outbound_relations(relations: &[RelationEntry], out: &mut String) {
     if relations.len() > MAX_OUTBOUND_RELATION_GROUPS {
         let _ = writeln!(
             out,
-            "> Outbound: showing top {} of {} groups; deps point outside --scope. Use `srcwalk deps <file>` for details, or widen --scope to include targets.",
+            "> Outbound: showing top {} of {} groups; deps point outside --scope. Widen --scope to include targets.",
             MAX_OUTBOUND_RELATION_GROUPS,
             relations.len()
         );
     } else {
-        out.push_str("> Outbound: deps point outside --scope. Use `srcwalk deps <file>` for details, or widen --scope to include targets.\n");
+        out.push_str("> Outbound: deps point outside --scope. Widen --scope to include targets.\n");
+    }
+    if let Some(action) = relations.first().and_then(|relation| {
+        deps_next_action(
+            &relation.source_file,
+            "inspect dependencies for the top outbound source file",
+        )
+    }) {
+        let rendered = render_next_actions(&[action]);
+        if !rendered.is_empty() {
+            let _ = writeln!(out, "{rendered}");
+        }
     }
 }
 

@@ -13,7 +13,9 @@ one binary, zero config.
 
 ## What it does
 
-- **Show** — read files, line ranges, symbols, headings, and capped raw pages.
+- **Show** — read files, line ranges, same-file inline range batches, symbols,
+  headings, capped raw pages, and parser-backed source frames for supported exact
+  numeric reads and numeric multi-section blocks.
 - **Discover** — find definitions, text-matched name occurrences, files, text,
   comments, and field/member access evidence.
 - **Trace** — inspect callers and callees with bounded depth, hub guards,
@@ -89,6 +91,7 @@ full command and flag reference; agent routing lives in `srcwalk guide`.
 # Read and drill into source
 srcwalk src/auth.ts
 srcwalk src/auth.ts:72
+srcwalk src/auth.ts:44-50,72-80
 srcwalk src/auth.ts --section handleAuth
 
 # Find and follow code
@@ -458,7 +461,7 @@ Bloom-filter pruning + length-sorted memchr + tree-sitter parse cache.
 
 - **Intent-first analysis** — `discover`, `review`, `context`, `trace callers`,
   `trace callees`, `assess`, `deps`, `overview`.
-- **Target-first reading** — `srcwalk <path>`, `<path>:<line>`, and `--section <symbol|range>`.
+- **Target-first reading** — `srcwalk <path>`, `<path>:<line>`, same-file `<path>:a,b`, and `--section <symbol|range>`.
 - **Multi-hop caller BFS** — up to 5 hops, hub guard, collision detection.
 - **Forward callees** — resolved/unresolved calls, detailed ordered call sites, bounded unique-target argument mappings, and depth support.
 - **Search ergonomics** — cross-naming-convention Did-you-mean, bare-filename auto-pick, typo tolerance.

@@ -5,8 +5,12 @@ use crate::cli::{DiscoverAs, Mode, RunConfig};
 use crate::output;
 use srcwalk::ArtifactMode;
 
-const MAX_SHOW_TARGETS: usize = 8;
+pub(crate) const MAX_SHOW_TARGETS: usize = 8;
+const MAX_CONTEXT_TARGETS: usize = 3;
 const MAX_MULTI_CONTEXT_LINES: usize = 10;
+// Below this floor, a context packet cannot reliably retain both source evidence
+// and its exact next-read cues; reject instead of returning a misleading fragment.
+const MIN_MULTI_CONTEXT_PACKET_TOKENS: u64 = 160;
 
 fn display_path(path: &Path) -> String {
     let path = path.display().to_string();
@@ -23,6 +27,7 @@ fn display_path(path: &Path) -> String {
         path
     }
 }
+
 fn merge_glob_and_exclude(
     scope_glob: Option<&str>,
     glob: Option<&str>,
@@ -107,6 +112,32 @@ fn scope_path_exists(raw: &str) -> bool {
         cwd.join(path)
     };
     resolved.try_exists().unwrap_or(false)
+}
+
+fn comma_scope_hint(scope: &Path) -> Option<String> {
+    let raw = scope.to_str()?;
+    if scope_path_exists(raw) {
+        return None;
+    }
+    let parts = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 || !parts.iter().all(|part| scope_path_exists(part)) {
+        return None;
+    }
+    let flags = parts
+        .iter()
+        .map(|part| {
+            let display = display_path(Path::new(part));
+            srcwalk::format::shell_quote_arg(&display).map(|quoted| format!("--scope {quoted}"))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(format!(
+        "hint: --scope does not accept a comma-separated list; repeat the flag:\n  {}",
+        flags.join(" ")
+    ))
 }
 
 fn split_scope_line_range_or_exit(scope: PathBuf) -> (PathBuf, Option<(u32, u32)>) {
@@ -236,6 +267,9 @@ fn canonicalize_scope_or_exit(scope: PathBuf, require_dir: bool, mode: Mode) -> 
         Ok(meta) => meta,
         Err(e) => {
             eprintln!("error: invalid scope: {} [{e}]", display_path(&scope));
+            if let Some(hint) = comma_scope_hint(&scope) {
+                eprintln!("{hint}");
+            }
             process::exit(2);
         }
     };
@@ -562,7 +596,7 @@ pub(crate) fn run(mut config: RunConfig) {
     }
 
     if matches!(config.mode, Mode::Context) {
-        let result = srcwalk::run_flow_with_artifact(
+        let result = run_context(
             &query,
             &scope,
             effective_budget,
@@ -822,6 +856,446 @@ pub(crate) fn run(mut config: RunConfig) {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn run_context(
+    target: &str,
+    scope: &Path,
+    budget: Option<u64>,
+    cache: &srcwalk::cache::OutlineCache,
+    depth: Option<usize>,
+    filter: Option<&str>,
+    artifact: ArtifactMode,
+) -> Result<String, srcwalk::error::SrcwalkError> {
+    if !target.contains(',') {
+        return srcwalk::run_flow_with_artifact(
+            target, scope, budget, cache, depth, filter, artifact,
+        );
+    }
+
+    let raw_targets: Vec<&str> = target.split(',').collect();
+    if raw_targets.iter().any(|part| part.trim().is_empty()) {
+        return Err(srcwalk::error::SrcwalkError::InvalidQuery {
+            query: target.to_string(),
+            reason: "empty context target in comma-separated list".to_string(),
+        });
+    }
+    let targets: Vec<&str> = raw_targets.iter().map(|part| part.trim()).collect();
+    if targets.is_empty() {
+        return Err(srcwalk::error::SrcwalkError::InvalidQuery {
+            query: target.to_string(),
+            reason: "empty context target list".to_string(),
+        });
+    }
+    if targets.len() > MAX_CONTEXT_TARGETS {
+        return Err(srcwalk::error::SrcwalkError::InvalidQuery {
+            query: target.to_string(),
+            reason: format!(
+                "context accepts at most {MAX_CONTEXT_TARGETS} comma-separated exact targets"
+            ),
+        });
+    }
+    if targets
+        .iter()
+        .any(|target| !looks_like_exact_context_target(target))
+    {
+        return Err(srcwalk::error::SrcwalkError::InvalidQuery {
+            query: target.to_string(),
+            reason: "multi-target context requires comma-separated exact path:symbol or path:range targets; repeat the file path for each range".to_string(),
+        });
+    }
+
+    let header = format!(
+        "# Context: {} exact targets\n> Caveat: multi-target context splits one global budget across independent exact evidence packets.\n\n",
+        targets.len()
+    );
+    let separator = "\n\n---\n\n";
+    let target_headers: Vec<String> = targets
+        .iter()
+        .map(|target| format!("## Target: {target}\n"))
+        .collect();
+    let wrapper_bytes = header.len()
+        + separator.len() * targets.len().saturating_sub(1)
+        + target_headers.iter().map(String::len).sum::<usize>();
+    let wrapper_tokens = estimate_tokens(wrapper_bytes as u64);
+    let available_target_budget = budget.map(|cap| cap.saturating_sub(wrapper_tokens));
+
+    if let (Some(cap), Some(available)) = (budget, available_target_budget) {
+        let minimum_target_budget = MIN_MULTI_CONTEXT_PACKET_TOKENS * targets.len() as u64;
+        if available < minimum_target_budget {
+            let minimum_budget = wrapper_tokens + minimum_target_budget;
+            return Err(srcwalk::error::SrcwalkError::InvalidQuery {
+                query: target.to_string(),
+                reason: format!(
+                    "multi-target context --budget {cap} is too small to show all {count} target packets; raise --budget to at least {minimum_budget} or run targets separately",
+                    count = targets.len()
+                ),
+            });
+        }
+    }
+
+    let probe_budget = available_target_budget.map(|cap| cap.max(1));
+    let mut probed_outputs = Vec::with_capacity(targets.len());
+    for target in &targets {
+        probed_outputs.push(srcwalk::run_flow_with_artifact(
+            target,
+            scope,
+            probe_budget,
+            cache,
+            depth,
+            filter,
+            artifact,
+        )?);
+    }
+
+    let output = assemble_labeled_batch(&header, separator, &target_headers, &probed_outputs);
+    if estimate_tokens(output.len() as u64) <= budget.unwrap_or(u64::MAX) {
+        return Ok(output);
+    }
+
+    let Some(available_target_budget) = available_target_budget else {
+        return Ok(output);
+    };
+    let wanted_budgets: Vec<u64> = probed_outputs
+        .iter()
+        .map(|output| estimate_tokens(output.len() as u64))
+        .collect();
+    let allocated_budgets = allocate_batch_target_budgets(&wanted_budgets, available_target_budget);
+
+    let mut outputs = Vec::with_capacity(targets.len());
+    for (target, target_budget) in targets.iter().zip(allocated_budgets) {
+        let output = srcwalk::run_flow_with_artifact(
+            target,
+            scope,
+            Some(target_budget),
+            cache,
+            depth,
+            filter,
+            artifact,
+        )?;
+        outputs.push(apply_cli_token_budget(output, Some(target_budget)));
+    }
+
+    let output = assemble_labeled_batch(&header, separator, &target_headers, &outputs);
+    Ok(apply_cli_token_budget(output, budget))
+}
+
+fn looks_like_exact_context_target(target: &str) -> bool {
+    target.rsplit_once(':').is_some_and(|(path_part, _)| {
+        !path_part.is_empty()
+            && (path_part.contains('/')
+                || path_part.contains('\\')
+                || Path::new(path_part).is_absolute()
+                || Path::new(path_part).extension().is_some())
+    })
+}
+fn apply_cli_token_budget(output: String, budget: Option<u64>) -> String {
+    apply_cli_token_budget_inner(output, budget, false)
+}
+
+fn apply_cli_token_budget_preserving_footer(output: String, budget: Option<u64>) -> String {
+    apply_cli_token_budget_inner(output, budget, true)
+}
+
+fn apply_cli_token_budget_inner(
+    mut output: String,
+    budget: Option<u64>,
+    preserve_footer: bool,
+) -> String {
+    let Some(budget) = budget else {
+        return output;
+    };
+    if estimate_tokens(output.len() as u64) <= budget {
+        return output;
+    }
+
+    if preserve_footer {
+        if let Some((body, footer)) = split_trailing_footer(&output) {
+            let footer = footer.trim();
+            let footer_tokens = estimate_tokens(footer.len() as u64 + 2);
+            if !body.trim_end().is_empty() && !footer.is_empty() && footer_tokens < budget {
+                let body_budget = budget.saturating_sub(footer_tokens);
+                let body = apply_cli_token_budget_inner(
+                    body.trim_end().to_string(),
+                    Some(body_budget),
+                    false,
+                );
+                let rendered = format!("{}\n\n{}", body.trim_end(), footer);
+                if estimate_tokens(rendered.len() as u64) <= budget {
+                    return rendered;
+                }
+            }
+        }
+    }
+
+    let marker = "\n\n... truncated to fit --budget; narrow targets or raise --budget.";
+    let max_bytes = usize::try_from(budget.saturating_mul(4)).unwrap_or(usize::MAX);
+    if max_bytes == 0 {
+        return String::new();
+    }
+    if marker.len() >= max_bytes {
+        return marker[..marker.floor_char_boundary(max_bytes)].to_string();
+    }
+
+    truncate_utf8(&mut output, max_bytes - marker.len());
+    output.push_str(marker);
+    output
+}
+
+fn split_trailing_footer(output: &str) -> Option<(&str, &str)> {
+    let mut cursor = output.trim_end_matches(['\r', '\n']).len();
+    let mut footer_start = cursor;
+    let mut saw_footer = false;
+
+    while cursor > 0 {
+        let line_start = output[..cursor].rfind('\n').map_or(0, |index| index + 1);
+        let line = output[line_start..cursor].trim_end_matches('\r');
+        if line.starts_with("> ") {
+            saw_footer = true;
+            footer_start = line_start;
+            cursor = line_start.saturating_sub(1);
+            continue;
+        }
+        if saw_footer && line.trim().is_empty() {
+            footer_start = line_start;
+            cursor = line_start.saturating_sub(1);
+            continue;
+        }
+        break;
+    }
+
+    saw_footer.then(|| output.split_at(footer_start))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_cli_token_budget_preserving_footer, resolve_output_budget,
+        same_file_range_shorthand_route, SameFileRangeShorthandRoute,
+    };
+    use crate::cli::DEFAULT_OUTPUT_BUDGET;
+
+    #[test]
+    fn cli_footer_preservation_handles_trailing_newline() {
+        let body = (0..200)
+            .map(|i| format!("line {i}: lots of generated content"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = format!("# Header\n{body}\n\n> Caveat: partial\n> Next: use --expand next\n");
+
+        let rendered = apply_cli_token_budget_preserving_footer(output, Some(80));
+
+        assert!(rendered.contains("truncated to fit --budget"), "{rendered}");
+        assert!(
+            rendered.ends_with("> Caveat: partial\n> Next: use --expand next"),
+            "{rendered}"
+        );
+    }
+    #[test]
+    fn same_file_range_shorthand_parses_windows_drive_path() {
+        let targets = [r"C:\repo\src\lib.rs:1", "3-4"];
+        let Some(SameFileRangeShorthandRoute::Clean(route)) =
+            same_file_range_shorthand_route(&targets)
+        else {
+            panic!("expected clean same-file shorthand route");
+        };
+
+        assert_eq!(route.path, r"C:\repo\src\lib.rs");
+        assert_eq!(route.selector, "1,3-4");
+    }
+
+    #[test]
+    fn ambiguous_same_file_shorthand_uses_placeholder_when_path_cannot_be_quoted() {
+        let targets = ["bad\npath.rs:1", "3", "other.rs:1"];
+        let Some(SameFileRangeShorthandRoute::Ambiguous(reason)) =
+            same_file_range_shorthand_route(&targets)
+        else {
+            panic!("expected ambiguous same-file shorthand route");
+        };
+
+        assert!(reason.contains("srcwalk show <path> --section 1,3"));
+        assert!(!reason.contains("bad\npath.rs"), "{reason:?}");
+    }
+    #[test]
+    fn output_budget_resolution_preserves_default_and_overrides() {
+        assert_eq!(DEFAULT_OUTPUT_BUDGET, 6_000);
+        assert_eq!(resolve_output_budget(None, false), Some(6_000));
+        assert_eq!(resolve_output_budget(Some(1_234), false), Some(1_234));
+        assert_eq!(resolve_output_budget(None, true), None);
+        assert_eq!(resolve_output_budget(Some(1_234), true), None);
+    }
+}
+
+fn estimate_tokens(byte_len: u64) -> u64 {
+    byte_len.div_ceil(4)
+}
+
+fn truncate_utf8(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let end = value.floor_char_boundary(max_bytes);
+    let line_end = value[..end]
+        .rfind('\n')
+        .filter(|cut| *cut >= max_bytes / 2)
+        .unwrap_or(end);
+    value.truncate(line_end);
+}
+
+fn is_shell_safe_show_path_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(c, '_' | '-' | '.' | '/' | ':')
+        || cfg!(windows) && c == '\\'
+}
+
+fn shell_quote_show_path(value: &str) -> Option<String> {
+    if value.chars().any(char::is_control) {
+        return None;
+    }
+    if value.chars().all(is_shell_safe_show_path_char) {
+        return Some(value.to_string());
+    }
+
+    #[cfg(windows)]
+    {
+        Some(format!("'{}'", value.replace('\'', "''")))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(format!("'{}'", value.replace('\'', "'\\''")))
+    }
+}
+
+fn is_line_or_range_token(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    if let Ok(line) = value.parse::<usize>() {
+        return line > 0;
+    }
+    let Some((start, end)) = value.split_once('-') else {
+        return false;
+    };
+    let Ok(start) = start.trim().parse::<usize>() else {
+        return false;
+    };
+    let Ok(end) = end.trim().parse::<usize>() else {
+        return false;
+    };
+    start > 0 && end >= start
+}
+
+struct SameFileRangeShorthand<'a> {
+    path: &'a str,
+    selector: String,
+}
+
+enum SameFileRangeShorthandRoute<'a> {
+    Clean(SameFileRangeShorthand<'a>),
+    Ambiguous(String),
+}
+
+fn same_file_range_shorthand_route<'a>(
+    targets: &'a [&'a str],
+) -> Option<SameFileRangeShorthandRoute<'a>> {
+    let first = targets.first()?.trim();
+    let (path, first_range) = first.rsplit_once(':')?;
+    if path.is_empty() || !is_line_or_range_token(first_range) {
+        return None;
+    }
+
+    let mut ranges = vec![first_range.trim()];
+    let mut saw_bare_range = false;
+    for target in targets.iter().skip(1).map(|target| target.trim()) {
+        if is_line_or_range_token(target) {
+            saw_bare_range = true;
+            ranges.push(target);
+            continue;
+        }
+        if saw_bare_range {
+            let selector = ranges.join(",");
+            let path = shell_quote_show_path(path).unwrap_or_else(|| "<path>".to_string());
+            return Some(SameFileRangeShorthandRoute::Ambiguous(format!(
+                "ambiguous same-file comma range shorthand; use `srcwalk show {path} --section {selector}` for same-file ranges, or repeat the file path for each location"
+            )));
+        }
+        return None;
+    }
+
+    saw_bare_range.then(|| {
+        SameFileRangeShorthandRoute::Clean(SameFileRangeShorthand {
+            path,
+            selector: ranges.join(","),
+        })
+    })
+}
+
+fn assemble_labeled_batch(
+    header: &str,
+    separator: &str,
+    target_headers: &[String],
+    outputs: &[String],
+) -> String {
+    let targets = target_headers
+        .iter()
+        .zip(outputs)
+        .map(|(target_header, output)| format!("{target_header}{output}"))
+        .collect::<Vec<_>>();
+    format!("{header}{}", targets.join(separator))
+}
+
+fn allocate_batch_target_budgets(wants: &[u64], available: u64) -> Vec<u64> {
+    if wants.is_empty() {
+        return Vec::new();
+    }
+
+    if available == 0 {
+        return vec![0; wants.len()];
+    }
+
+    let mut budgets = vec![0; wants.len()];
+    let mut remaining = (0..wants.len()).collect::<Vec<_>>();
+    let mut remaining_budget = available;
+
+    while !remaining.is_empty() {
+        if remaining_budget == 0 {
+            break;
+        }
+
+        let share = (remaining_budget / remaining.len() as u64).max(1);
+        let mut settled_any = false;
+        let mut still_truncated = Vec::new();
+
+        for index in remaining {
+            if wants[index] <= share {
+                budgets[index] = wants[index];
+                remaining_budget = remaining_budget.saturating_sub(wants[index]);
+                settled_any = true;
+            } else {
+                still_truncated.push(index);
+            }
+        }
+
+        if !settled_any {
+            let count = still_truncated.len() as u64;
+            let base = remaining_budget / count;
+            let mut extra = remaining_budget % count;
+            for index in still_truncated {
+                budgets[index] = base;
+                if extra > 0 {
+                    budgets[index] += 1;
+                    extra -= 1;
+                }
+            }
+            break;
+        }
+
+        remaining = still_truncated;
+    }
+
+    budgets
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_show(
     target: &str,
     scope: &Path,
@@ -864,6 +1338,28 @@ fn run_show(
             reason: "empty show target list".to_string(),
         });
     }
+    if let Some(route) = same_file_range_shorthand_route(&targets) {
+        match route {
+            SameFileRangeShorthandRoute::Clean(shorthand) => {
+                return srcwalk::run_path_exact_with_artifact_and_context(
+                    shorthand.path,
+                    scope,
+                    Some(&shorthand.selector),
+                    budget,
+                    full,
+                    artifact,
+                    context_lines,
+                    cache,
+                );
+            }
+            SameFileRangeShorthandRoute::Ambiguous(reason) => {
+                return Err(srcwalk::error::SrcwalkError::InvalidQuery {
+                    query: target.to_string(),
+                    reason,
+                });
+            }
+        }
+    }
     if targets.len() > MAX_SHOW_TARGETS {
         return Err(srcwalk::error::SrcwalkError::InvalidQuery {
             query: target.to_string(),
@@ -871,15 +1367,27 @@ fn run_show(
         });
     }
 
-    let per_target_budget = budget.map(|cap| (cap / targets.len() as u64).max(1));
+    let header = format!("# Show: {} locations\n\n", targets.len());
+    let separator = "\n\n---\n\n";
+    let target_headers: Vec<String> = targets
+        .iter()
+        .map(|target| format!("## Target: {target}\n"))
+        .collect();
+    let wrapper_bytes = header.len()
+        + separator.len() * targets.len().saturating_sub(1)
+        + target_headers.iter().map(String::len).sum::<usize>();
+    let wrapper_tokens = estimate_tokens(wrapper_bytes as u64);
+    let available_target_budget = budget.map(|cap| cap.saturating_sub(wrapper_tokens));
+    let probe_budget = available_target_budget.map(|cap| cap.max(1));
     let per_target_context = context_lines.map(|count| count.min(MAX_MULTI_CONTEXT_LINES));
-    let mut outputs = Vec::with_capacity(targets.len());
-    for target in targets {
-        outputs.push(srcwalk::run_path_exact_with_artifact_and_context(
+
+    let mut probed_outputs = Vec::with_capacity(targets.len());
+    for target in &targets {
+        probed_outputs.push(srcwalk::run_path_exact_with_artifact_and_context(
             target,
             scope,
             None,
-            per_target_budget,
+            probe_budget,
             full,
             artifact,
             per_target_context,
@@ -887,24 +1395,38 @@ fn run_show(
         )?);
     }
 
-    Ok(format!(
-        "# Show: {} locations\n\n{}",
-        outputs.len(),
-        outputs.join("\n\n---\n\n")
-    ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::resolve_output_budget;
-    use crate::cli::DEFAULT_OUTPUT_BUDGET;
-
-    #[test]
-    fn output_budget_resolution_preserves_default_and_overrides() {
-        assert_eq!(DEFAULT_OUTPUT_BUDGET, 6_000);
-        assert_eq!(resolve_output_budget(None, false), Some(6_000));
-        assert_eq!(resolve_output_budget(Some(1_234), false), Some(1_234));
-        assert_eq!(resolve_output_budget(None, true), None);
-        assert_eq!(resolve_output_budget(Some(1_234), true), None);
+    let output = assemble_labeled_batch(&header, separator, &target_headers, &probed_outputs);
+    if estimate_tokens(output.len() as u64) <= budget.unwrap_or(u64::MAX) {
+        return Ok(output);
     }
+
+    let Some(available_target_budget) = available_target_budget else {
+        return Ok(output);
+    };
+    let wanted_budgets: Vec<u64> = probed_outputs
+        .iter()
+        .map(|output| estimate_tokens(output.len() as u64))
+        .collect();
+    let allocated_budgets = allocate_batch_target_budgets(&wanted_budgets, available_target_budget);
+
+    let mut outputs = Vec::with_capacity(targets.len());
+    for (target, target_budget) in targets.iter().zip(allocated_budgets) {
+        let output = srcwalk::run_path_exact_with_artifact_and_context(
+            target,
+            scope,
+            None,
+            Some(target_budget),
+            full,
+            artifact,
+            per_target_context,
+            cache,
+        )?;
+        outputs.push(apply_cli_token_budget_preserving_footer(
+            output,
+            Some(target_budget),
+        ));
+    }
+
+    let output = assemble_labeled_batch(&header, separator, &target_headers, &outputs);
+    Ok(apply_cli_token_budget_preserving_footer(output, budget))
 }

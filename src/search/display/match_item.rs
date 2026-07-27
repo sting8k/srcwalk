@@ -9,7 +9,10 @@ use crate::types::Match;
 
 use crate::search::{callees, siblings, strip, truncate};
 
-use super::{expand, non_definition_label, outline_context_for_match, semantic, ExpandBudget};
+use super::{
+    expand, non_definition_label, outline_context_for_match, semantic, shown_name_occurrence_line,
+    ExpandBudget, RenderedSourceLines,
+};
 
 pub(super) fn format_single_match(
     m: &Match,
@@ -21,10 +24,13 @@ pub(super) fn format_single_match(
     expand_budget: &mut ExpandBudget,
     expanded_files: &mut HashSet<PathBuf>,
     context_shown_files: &mut HashSet<PathBuf>,
+    rendered_source_lines: &mut RenderedSourceLines,
     smart_truncated: &mut bool,
     multi_file: bool,
     out: &mut String,
 ) {
+    let source_shown_above = shown_name_occurrence_line(m, rendered_source_lines);
+
     if m.is_definition {
         semantic::format_definition_semantic_match(m, scope, cache, out);
     } else {
@@ -37,12 +43,20 @@ pub(super) fn format_single_match(
         );
 
         super::append_match_provenance(m, out, "");
-        let _ = write!(
-            out,
-            "\n→ [{}]   {}",
-            atom.anchor().start_line(),
-            atom.snippet()
-        );
+        if source_shown_above {
+            let _ = write!(
+                out,
+                "\n→ [{}]   [name occurrence · source shown above]",
+                atom.anchor().start_line()
+            );
+        } else {
+            let _ = write!(
+                out,
+                "\n→ [{}]   {}",
+                atom.anchor().start_line(),
+                atom.snippet()
+            );
+        }
 
         // Artifact byte snippets are already centered evidence; do not replace them with outline context.
         if crate::artifact::is_artifact_js_ts_file(&m.path) && m.text.contains("--section bytes:") {
@@ -50,16 +64,19 @@ pub(super) fn format_single_match(
             // Skip outline for small files — the expanded code speaks for itself.
             // For larger files, show outline context only once per file to avoid
             // repeated imports/module headers across consecutive matches.
-        } else if m.file_lines >= 50 && context_shown_files.insert(m.path.clone()) {
+        } else if !source_shown_above
+            && m.file_lines >= 50
+            && context_shown_files.insert(m.path.clone())
+        {
             if let Some(context) = outline_context_for_match(&m.path, m.line, cache) {
                 out.push_str(&context);
             }
-        } else if m.file_lines >= 50 {
+        } else if !source_shown_above && m.file_lines >= 50 {
             out.push_str(" [context shown earlier]");
         }
     }
 
-    if *expand_remaining > 0 {
+    if *expand_remaining > 0 && !source_shown_above {
         // Check session dedup for definitions with def_range
         let deduped = m.is_definition
             && m.def_range.is_some()
@@ -116,6 +133,10 @@ pub(super) fn format_single_match(
 
                     out.push('\n');
                     out.push_str(&stripped_code);
+
+                    if m.is_definition && m.def_range.is_some() {
+                        rendered_source_lines.record_code_block(&m.path, &stripped_code);
+                    }
 
                     if m.is_definition && m.def_range.is_some() {
                         if let crate::types::FileType::Code(lang) = file_type {

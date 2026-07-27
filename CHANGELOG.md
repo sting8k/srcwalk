@@ -4,6 +4,18 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [1.3.0] - 2026-07-27
+
+### Added
+- Added same-file inline range batches, bounded multi-target context reads, and parser-backed source frames for supported exact numeric reads.
+- Added confirmed structural follow-up targets and compact next actions across discovery, context, trace, overview, and change-review output.
+
+### Changed
+- Improved overview orientation, evidence-budget allocation, completion hints, and the embedded agent routing guide for faster target selection with explicit trust bounds.
+
+### Fixed
+- Made completion next actions and executable usage assertions portable across supported platforms.
+
 ## [1.2.0] - 2026-07-19
 
 ### Added

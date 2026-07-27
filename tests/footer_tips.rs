@@ -87,6 +87,10 @@ fn callers_pagination_next_step_is_footer() {
         stdout.contains("> Next:") && stdout.contains("--offset 1 --limit 1"),
         "expected actionable callers pagination next-step:\n{stdout}"
     );
+    assert!(
+        !stdout.contains("trace callees"),
+        "callers footer should not suggest callees:\n{stdout}"
+    );
 }
 
 #[test]
@@ -111,6 +115,77 @@ fn bfs_cap_prints_caveat_footer() {
     assert!(
         stdout.contains("edges capped") && stdout.contains("> Caveat: graph was capped"),
         "expected BFS cap caveat:\n{stdout}"
+    );
+}
+
+#[test]
+fn callees_default_next_step_stays_on_callees() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("calls.rs");
+    std::fs::write(
+        &path,
+        r#"fn entry() {
+    helper();
+}
+
+fn helper() {}
+"#,
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["trace", "callees", "entry", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "callees command failed, stderr:\n{}\nstdout:\n{stdout}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("Next: use --detailed"),
+        "expected callee drilldown footer:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("trace callers"),
+        "callees footer should not suggest callers:\n{stdout}"
+    );
+}
+
+#[test]
+fn full_section_over_limit_next_step_is_exact_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("budget.rs");
+    let mut body = String::from("fn noisy() {\n");
+    for i in 0..80 {
+        body.push_str(&format!(
+            "    let value_{i} = \"padding padding padding padding padding padding padding padding\";\n"
+        ));
+    }
+    body.push_str("}\n");
+    std::fs::write(&path, body).unwrap();
+
+    let out = srcwalk()
+        .arg(&path)
+        .args(["--section", "noisy", "--budget", "100"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("[section, outline (over limit)]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("read exact selected range(s) with --section 1-82 --budget"),
+        "expected exact replay cue:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("--budget <N>"),
+        "expected concrete budget instead of placeholder advice:\n{stdout}"
     );
 }
 
@@ -371,7 +446,9 @@ fn full_file_cap_next_step_is_footer() {
     assert!(
         stdout.contains("full capped — tokens ~")
             && stdout.contains("> Next: use --section <symbol|range[,symbol|range]>")
-            && stdout.contains("--section 201-<end>"),
+            && !stdout.contains("Continue from --section")
+            && !stdout.contains("--section 201-201")
+            && !stdout.contains("<end>"),
         "expected full-file cap footer next-step:\n{stdout}"
     );
 }
@@ -501,4 +578,41 @@ fn deps_default_packet_shows_both_directions_even_when_empty() {
     assert!(stdout.contains("## Uses (local)\n(none)"), "{stdout}");
     assert!(stdout.contains("## Uses (external)\n(none)"), "{stdout}");
     assert!(stdout.contains("## Used by\n(none)"), "{stdout}");
+}
+
+#[test]
+fn compact_multi_section_next_step_is_exact_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("multi.rs");
+    let mut body = String::from("fn first() {\n");
+    for i in 0..40 {
+        body.push_str(&format!(
+            "    let a_{i} = \"padding padding padding padding\";\n"
+        ));
+    }
+    body.push_str("}\nfn second() {\n");
+    for i in 0..40 {
+        body.push_str(&format!(
+            "    let b_{i} = \"padding padding padding padding\";\n"
+        ));
+    }
+    body.push_str("}\n");
+    std::fs::write(&path, body).unwrap();
+
+    let out = srcwalk()
+        .arg(&path)
+        .args(["--section", "first,second", "--budget", "100"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(stdout.contains("compact (over limit)"), "{stdout}");
+    assert!(
+        stdout.contains("read exact selected range(s) with --section 1-42,43-84 --budget"),
+        "expected exact compact replay cue:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("--budget <N>"),
+        "expected concrete budget instead of placeholder advice:\n{stdout}"
+    );
 }

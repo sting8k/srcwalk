@@ -41,8 +41,22 @@ use self::pagination::paginate;
 
 use self::display::{
     append_expand_budget_note, append_symbol_ambiguity_caveat, format_matches,
-    format_search_result, format_search_result_with_header, ExpandBudget,
+    format_search_result, format_search_result_with_header, has_confirmed_structural_targets,
+    ExpandBudget, RenderedSourceLines,
 };
+
+const DEFAULT_MULTI_SYMBOL_MATCH_LIMIT: usize = 3;
+const MULTI_SYMBOL_COMPACT_MATCH_THRESHOLD: usize = 10;
+
+pub(crate) fn multi_symbol_page_limit(
+    explicit_limit: Option<usize>,
+    total_matches: usize,
+) -> Option<usize> {
+    explicit_limit.or_else(|| {
+        (total_matches > MULTI_SYMBOL_COMPACT_MATCH_THRESHOLD)
+            .then_some(DEFAULT_MULTI_SYMBOL_MATCH_LIMIT)
+    })
+}
 
 /// Append a `> Did you mean: …` line when a symbol search returned 0 hits and
 /// at least one spelling-similar symbol exists in scope.
@@ -150,9 +164,10 @@ pub fn search_symbol_with_artifact(
     let mut out = format_search_result(&result, cache, None, &bloom, 0, None)?;
     let did_suggest = append_did_you_mean(&mut out, &result, scope, glob, filter);
     append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest);
+    let has_structural_target = has_confirmed_structural_targets(&result, cache);
     // Contextual hints
     let mut actions = Vec::new();
-    if result.definitions > 0 {
+    if result.definitions > 0 && !has_structural_target {
         actions.push(NextAction::guidance(
             "use --expand to inline definition source",
             "definition expansion drilldown",
@@ -312,19 +327,27 @@ pub fn search_multi_symbol_expanded(
     // AhoCorasick-gated, per-query buckets. Much faster than N independent walkers.
     let mut results = symbol::search_batch(queries, scope, Some(cache), context, glob)?;
 
-    // Sort by match count ascending — fewer matches = rarer/more specific.
+    for result in &mut results {
+        apply_general_filter(result, scope, cache, filter)?;
+    }
+
+    // Sort by filtered match count ascending — fewer matches = rarer/more specific.
     // Rare symbols are higher value and shouldn't be starved by common ones.
     results.sort_by_key(|r| r.matches.len());
+    let page_limit = multi_symbol_page_limit(
+        limit,
+        results.iter().map(|result| result.matches.len()).sum(),
+    );
 
     // Phase 2: format sequentially (format_matches touches the session mutex
     // and shared sets — cheap, keep single-threaded).
     let mut expanded_files = HashSet::new();
     let mut context_shown_files = HashSet::new();
+    let mut rendered_source_lines = RenderedSourceLines::default();
     let mut expand_budget = ExpandBudget::new(expand_per_query * queries.len(), budget_tokens);
     for mut result in results {
         let mut smart_truncated = false;
-        apply_general_filter(&mut result, scope, cache, filter)?;
-        paginate(&mut result, limit, offset);
+        paginate(&mut result, page_limit, offset);
         let mut out = format::search_header(
             &result.query,
             &result.scope,
@@ -343,12 +366,13 @@ pub fn search_multi_symbol_expanded(
             &mut expand_budget,
             &mut expanded_files,
             &mut context_shown_files,
+            &mut rendered_source_lines,
             &mut smart_truncated,
             &mut out,
         );
-        if result.total_found > result.matches.len() {
-            let omitted = result.total_found - result.matches.len();
-            let next_offset = result.offset + result.matches.len();
+        let next_offset = result.offset + result.matches.len();
+        let omitted = result.total_found.saturating_sub(next_offset);
+        if omitted > 0 {
             let page_size = result.matches.len().max(1);
             let rendered = render_next_actions(&[NextAction::metadata(
                 format!(

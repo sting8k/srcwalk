@@ -76,6 +76,13 @@ pub fn beta() {
         ),
         "text-file provenance should remain literal text evidence:\n{symbol_stdout}"
     );
+    assert!(
+        symbol_stdout.find("[fn] alpha src/lib.rs:1-4").is_some()
+            && symbol_stdout.find("## src/readme.txt:1 [text]").is_some()
+            && symbol_stdout.find("[fn] alpha src/lib.rs:1-4")
+                < symbol_stdout.find("## src/readme.txt:1 [text]"),
+        "structural evidence should stay ahead of low-confidence text evidence:\n{symbol_stdout}"
+    );
 
     let text_out = srcwalk()
         .current_dir(&dir)

@@ -28,11 +28,11 @@ pub(crate) fn is_absolute_source(source: &str) -> bool {
 
 /// Extract import sources from already-read code content and resolve them to local file paths.
 pub fn resolve_related_files_with_content(file_path: &Path, content: &str) -> Vec<PathBuf> {
-    resolve_related_files_with_limit(file_path, content, Some(MAX_SUGGESTIONS))
+    resolve_related_files_with_limit(file_path, content, Some(MAX_SUGGESTIONS), None)
 }
 
 /// Scoped/content adapter used by production consumers. JS/TS/TSX use the
-/// shared alias-aware decision stream; other languages retain the old resolver.
+/// shared alias-aware decision stream; non-JS resolvers are bounded by `scope`.
 pub(crate) fn resolve_related_files_with_content_and_scope(
     file_path: &Path,
     content: &str,
@@ -50,20 +50,21 @@ pub(crate) fn resolve_related_files_with_content_and_scope(
             limit,
         );
     }
-    resolve_related_files_with_limit(file_path, content, limit)
+    resolve_related_files_with_limit(file_path, content, limit, Some(scope))
 }
 
 pub(crate) fn resolve_all_related_files_with_content(
     file_path: &Path,
     content: &str,
 ) -> Vec<PathBuf> {
-    resolve_related_files_with_limit(file_path, content, None)
+    resolve_related_files_with_limit(file_path, content, None, None)
 }
 
 fn resolve_related_files_with_limit(
     file_path: &Path,
     content: &str,
     limit: Option<usize>,
+    scope: Option<&Path>,
 ) -> Vec<PathBuf> {
     let Some(lang) = detect_file_type(file_path).structural_lang() else {
         return Vec::new();
@@ -87,7 +88,7 @@ fn resolve_related_files_with_limit(
             if source.is_empty() || is_external(&source, lang) {
                 continue;
             }
-            if let Some(path) = resolve(dir, &source, lang) {
+            if let Some(path) = resolve_with_scope(dir, &source, lang, scope) {
                 if !results.contains(&path) {
                     results.push(path);
                 }
@@ -103,18 +104,27 @@ fn resolve_related_files_with_limit(
         return resolve_ruby_related(dir, content, limit);
     }
 
-    for line in content.lines() {
+    let dedicated_non_js = matches!(lang, Lang::Python | Lang::Php | Lang::C | Lang::Cpp);
+    let sources: Vec<String> = if lang == Lang::Php {
+        crate::read::php_imports::import_sources(content)
+            .into_iter()
+            .map(|(source, _)| source)
+            .collect()
+    } else {
+        content
+            .lines()
+            .filter(|&line| is_import_line(line, lang))
+            .map(|line| crate::lang::outline::extract_import_source(line, Some(lang)))
+            .collect()
+    };
+    for source in sources {
         if limit.is_some_and(|cap| results.len() >= cap) {
             break;
         }
-        if !is_import_line(line, lang) {
+        if source.is_empty() || (!dedicated_non_js && is_external(&source, lang)) {
             continue;
         }
-        let source = crate::lang::outline::extract_import_source(line, Some(lang));
-        if source.is_empty() || is_external(&source, lang) {
-            continue;
-        }
-        if let Some(path) = resolve(dir, &source, lang) {
+        if let Some(path) = resolve_with_scope(dir, &source, lang, scope) {
             if !results.contains(&path) {
                 results.push(path);
             }
@@ -144,6 +154,25 @@ pub(crate) fn is_import_line(line: &str, lang: Lang) -> bool {
         }
         _ => false,
     }
+}
+
+/// Extract static non-JS import sources with their opening source lines.
+/// PHP uses tree-sitter; Python/C/C++ use the existing language-aware line extractor.
+pub(crate) fn import_sources_with_lines(content: &str, lang: Lang) -> Vec<(String, u32)> {
+    if lang == Lang::Php {
+        return crate::read::php_imports::import_sources(content);
+    }
+    content
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if !is_import_line(line, lang) {
+                return None;
+            }
+            let source = crate::lang::outline::extract_import_source(line, Some(lang));
+            (!source.is_empty()).then_some((source, index as u32 + 1))
+        })
+        .collect()
 }
 
 fn is_js_dependency_line(trimmed: &str) -> bool {
@@ -252,24 +281,50 @@ pub(crate) fn is_external(source: &str, lang: Lang) -> bool {
     }
 }
 
-fn resolve(dir: &Path, source: &str, lang: Lang) -> Option<PathBuf> {
-    match lang {
+fn resolve_with_scope(
+    dir: &Path,
+    source: &str,
+    lang: Lang,
+    scope: Option<&Path>,
+) -> Option<PathBuf> {
+    let resolved = match lang {
         Lang::Rust => resolve_rust(dir, source),
         Lang::TypeScript | Lang::Tsx | Lang::JavaScript => resolve_js(dir, source),
-        Lang::Python => resolve_python(dir, source),
-        Lang::C | Lang::Cpp => resolve_c_include(dir, source),
+        Lang::Python => crate::read::python_resolve::resolve(dir, source, scope),
+        Lang::C | Lang::Cpp => crate::read::c_include::resolve(dir, source, scope),
+        Lang::Php => crate::read::php_imports::resolve(dir, source, scope),
         lang if matches!(
             crate::capabilities::import_path_style(lang),
             Some(crate::capabilities::ImportPathStyle::CInclude)
         ) =>
         {
-            resolve_c_include(dir, source)
+            crate::read::c_include::resolve(dir, source, scope)
         }
         Lang::Css | Lang::Scss | Lang::Less => crate::lang::css::resolve_source(dir, source, lang),
         Lang::Html | Lang::Markdown => crate::lang::document::resolve_source(dir, source, lang),
         // Elixir, Go, Java, etc. — module-to-file mapping requires build system conventions.
         _ => None,
-    }
+    }?;
+    scope
+        .is_none_or(|scope| path_within_scope(&resolved, scope))
+        .then_some(resolved)
+}
+
+pub(crate) fn path_within_scope(path: &Path, scope: &Path) -> bool {
+    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical_scope = scope.canonicalize().unwrap_or_else(|_| scope.to_path_buf());
+    canonical_path.starts_with(canonical_scope)
+}
+
+pub(crate) fn resolve_import_source(
+    file_path: &Path,
+    source: &str,
+    lang: Lang,
+    scope: Option<&Path>,
+) -> Option<PathBuf> {
+    file_path
+        .parent()
+        .and_then(|dir| resolve_with_scope(dir, source, lang, scope))
 }
 
 // --- Rust ---
@@ -393,48 +448,6 @@ fn resolve_js_source_extension(base: &Path) -> Option<PathBuf> {
             candidate.exists().then_some(candidate)
         }
         _ => None,
-    }
-}
-
-// --- Python ---
-
-fn resolve_python(dir: &Path, source: &str) -> Option<PathBuf> {
-    let dots = source.bytes().take_while(|&b| b == b'.').count();
-    if dots == 0 {
-        return None;
-    }
-    // Each dot beyond the first goes up one directory.
-    let mut base = dir.to_path_buf();
-    for _ in 1..dots {
-        base = base.parent()?.to_path_buf();
-    }
-    let module_part = &source[dots..];
-    if module_part.is_empty() {
-        // Bare `from . import X`
-        let init = base.join("__init__.py");
-        return if init.exists() { Some(init) } else { None };
-    }
-    let rel = module_part.replace('.', "/");
-    let as_file = base.join(format!("{rel}.py"));
-    if as_file.exists() {
-        return Some(as_file);
-    }
-    let as_pkg = base.join(&rel).join("__init__.py");
-    if as_pkg.exists() {
-        return Some(as_pkg);
-    }
-    None
-}
-
-// --- C/C++ ---
-
-fn resolve_c_include(dir: &Path, source: &str) -> Option<PathBuf> {
-    let clean = source.trim_matches('"');
-    let candidate = dir.join(clean);
-    if candidate.exists() {
-        Some(candidate)
-    } else {
-        None
     }
 }
 

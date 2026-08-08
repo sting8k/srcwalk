@@ -336,6 +336,8 @@ pub(crate) fn resolve_js(dir: &Path, source: &str) -> Option<PathBuf> {
     }
 
     if !has_js_source_extension(&base) {
+        // Append the modern module extensions after the legacy winner order so
+        // existing `.ts/.tsx/.js/.jsx` priority is preserved exactly.
         for ext in &[".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"] {
             let candidate = PathBuf::from(format!("{}{ext}", base.display()));
             if candidate.exists() {
@@ -379,6 +381,9 @@ fn resolve_js_source_extension(base: &Path) -> Option<PathBuf> {
             let candidate = base.with_extension("tsx");
             candidate.exists().then_some(candidate)
         }
+        // Runtime-to-source swaps for the modern ESM/CJS extensions: a missing
+        // `./x.mjs` may resolve to `x.mts` and a missing `./x.cjs` to `x.cts`.
+        // No other Node/TypeScript compiler resolution is implied.
         Some("mjs") => {
             let candidate = base.with_extension("mts");
             candidate.exists().then_some(candidate)
@@ -845,6 +850,111 @@ mod tests {
         let file = dir.join("lib/main.rb");
         let related = resolve_related_files_with_content(&file, "require_relative './my lib'\n");
         assert_eq!(related, vec![canon(&dir, "lib/my lib.rb")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- Unresolved local-looking JS/TS/TSX ---
+
+    /// A temp dir with a resolvable `local.js` so resolved-local cases stay out
+    /// of the unresolved list.
+    fn js_unresolved_dir(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        fs::write(dir.join("local.js"), "export const x = 1;\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn unresolved_local_looking_mixed_classes_and_exact_lines() {
+        let dir = js_unresolved_dir("unresolved_mixed");
+        let file = dir.join("main.js");
+        let sources = unresolved_local_looking_sources(
+            &file,
+            "import a from './local.js';\nimport b from 'lodash';\nimport c from './missing.js';\nimport d from '@/store';\nimport e from '~/utils';\nimport f from '../nope/deep';\n",
+        );
+        assert_eq!(
+            sources,
+            vec![
+                ("./missing.js".to_string(), 3),
+                ("@/store".to_string(), 4),
+                ("~/utils".to_string(), 5),
+                ("../nope/deep".to_string(), 6),
+            ]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unresolved_local_looking_scoped_and_package_sources_stay_out() {
+        let dir = js_unresolved_dir("unresolved_scoped");
+        let file = dir.join("main.js");
+        let sources = unresolved_local_looking_sources(
+            &file,
+            "import a from '@scope/pkg';\nimport b from '@scope/pkg/sub';\nimport c from 'lodash/fp';\n",
+        );
+        assert!(
+            sources.is_empty(),
+            "scoped/package sources are not local-looking: {sources:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unresolved_local_looking_dedupes_by_source_keeping_earliest_line() {
+        let dir = js_unresolved_dir("unresolved_dedupe");
+        let file = dir.join("main.js");
+        let sources = unresolved_local_looking_sources(
+            &file,
+            "import './dup.js';\nimport './dup.js';\nimport './a.js';\nimport './a.js';\n",
+        );
+        assert_eq!(
+            sources,
+            vec![("./dup.js".to_string(), 1), ("./a.js".to_string(), 3)]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unresolved_local_looking_resolved_local_never_duplicates() {
+        let dir = js_unresolved_dir("unresolved_resolved");
+        let file = dir.join("main.js");
+        // local.js exists (exact and via extension swap); only ./missing.js is
+        // genuinely unresolved.
+        let sources = unresolved_local_looking_sources(
+            &file,
+            "import a from './local.js';\nimport b from './local';\nimport c from './missing.js';\n",
+        );
+        assert_eq!(sources, vec![("./missing.js".to_string(), 3)]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unresolved_local_looking_comments_strings_and_dynamic_forms_no_rows() {
+        let dir = js_unresolved_dir("unresolved_literals");
+        let file = dir.join("main.js");
+        let sources = unresolved_local_looking_sources(
+            &file,
+            "// import './commented.js';\nconst a = \"import './str.js'\";\nimport('./dynamic.js');\nconst c = require(someVar);\nconst d = require(`./tpl-${x}`);\n",
+        );
+        assert!(
+            sources.is_empty(),
+            "comments/strings/dynamic forms must not create rows: {sources:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unresolved_local_looking_non_js_lang_returns_empty() {
+        let dir = temp_dir("unresolved_rust");
+        fs::write(dir.join("local.rs"), "pub fn x() {}\n").unwrap();
+        let file = dir.join("main.rs");
+        let sources = unresolved_local_looking_sources(
+            &file,
+            "use crate::missing;\nuse std::collections::HashMap;\n",
+        );
+        assert!(
+            sources.is_empty(),
+            "Rust must not produce unresolved local-looking rows: {sources:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

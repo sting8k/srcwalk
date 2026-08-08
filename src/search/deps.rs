@@ -60,13 +60,6 @@ pub struct LocalDep {
     pub(crate) evidence: EvidenceSource,
 }
 
-/// A static JS/TS/TSX import that expresses local intent but has no verified
-/// in-scope file target. It is kept separate from local and external evidence.
-pub struct UnresolvedLocalDep {
-    pub source: String,
-    pub line: u32,
-}
-
 impl LocalDep {
     fn to_evidence_atom(&self) -> EvidenceAtom {
         EvidenceAtom::new(
@@ -77,6 +70,17 @@ impl LocalDep {
             self.evidence,
         )
     }
+}
+
+/// An unresolved local-looking JS/TS/TSX module import: canonical static
+/// `import`/`export`/`require` syntax with a `./`, `../`, `@/`, or `~/`
+/// specifier that resolves to no existing file. A distinct evidence class so
+/// it is never mislabeled local or external. Provenance is text (generic line
+/// extraction, never AST).
+pub struct UnresolvedLocalDep {
+    pub source: String,
+    /// 1-based source line of the first occurrence in the target file.
+    pub line: u32,
 }
 
 /// A file that depends on the target, with symbol-level call detail.
@@ -404,7 +408,14 @@ pub fn analyze_deps(
 
         if searched_count > 0 {
             let symbols_set: HashSet<String> = searched_names.iter().cloned().collect();
-            let raw_matches = find_callers_batch(&symbols_set, scope, bloom, None, None, Some(50))?;
+            // Deterministic reverse evidence: collect the complete caller set
+            // (no racy early-quit callsite cap), then group into dependents and
+            // cap only the *display* at MAX_DEPENDENTS. The old Some(50)
+            // early-quit selected a scheduling-dependent subset when the search
+            // exceeded the cap, making the grouped dependent count vary across
+            // runs (US-052 Phase 2B). This mirrors the BFS hops, which already
+            // walk fully and cap downstream.
+            let raw_matches = find_callers_batch(&symbols_set, scope, bloom, None, None, None)?;
 
             for (matched_symbol, caller_match) in raw_matches {
                 // Exclude calls from within the target file itself (self-references)
@@ -513,7 +524,9 @@ pub fn format_deps(
 
     // ── Build sections (full fidelity first) ─────────────────────────────────
 
-    // Header. Unresolved local-looking evidence is opt-in so the no-row shape stays stable.
+    // Header. The `, N unresolved` fragment is emitted only when unresolved
+    // local-looking evidence exists, so every zero-unresolved deps header
+    // (JS/TS included) stays byte-identical to the pre-Phase-2 shape.
     let rel_target = rel_nonempty(&result.target, scope);
     let unresolved_fragment = if result.uses_unresolved_local_looking.is_empty() {
         String::new()
@@ -524,11 +537,14 @@ pub fn format_deps(
         )
     };
     let header = format!(
-        "# Deps: {} — {} local, {} external{}, {} dependent{}",
+        "# Deps: {} — {} local, {} external{}",
         rel_target,
         result.uses_local.len(),
         result.uses_external.len(),
         unresolved_fragment,
+    );
+    let header = format!(
+        "{header}, {} dependent{}",
         dep_count,
         if dep_count == 1 { "" } else { "s" },
     );
@@ -592,6 +608,7 @@ pub fn format_deps(
                 &header,
                 &uses_local_section,
                 &uses_external_section,
+                &uses_unresolved_section,
                 &prod_deps,
                 &test_deps,
                 &barrel_note,
@@ -983,7 +1000,9 @@ fn format_uses_external(externals: &[String], target: &Path) -> String {
     out
 }
 
-/// Format unresolved local-looking imports with a deterministic bounded list.
+/// Format the "Uses (unresolved local-looking)" section. Rendered only when
+/// non-empty (unresolved evidence is opt-in); rows are bounded by
+/// `MAX_UNRESOLVED_ROWS` and the remainder is reported as an omitted count.
 fn format_uses_unresolved_local(deps: &[UnresolvedLocalDep]) -> String {
     if deps.is_empty() {
         return String::new();
@@ -1078,6 +1097,7 @@ fn apply_budget_truncation(
     header: &str,
     uses_local_full: &str,
     uses_external_full: &str,
+    uses_unresolved_full: &str,
     prod_deps: &[&Dependent],
     test_deps: &[&Dependent],
     barrel_note: &str,
@@ -1090,29 +1110,30 @@ fn apply_budget_truncation(
         &str,
         &str,
         &str,
+        &str,
         &[&Dependent],
         &[&Dependent],
         &str,
         &Path,
     ) -> String] = &[
         // Level 0: no tests
-        |hdr, ul, ue, pd, _td, bn, sc| {
-            assemble(&[hdr, ul, ue, &format_used_by(pd, sc, "## Used by"), bn])
+        |hdr, ul, ue, uu, pd, _td, bn, sc| {
+            assemble(&[hdr, ul, ue, uu, &format_used_by(pd, sc, "## Used by"), bn])
         },
         // Level 1: no used-by entries at all
-        |hdr, ul, ue, pd, _td, bn, _sc| {
+        |hdr, ul, ue, uu, pd, _td, bn, _sc| {
             let count = pd.len();
             let note = if count > 0 {
                 format!("\n\n(... {count} more dependents)")
             } else {
                 String::new()
             };
-            assemble(&[hdr, ul, ue, &note, bn])
+            assemble(&[hdr, ul, ue, uu, &note, bn])
         },
-        // Level 2: external as count only
-        |hdr, ul, _ue, _pd, _td, bn, _sc| assemble(&[hdr, ul, bn]),
+        // Level 2: external and unresolved as counts only
+        |hdr, ul, _ue, _uu, _pd, _td, bn, _sc| assemble(&[hdr, ul, bn]),
         // Level 3: local as paths only (no symbols)
-        |hdr, ul, _ue, _pd, _td, _bn, _sc| {
+        |hdr, ul, _ue, _uu, _pd, _td, _bn, _sc| {
             // Strip symbol lists: each line is "path_padded  symbols" — take only up to first space run
             let has_alias_marker = ul.contains(" (via tsconfig paths)");
             let local_lines: Vec<String> = ul
@@ -1149,7 +1170,7 @@ fn apply_budget_truncation(
             assemble(&[hdr, &paths_only])
         },
         // Level 4: header only
-        |hdr, _ul, _ue, _pd, _td, _bn, _sc| hdr.to_string(),
+        |hdr, _ul, _ue, _uu, _pd, _td, _bn, _sc| hdr.to_string(),
     ];
 
     for candidate_fn in candidates {
@@ -1157,6 +1178,7 @@ fn apply_budget_truncation(
             header,
             uses_local_full,
             uses_external_full,
+            uses_unresolved_full,
             prod_deps,
             test_deps,
             barrel_note,
@@ -1240,6 +1262,45 @@ mod tests {
         assert_eq!(
             dep.to_evidence_atom(12, &["render".to_string()]).source(),
             EvidenceSource::Text
+        );
+    }
+
+    #[test]
+    fn unresolved_local_section_renders_rows_and_omitted_count() {
+        // Empty deps render no section (unresolved is opt-in evidence).
+        assert_eq!(format_uses_unresolved_local(&[]), String::new());
+
+        let deps: Vec<UnresolvedLocalDep> = (1..=3)
+            .map(|line| UnresolvedLocalDep {
+                source: format!("./missing{line}.js"),
+                line: line as u32,
+            })
+            .collect();
+        let rendered = format_uses_unresolved_local(&deps);
+        assert!(
+            rendered.starts_with("## Uses (unresolved local-looking)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("\n  1  ./missing1.js"), "{rendered}");
+        assert!(rendered.contains("\n  3  ./missing3.js"), "{rendered}");
+        assert!(!rendered.contains("more unresolved"), "{rendered}");
+
+        // Over-cap: rows are bounded and the omitted count is reported.
+        let many: Vec<UnresolvedLocalDep> = (1..=(MAX_UNRESOLVED_ROWS + 3))
+            .map(|line| UnresolvedLocalDep {
+                source: format!("./m{line}.js"),
+                line: line as u32,
+            })
+            .collect();
+        let rendered = format_uses_unresolved_local(&many);
+        assert_eq!(
+            rendered.matches("./m").count(),
+            MAX_UNRESOLVED_ROWS,
+            "rows must be capped:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("… and 3 more unresolved local-looking imports"),
+            "{rendered}"
         );
     }
 }

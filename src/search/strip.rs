@@ -23,7 +23,7 @@ fn detect_lang(path: &Path) -> Option<StripLang> {
         "rs" => Some(StripLang::Rust),
         "py" | "pyi" => Some(StripLang::Python),
         "go" => Some(StripLang::Go),
-        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" => Some(StripLang::JsTs),
+        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts" => Some(StripLang::JsTs),
         "java" | "kt" | "kts" | "cs" | "scala" | "sc" => Some(StripLang::JavaKotlinCSharp),
         "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" => Some(StripLang::CppC),
         _ => None,

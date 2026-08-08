@@ -333,6 +333,7 @@ fn zero_unresolved_headers_remain_byte_identical() {
             "php",
             "ph.php",
             "<?php\n",
+            "<?php\nrequire_once \"vendor/autoload.php\";\n",
             "# Deps: ph.php — 0 local, 0 external, 0 dependents",
         ),
         (

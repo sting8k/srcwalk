@@ -32,9 +32,11 @@ pub fn sort(matches: &mut [Match], query: &str, scope: &Path, context: Option<&P
     // Capture now once so the sort comparator does not call SystemTime::now() O(n log n) times.
     let now = SystemTime::now();
 
-    matches.sort_by(|a, b| {
-        let sa = score(
-            a,
+    // Score each match once; the comparator only compares cached scores and tie-breakers.
+    let mut ranked = Vec::with_capacity(matches.len());
+    for m in matches.iter() {
+        let match_score = score(
+            m,
             query,
             scope,
             ctx_parent,
@@ -42,19 +44,18 @@ pub fn sort(matches: &mut [Match], query: &str, scope: &Path, context: Option<&P
             &mut pkg_cache,
             now,
         );
-        let sb = score(
-            b,
-            query,
-            scope,
-            ctx_parent,
-            ctx_pkg_root.as_ref(),
-            &mut pkg_cache,
-            now,
-        );
-        sb.cmp(&sa)
+        ranked.push((match_score, m.clone()));
+    }
+
+    ranked.sort_by(|(sa, a), (sb, b)| {
+        sb.cmp(sa)
             .then_with(|| a.path.cmp(&b.path))
             .then_with(|| a.line.cmp(&b.line))
     });
+
+    for (slot, (_, ranked_match)) in matches.iter_mut().zip(ranked) {
+        *slot = ranked_match;
+    }
 }
 
 /// Ranking function. Each match gets a score — no floating point, no randomness.

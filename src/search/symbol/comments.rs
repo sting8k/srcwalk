@@ -1,6 +1,13 @@
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use rayon::prelude::*;
+
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
 use crate::types::{FileType, Match};
+
+type CommentFileData = (Vec<(usize, usize)>, Vec<usize>);
 
 /// Collect sorted byte-offset ranges of all comment nodes in a tree-sitter tree.
 /// Works across all supported languages — tree-sitter grammars universally use
@@ -45,81 +52,79 @@ fn is_in_comment(offset: usize, comment_ranges: &[(usize, usize)]) -> bool {
         .is_ok()
 }
 
+/// Parse one file and retain comment ranges and line starts for tagging.
+fn parse_comment_file(path: &Path) -> CommentFileData {
+    let ts_lang = match detect_file_type(path) {
+        FileType::Code(lang) => outline_language(lang),
+        _ => None,
+    };
+    let Some(ts_lang) = ts_lang else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return (Vec::new(), Vec::new());
+    };
+    let line_starts = collect_line_starts(&content);
+
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return (Vec::new(), line_starts);
+    }
+    let Some(tree) = parser.parse(&content, None) else {
+        return (Vec::new(), line_starts);
+    };
+
+    (collect_comment_ranges(tree.root_node()), line_starts)
+}
+
+fn collect_line_starts(content: &str) -> Vec<usize> {
+    let mut line_starts = vec![0];
+    line_starts.extend(
+        content
+            .bytes()
+            .enumerate()
+            .filter_map(|(index, byte)| (byte == b'\n').then_some(index + 1)),
+    );
+    line_starts
+}
+
 /// Tag `in_comment` on usage matches by parsing each file with tree-sitter.
 /// Only files that have at least one usage match are parsed.
 pub(super) fn tag_comment_matches(buckets: &mut [Vec<Match>]) {
-    use std::collections::HashMap;
-
-    // Collect all unique file paths that need comment-checking.
-    let mut file_paths: HashMap<std::path::PathBuf, Vec<(usize, usize)>> = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut file_paths = Vec::new();
     for bucket in buckets.iter() {
         for m in bucket {
-            if !m.is_definition {
-                file_paths.entry(m.path.clone()).or_default();
+            if !m.is_definition && seen.insert(m.path.clone()) {
+                file_paths.push(m.path.clone());
             }
         }
     }
 
-    // Parse each file once, collect comment ranges.
-    for (path, ranges) in &mut file_paths {
-        let lang = detect_file_type(path);
-        let ts_lang = match lang {
-            FileType::Code(l) => outline_language(l),
-            _ => None,
-        };
-        let Some(ts_lang) = ts_lang else { continue };
-        let Ok(content) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let mut parser = tree_sitter::Parser::new();
-        if parser.set_language(&ts_lang).is_err() {
-            continue;
-        }
-        let Some(tree) = parser.parse(&content, None) else {
-            continue;
-        };
-        *ranges = collect_comment_ranges(tree.root_node());
-    }
+    let file_data: HashMap<PathBuf, CommentFileData> = file_paths
+        .par_iter()
+        .map(|path| (path.clone(), parse_comment_file(path)))
+        .collect();
 
-    // Tag each usage match.
     for bucket in buckets.iter_mut() {
         for m in bucket.iter_mut() {
             if m.is_definition {
                 continue;
             }
-            if let Some(ranges) = file_paths.get(&m.path) {
-                if ranges.is_empty() {
-                    continue;
-                }
-                // Convert line number to byte offset: read file and find line start.
-                // We need the byte offset of the match line to check against comment ranges.
-                // Since we already read the file above, re-read is cached by OS.
-                if let Ok(content) = std::fs::read_to_string(&m.path) {
-                    if let Some(byte_offset) = line_to_byte_offset(&content, m.line as usize) {
-                        m.in_comment = is_in_comment(byte_offset, ranges);
-                    }
-                }
+            let Some((ranges, line_starts)) = file_data.get(&m.path) else {
+                continue;
+            };
+            if ranges.is_empty() {
+                continue;
             }
+            let Some(line_index) = (m.line as usize).checked_sub(1) else {
+                continue;
+            };
+            let Some(byte_offset) = line_starts.get(line_index).copied() else {
+                continue;
+            };
+            m.in_comment = is_in_comment(byte_offset, ranges);
         }
     }
-}
-
-/// Convert 1-based line number to byte offset of that line's start.
-fn line_to_byte_offset(content: &str, line: usize) -> Option<usize> {
-    if line == 0 {
-        return None;
-    }
-    let mut current_line = 1usize;
-    if line == 1 {
-        return Some(0);
-    }
-    for (i, b) in content.bytes().enumerate() {
-        if b == b'\n' {
-            current_line += 1;
-            if current_line == line {
-                return Some(i + 1);
-            }
-        }
-    }
-    None
 }

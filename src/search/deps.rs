@@ -267,7 +267,10 @@ pub fn analyze_deps(
     // historical cap; Ruby needs the all-resolver so >8 static requires are
     // complete; other languages keep the historical capped behavior.
     let (import_files, ruby_ast_paths) = if is_js_like {
-        (ordered_local_paths(&js_import_decisions, Some(8)), HashSet::new())
+        (
+            ordered_local_paths(&js_import_decisions, Some(8)),
+            HashSet::new(),
+        )
     } else if lang == Lang::Ruby {
         crate::search::deps::ruby::resolved_import_files(path, &content)
     } else {

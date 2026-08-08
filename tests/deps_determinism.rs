@@ -103,6 +103,24 @@ fn deps_stdout(root: &Path, threads: &str) -> String {
     String::from_utf8_lossy(&out.stdout).replace('\\', "/")
 }
 
+fn overview_stdout(scope: &Path, threads: &str) -> String {
+    let out = srcwalk()
+        .env("SRCWALK_THREADS", threads)
+        .arg("overview")
+        .arg("--scope")
+        .arg(scope)
+        .arg("--depth")
+        .arg("2")
+        .output()
+        .expect("run overview");
+    assert!(
+        out.status.success(),
+        "overview failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).replace('\\', "/")
+}
+
 /// The over-cap reverse search must be byte-identical across >=20 repeated
 /// runs and across worker settings 1, 2, and 8, with deterministic path/line
 /// ordering and a complete dependent count.
@@ -177,4 +195,75 @@ fn deps_reverse_search_below_cap_stable_and_preserved() {
     assert!(pos("c1.js") < pos("c2.ts"), "{first}");
     assert!(pos("c2.ts") < pos("c3.py"), "{first}");
     assert!(pos("c3.py") < pos("c4.rb"), "{first}");
+}
+
+fn overview_relations_fixture() -> PathBuf {
+    let root = fixture("overview-relations");
+    for i in 0..64 {
+        write(
+            &root,
+            &format!("packages/app{i:03}/src/main.ts"),
+            &format!(
+                "import {{ value }} from \"../../shared/value{i:03}\";\nexport const result = value;\n"
+            ),
+        );
+        write(
+            &root,
+            &format!("packages/shared/value{i:03}.ts"),
+            "export const value = 1;\n",
+        );
+    }
+    root
+}
+
+fn overview_outbound_fixture() -> PathBuf {
+    let root = fixture("overview-outbound");
+    write(
+        &root,
+        "packages/app/main.ts",
+        "import { value } from \"../shared/value\";\nexport const result = value;\n",
+    );
+    write(
+        &root,
+        "packages/shared/value.ts",
+        "export const value = 1;\n",
+    );
+    root
+}
+
+fn assert_overview_deterministic(scope: &Path, expected_marker: &str) {
+    let mut outputs = Vec::new();
+    for threads in ["1", "2", "8"] {
+        for _ in 0..20 {
+            outputs.push(overview_stdout(scope, threads));
+        }
+    }
+    let first = outputs.first().expect("at least one overview output");
+    for (index, output) in outputs.iter().enumerate() {
+        assert_eq!(
+            output, first,
+            "overview output {index} must be byte-identical to run 0"
+        );
+    }
+    assert!(
+        first.contains(expected_marker),
+        "expected {expected_marker:?}, got:\n{first}"
+    );
+}
+
+#[test]
+fn overview_js_ts_relations_deterministic_across_runs_and_workers() {
+    let root = overview_relations_fixture();
+    assert_overview_deterministic(&root.join("packages"), "[relations]");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn overview_js_ts_outbound_deterministic_across_runs_and_workers() {
+    let root = overview_outbound_fixture();
+    assert_overview_deterministic(
+        &root.join("packages/app"),
+        "[outbound deps] 1 group (targets outside scope)",
+    );
+    let _ = fs::remove_dir_all(root);
 }

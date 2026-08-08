@@ -4,10 +4,29 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## 1.4.0 - 2026-08-09
+
 ### Added
-- Added cross-platform npm installer guard tests and an npm-package README.
+- Ruby structural navigation: outline, `deps` require/require_relative resolution, Flow Map with honest abstention on unsupported constructs.
+- JS/TS logical import scanning with `tsconfig.json`/`jsconfig.json` paths-alias resolution; alias-verified local deps are labeled `via tsconfig paths`.
+- Unresolved local-looking JS/TS imports reported as a distinct bounded evidence class with line anchors.
+- Alias-aware callee resolution and read-layer related-file suggestions for JS/TS.
+- JVM (Java/Kotlin/Scala) standard-library imports omitted from external deps with dot-boundary safety (`javaparser.*` stays visible).
+- Go grouped `import (...)` block parsing and `go.mod` module-directive awareness so dotless module-local imports stay visible.
+- `.mjs/.cjs/.mts/.cts` structural support with runtime-to-source extension swaps.
+- Private-member caller/callee evidence and export-wrapper definition dedup (`context <symbol>` no longer reports duplicate candidates for one definition).
+- Deterministic reverse-dependency evidence across worker counts; determinism test suites for deps and overview relations.
+- Route-aware CLI hint when `--scope` receives space-separated directories.
+- Cross-platform npm installer guard tests and an npm-package README.
+- Flow context callers preserved for line-range targets via resolved symbols.
 
 ### Changed
+- Parse-cache admission serialized to close a concurrent cap-bypass race; ranking and parse memory bounded; comment tagging and map relation scans parallelized with stable output ordering.
+
+### Fixed
+- Import keyword detection accepts tabs/multiple spaces; JVM `import static` and alias forms normalize correctly.
+
+### Security
 - Hardened npm binary installation with HTTPS-only bounded redirects, request timeouts, streaming size limits, published SHA-256 verification, strict single-binary archive validation, staged extraction, and atomic final placement.
 - Pinned third-party CI actions to reviewed commit SHAs and added Linux/Windows npm installer guard jobs across the declared Node.js 14 floor and the release Node.js 20 runtime.
 

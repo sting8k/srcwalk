@@ -40,7 +40,6 @@ When output includes `source`, `kind`, `confidence`, or `caveat`, keep those lim
 - Text/name/comment/file hits are literal evidence or navigation candidates, not binding-resolved references or relation proof.
 - `discover --as access` is syntax only: no runtime order, type proof, alias proof, or call relation proof.
 - `overview` `[relations]` are static local dependency groups, not runtime calls; `[outbound deps]` are imports outside `--scope`.
-- `deps` locals labeled `via tsconfig paths` are config-guided static evidence with on-disk targets, not compiler/bundler resolution; unresolved local-looking rows are text-level intent, never local or external proof.
 - Documents are navigation structure, links/assets, headings, elements, and code blocks; not rendered DOM, runtime behavior, or accessibility proof.
 - Artifacts, generated, minified, bundled, and binary-like outputs are artifact-level or byte-span evidence unless labeled source-level.
 - Unsupported languages still support exact reads; structural facts may be unavailable.

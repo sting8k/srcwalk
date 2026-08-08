@@ -271,7 +271,7 @@ pub fn analyze_deps(
             HashSet::new(),
         )
     } else if lang == Lang::Ruby {
-        crate::search::deps::ruby::resolved_import_files(path, &content)
+        crate::search::deps::ruby::resolved_import_files_with_scope(path, &content, Some(scope))
     } else {
         let files = resolve_related_files_with_content_and_scope(
             path,
@@ -354,7 +354,11 @@ pub fn analyze_deps(
         // Unresolved static bare `require` => external; ruby.rs filters out
         // relative, native, and garbage sources, so nothing else to check here.
         let dir = path.parent().unwrap_or(scope);
-        external_set.extend(crate::search::deps::ruby::external_requires(&content, dir));
+        external_set.extend(crate::search::deps::ruby::external_requires_with_scope(
+            &content,
+            dir,
+            Some(scope),
+        ));
     } else if matches!(lang, Lang::Python | Lang::Php | Lang::C | Lang::Cpp) {
         for (source, line) in import_sources_with_lines(&content, lang) {
             if source.is_empty() || is_stdlib(path, &source, lang) {

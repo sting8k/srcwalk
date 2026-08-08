@@ -9,6 +9,7 @@ use crate::error::SrcwalkError;
 use crate::evidence::{render_next_actions, NextAction};
 use crate::lang::detect_file_type;
 use crate::lang::detection::{is_generated_by_content, is_generated_by_name};
+use crate::lang::tsconfig::ConfigCache;
 use crate::read::outline;
 use crate::types::{estimate_tokens, FileType};
 use crate::ArtifactMode;
@@ -44,6 +45,7 @@ pub(super) fn generate(
     scope: &Path,
     cfg: &WalkConfig,
     cache: &OutlineCache,
+    config_cache: &ConfigCache,
     include_symbols: bool,
     glob: Option<&str>,
     artifact: ArtifactMode,
@@ -80,7 +82,7 @@ pub(super) fn generate(
 
     let candidates = select_navigation_candidates(&files, &areas);
 
-    let relations = compute_relations(scope, 1, &visible_files);
+    let relations = compute_relations(scope, 1, &visible_files, config_cache);
     let total_tokens: u64 = files.iter().map(|file| file.tokens).sum();
     let shown_areas = areas.len().min(ORIENTATION_AREA_LIMIT);
     let shown_files = candidates.len().min(ORIENTATION_FILE_LIMIT);

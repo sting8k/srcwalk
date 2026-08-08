@@ -53,6 +53,34 @@ pub(crate) fn resolve_related_files_with_content_and_scope(
     resolve_related_files_with_limit(file_path, content, limit, Some(scope))
 }
 
+/// Scoped/content adapter for outbound map relations. JS/TS/TSX keep bounded
+/// config discovery but may return existing targets outside the active scope;
+/// the map caller applies its outbound visibility filtering afterward.
+pub(crate) fn resolve_related_files_with_content_and_scope_unbounded(
+    file_path: &Path,
+    content: &str,
+    scope: &Path,
+    config_cache: &crate::lang::tsconfig::ConfigCache,
+    limit: Option<usize>,
+) -> Vec<PathBuf> {
+    let Some(lang) = detect_file_type(file_path).structural_lang() else {
+        return Vec::new();
+    };
+    if matches!(lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript) {
+        let stream = crate::lang::js_imports::logical_sources(content, lang);
+        return ordered_local_paths(
+            &crate::read::js_alias::classify_js_imports_unbounded(
+                file_path,
+                &stream,
+                scope,
+                config_cache,
+            ),
+            limit,
+        );
+    }
+    resolve_related_files_with_limit(file_path, content, limit, Some(scope))
+}
+
 pub(crate) fn resolve_all_related_files_with_content(
     file_path: &Path,
     content: &str,
@@ -101,7 +129,7 @@ fn resolve_related_files_with_limit(
     // the generic text line scan, so dynamic and receiver-scoped forms are
     // never promoted to local file relations.
     if lang == Lang::Ruby {
-        return resolve_ruby_related(dir, content, limit);
+        return resolve_ruby_related(dir, content, limit, scope);
     }
 
     let dedicated_non_js = matches!(lang, Lang::Python | Lang::Php | Lang::C | Lang::Cpp);
@@ -457,7 +485,12 @@ fn resolve_js_source_extension(base: &Path) -> Option<PathBuf> {
 /// files. Deduplicates resolved paths; `require_relative` resolves from the
 /// current file's parent, bare `require` resolves only under bounded inferred
 /// load roots. Returns at most `limit` results when `limit` is set.
-fn resolve_ruby_related(dir: &Path, content: &str, limit: Option<usize>) -> Vec<PathBuf> {
+pub(crate) fn resolve_ruby_related(
+    dir: &Path,
+    content: &str,
+    limit: Option<usize>,
+    scope: Option<&Path>,
+) -> Vec<PathBuf> {
     let refs = crate::lang::ruby::require_refs(content);
     let mut results = Vec::new();
     for reference in refs {
@@ -466,10 +499,10 @@ fn resolve_ruby_related(dir: &Path, content: &str, limit: Option<usize>) -> Vec<
         }
         let resolved = match reference.kind {
             crate::lang::ruby::RubyRequireKind::RequireRelative => {
-                resolve_ruby_require_relative(dir, &reference.source)
+                resolve_ruby_require_relative_with_scope(dir, &reference.source, scope)
             }
             crate::lang::ruby::RubyRequireKind::Require => {
-                resolve_ruby_require(dir, &reference.source)
+                resolve_ruby_require_with_scope(dir, &reference.source, scope)
             }
         };
         if let Some(path) = resolved {
@@ -485,7 +518,11 @@ fn resolve_ruby_related(dir: &Path, content: &str, limit: Option<usize>) -> Vec<
 /// A source ending in `.rb` resolves to that exact file; a bare source gets
 /// exactly one `<source>.rb` candidate. Unsupported extensions and non-files are
 /// skipped. Existing paths are canonicalized for comparison boundaries.
-pub(crate) fn resolve_ruby_require_relative(dir: &Path, source: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_ruby_require_relative_with_scope(
+    dir: &Path,
+    source: &str,
+    scope: Option<&Path>,
+) -> Option<PathBuf> {
     if source.is_empty() || is_absolute_source(source) {
         // Absolute targets are never file-relative; `require_relative` must
         // stay inside the current file's parent tree.
@@ -498,6 +535,7 @@ pub(crate) fn resolve_ruby_require_relative(dir: &Path, source: &str) -> Option<
         None => dir.join(format!("{source}.rb")),
     };
     canonicalize_existing(&candidate)
+        .filter(|path| scope.is_none_or(|scope| path_within_scope(path, scope)))
 }
 
 /// Resolve a static bare `require` source under bounded inferred load roots.
@@ -507,7 +545,11 @@ pub(crate) fn resolve_ruby_require_relative(dir: &Path, source: &str) -> Option<
 /// `./`/`../` source resolves against that package root (inferred CWD
 /// convention). If zero or more than one distinct existing candidate exists,
 /// the reference is left unresolved (no guessing).
-pub(crate) fn resolve_ruby_require(dir: &Path, source: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_ruby_require_with_scope(
+    dir: &Path,
+    source: &str,
+    scope: Option<&Path>,
+) -> Option<PathBuf> {
     if source.is_empty() {
         return None;
     }
@@ -542,7 +584,9 @@ pub(crate) fn resolve_ruby_require(dir: &Path, source: &str) -> Option<PathBuf> 
             Some(_) => continue, // unsupported native/dynamic target
             None => root.join(format!("{source}.rb")),
         };
-        if let Some(existing) = canonicalize_existing(&candidate) {
+        if let Some(existing) = canonicalize_existing(&candidate)
+            .filter(|path| scope.is_none_or(|scope| path_within_scope(path, scope)))
+        {
             if !candidates.contains(&existing) {
                 candidates.push(existing);
             }

@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use crate::error::SrcwalkError;
 use crate::lang::ruby::{require_refs, RubyRequireKind};
 use crate::read::imports::{
-    is_absolute_source, resolve_all_related_files_with_content, resolve_ruby_require,
-    resolve_ruby_require_relative,
+    is_absolute_source, resolve_ruby_related, resolve_ruby_require_relative_with_scope,
+    resolve_ruby_require_with_scope,
 };
 use crate::types::{FileType, Lang};
 
@@ -56,7 +56,11 @@ fn is_external_source(source: &str) -> bool {
 /// references relative to the repo. `require_relative` is never external, and
 /// dynamic/receiver-scoped forms are absent from the parser output, so they can
 /// never be mislabeled. Returns sorted, deduplicated sources.
-pub(crate) fn external_requires(content: &str, dir: &Path) -> Vec<String> {
+pub(crate) fn external_requires_with_scope(
+    content: &str,
+    dir: &Path,
+    scope: Option<&Path>,
+) -> Vec<String> {
     let mut out = Vec::new();
     for reference in require_refs(content) {
         if reference.kind != RubyRequireKind::Require {
@@ -67,7 +71,7 @@ pub(crate) fn external_requires(content: &str, dir: &Path) -> Vec<String> {
             continue;
         }
         // Resolved locally? Then it is already a local edge; never external too.
-        if resolve_ruby_require(dir, &source).is_some() {
+        if resolve_ruby_require_with_scope(dir, &source, scope).is_some() {
             continue;
         }
         if !out.contains(&source) {
@@ -84,11 +88,15 @@ pub(crate) fn external_requires(content: &str, dir: &Path) -> Vec<String> {
 /// here because the resolver never promotes dynamic or receiver-scoped forms.
 /// Returns the resolved files plus the same paths as a set for `Ast`-provenance
 /// labeling in `deps.rs`.
-pub(crate) fn resolved_import_files(
+pub(crate) fn resolved_import_files_with_scope(
     path: &Path,
     content: &str,
+    scope: Option<&Path>,
 ) -> (Vec<PathBuf>, HashSet<PathBuf>) {
-    let files = resolve_all_related_files_with_content(path, content);
+    let Some(dir) = path.parent() else {
+        return (Vec::new(), HashSet::new());
+    };
+    let files = resolve_ruby_related(dir, content, None, scope);
     let ast_paths = files.iter().cloned().collect();
     (files, ast_paths)
 }
@@ -149,10 +157,14 @@ pub(crate) fn merge_reverse_import_dependents(
             };
             for reference in require_refs(&content) {
                 let resolved = match reference.kind {
-                    RubyRequireKind::RequireRelative => {
-                        resolve_ruby_require_relative(dir, &reference.source)
+                    RubyRequireKind::RequireRelative => resolve_ruby_require_relative_with_scope(
+                        dir,
+                        &reference.source,
+                        Some(scope),
+                    ),
+                    RubyRequireKind::Require => {
+                        resolve_ruby_require_with_scope(dir, &reference.source, Some(scope))
                     }
-                    RubyRequireKind::Require => resolve_ruby_require(dir, &reference.source),
                 };
                 let Some(resolved_path) = resolved else {
                     continue;
@@ -246,7 +258,7 @@ require 'bad name'
 require 'C:/abs/path'
 require 'json/sub'
 "#;
-        let external = external_requires(content, &dir);
+        let external = external_requires_with_scope(content, &dir, None);
 
         // `json` resolves locally (lib/json.rb) -> not external.
         // `json/sub` does NOT resolve (no such local file) -> external bare name.
@@ -260,6 +272,9 @@ require 'json/sub'
         let dir = temp_dir();
         // No local lib/foo.rb, so `foo.rb` is an unresolved bare external.
         let content = "require 'foo.rb'\n";
-        assert_eq!(external_requires(content, &dir), vec!["foo.rb"]);
+        assert_eq!(
+            external_requires_with_scope(content, &dir, None),
+            vec!["foo.rb"]
+        );
     }
 }

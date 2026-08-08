@@ -11,6 +11,7 @@ use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
 use crate::evidence::{render_next_actions, NextAction};
 use crate::lang::detect_file_type;
+use crate::lang::tsconfig::ConfigCache;
 use crate::read::{imports, outline};
 use crate::types::{estimate_tokens, FileType, Lang};
 use crate::ArtifactMode;
@@ -188,6 +189,7 @@ pub fn generate(
     artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
     let cfg = default_walk_config();
+    let config_cache = ConfigCache::new();
     generate_at_depth(
         scope,
         depth,
@@ -195,6 +197,7 @@ pub fn generate(
         false,
         &cfg,
         cache,
+        &config_cache,
         include_symbols,
         glob,
         artifact,
@@ -210,8 +213,17 @@ pub fn generate_for_cli(
     artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
     let cfg = default_walk_config();
+    let config_cache = ConfigCache::new();
     let Some(depth) = depth else {
-        return generate_auto_depth(scope, &cfg, cache, include_symbols, glob, artifact);
+        return generate_auto_depth(
+            scope,
+            &cfg,
+            cache,
+            &config_cache,
+            include_symbols,
+            glob,
+            artifact,
+        );
     };
 
     generate_at_depth(
@@ -221,6 +233,7 @@ pub fn generate_for_cli(
         false,
         &cfg,
         cache,
+        &config_cache,
         include_symbols,
         glob,
         artifact,
@@ -231,6 +244,7 @@ fn generate_auto_depth(
     scope: &Path,
     cfg: &WalkConfig,
     cache: &OutlineCache,
+    config_cache: &ConfigCache,
     include_symbols: bool,
     glob: Option<&str>,
     artifact: ArtifactMode,
@@ -246,6 +260,7 @@ fn generate_auto_depth(
             depth < initial_depth,
             cfg,
             cache,
+            config_cache,
             include_symbols,
             glob,
             artifact,
@@ -258,7 +273,15 @@ fn generate_auto_depth(
         }
     }
 
-    match orientation::generate(scope, cfg, cache, include_symbols, glob, artifact) {
+    match orientation::generate(
+        scope,
+        cfg,
+        cache,
+        config_cache,
+        include_symbols,
+        glob,
+        artifact,
+    ) {
         Ok(out) => Ok(out),
         Err(err) if is_map_too_large(&err) => largest_fitting_detail.ok_or_else(|| {
             last_err.unwrap_or_else(|| SrcwalkError::InvalidQuery {
@@ -277,6 +300,7 @@ fn generate_at_depth(
     depth_reduced: bool,
     cfg: &WalkConfig,
     cache: &OutlineCache,
+    config_cache: &ConfigCache,
     include_symbols: bool,
     glob: Option<&str>,
     artifact: ArtifactMode,
@@ -384,9 +408,9 @@ fn generate_at_depth(
         return Ok(out);
     }
 
-    let relations = compute_relations(scope, depth, &visible_files);
+    let relations = compute_relations(scope, depth, &visible_files, config_cache);
     let outbound_relations = if relations.is_empty() {
-        compute_outbound_relations(scope, depth, &visible_files)
+        compute_outbound_relations(scope, depth, &visible_files, config_cache)
     } else {
         Vec::new()
     };
@@ -603,7 +627,12 @@ fn normalize_existing_path(path: PathBuf) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
-fn compute_relations(scope: &Path, depth: usize, visible_files: &[PathBuf]) -> Vec<RelationEntry> {
+fn compute_relations(
+    scope: &Path,
+    depth: usize,
+    visible_files: &[PathBuf],
+    config_cache: &ConfigCache,
+) -> Vec<RelationEntry> {
     let scope = normalize_existing_path(scope.to_path_buf());
     let visible_files: Vec<PathBuf> = visible_files
         .iter()
@@ -623,7 +652,13 @@ fn compute_relations(scope: &Path, depth: usize, visible_files: &[PathBuf]) -> V
                 return file_edges.into_iter().collect::<Vec<_>>();
             };
 
-            for target in imports::resolve_all_related_files_with_content(source, &content) {
+            for target in imports::resolve_related_files_with_content_and_scope(
+                source,
+                &content,
+                &scope,
+                config_cache,
+                None,
+            ) {
                 let target = normalize_existing_path(target);
                 if target == *source || !visible.contains(&target) {
                     continue;
@@ -706,6 +741,7 @@ fn compute_outbound_relations(
     scope: &Path,
     depth: usize,
     visible_files: &[PathBuf],
+    config_cache: &ConfigCache,
 ) -> Vec<RelationEntry> {
     let scope = normalize_existing_path(scope.to_path_buf());
     let visible_files: Vec<PathBuf> = visible_files
@@ -725,7 +761,13 @@ fn compute_outbound_relations(
                 return file_edges.into_iter().collect::<Vec<_>>();
             };
 
-            for target in imports::resolve_all_related_files_with_content(source, &content) {
+            for target in imports::resolve_related_files_with_content_and_scope_unbounded(
+                source,
+                &content,
+                &scope,
+                config_cache,
+                None,
+            ) {
                 let target = normalize_existing_path(target);
                 if target == *source || visible.contains(&target) || target.starts_with(&scope) {
                     continue;

@@ -52,6 +52,23 @@ pub(crate) fn classify_js_imports(
     )
 }
 
+/// Classify imports for outbound map relations without target containment.
+/// Config discovery remains bounded by the active analysis scope.
+pub(crate) fn classify_js_imports_unbounded(
+    source_path: &Path,
+    logical_sources: &[(String, usize)],
+    scope: &Path,
+    config_cache: &ConfigCache,
+) -> Vec<JsImportDecision> {
+    classify_js_imports_with_resolver(
+        source_path,
+        logical_sources,
+        scope,
+        config_cache,
+        resolve_without_scope,
+    )
+}
+
 type CandidateResolver = fn(&Path, &str, Option<&Path>) -> Option<PathBuf>;
 
 fn classify_js_imports_with_resolver(
@@ -212,6 +229,12 @@ fn resolve_in_scope(base: &Path, target: &str, scope: Option<&Path>) -> Option<P
     let scope = scope?;
     let canonical = fs::canonicalize(&candidate).ok()?;
     canonical.starts_with(scope).then_some(candidate)
+}
+
+/// Resolve an existing candidate without active-scope target containment.
+/// Callers still perform bounded config discovery separately.
+fn resolve_without_scope(base: &Path, target: &str, _scope: Option<&Path>) -> Option<PathBuf> {
+    resolve_candidate(base, target)
 }
 
 fn resolve_candidate(base: &Path, target: &str) -> Option<PathBuf> {

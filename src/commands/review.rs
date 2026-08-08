@@ -403,6 +403,7 @@ fn append_change_flow_maps(
         let flow_target = FlowTarget {
             path,
             display_target: display_target.clone(),
+            resolved_symbol: None,
             selector: TargetSelector::LineRange {
                 start: target.symbol.start_line,
                 end: target.symbol.end_line,

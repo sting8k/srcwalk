@@ -1041,6 +1041,45 @@ fn context_bare_file_error_uses_target_language() {
 }
 
 #[test]
+fn context_bare_symbol_abstention_keeps_callers() {
+    let dir = temp_dir("context_bare_symbol_abstention_callers");
+    fs::write(
+        dir.join("prices.py"),
+        "def get_open_prices():\n    try:\n        return 1\n    except Exception:\n        return 0\n\ndef caller():\n    return get_open_prices()\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["context", "get_open_prices", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "context should succeed, stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("### Callers"),
+        "callers section should remain:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("caller"),
+        "resolved caller should remain:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("not available for non-symbol range targets"),
+        "bare symbol must not use range-only message:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("srcwalk trace callers get_open_prices"),
+        "caller trace next action should remain:\n{stdout}"
+    );
+}
+
+#[test]
 fn context_line_range_fallback_does_not_emit_symbol_trace_tips() {
     let dir = temp_dir("context_range_fallback_no_trace_tips");
     let file = dir.join("lib.rs");

@@ -1121,6 +1121,7 @@ mod tests {
         FlowTarget {
             path: std::path::Path::new(path).to_path_buf(),
             display_target: path.to_string(),
+            resolved_symbol: None,
             selector,
         }
     }

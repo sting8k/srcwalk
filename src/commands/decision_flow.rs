@@ -47,6 +47,7 @@ pub(crate) fn resolve_decision_flow_target(
     Ok(FlowTarget {
         path: def_match.path,
         display_target: target.to_string(),
+        resolved_symbol: Some(target.to_string()),
         selector: TargetSelector::LineRange { start, end },
     })
 }
@@ -60,6 +61,7 @@ fn resolve_path_target(target: &str, scope: &Path) -> Result<Option<FlowTarget>,
             return Ok(Some(FlowTarget {
                 path,
                 display_target: target.to_string(),
+                resolved_symbol: None,
                 selector: parse_selector(selector),
             }));
         }

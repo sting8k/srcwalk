@@ -8,6 +8,8 @@ use crate::evidence::{Anchor, EvidenceAtom, EvidenceKind, EvidenceRole, Evidence
 pub(crate) struct FlowTarget {
     pub(crate) path: PathBuf,
     pub(crate) display_target: String,
+    /// Original bare symbol when resolution converted it to a definition range.
+    pub(crate) resolved_symbol: Option<String>,
     pub(crate) selector: TargetSelector,
 }
 

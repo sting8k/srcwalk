@@ -8,8 +8,6 @@ mod abstention;
 use tree_sitter::Node;
 
 pub(crate) use abstention::is_abstention_reason;
-#[cfg(test)]
-pub(crate) use ruby::ABSTENTION_MARKER;
 use types::{Branch, FlowEdge, FlowGraph, FlowNode, FlowNodeKind, IncomingEdge};
 pub(crate) use types::{FlowTarget, TargetSelector};
 

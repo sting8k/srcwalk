@@ -780,8 +780,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_nanos())
         ));
         std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
         assert_eq!(count_lines_cheap(&path).unwrap(), 3);

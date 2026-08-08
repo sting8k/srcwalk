@@ -61,7 +61,7 @@ pub(crate) fn dispatch_tool(tool: &str) -> Result<String, String> {
 
 #[test]
 fn c_declarator_definitions_detected() {
-    let code = r#"
+    let code = r"
 static int normal_func(int x) { return x; }
 char *make_name(void) { return 0; }
 static int rust_demangle_callback(data, len)
@@ -70,7 +70,7 @@ static int rust_demangle_callback(data, len)
 {
   return 0;
 }
-"#;
+";
     let ts_lang = crate::lang::outline::outline_language(crate::types::Lang::C).unwrap();
 
     for name in ["normal_func", "make_name", "rust_demangle_callback"] {
@@ -91,13 +91,13 @@ static int rust_demangle_callback(data, len)
 
 #[test]
 fn c_named_struct_body_definitions_detected() {
-    let code = r#"
+    let code = r"
 typedef struct ngx_http_core_loc_conf_s  ngx_http_core_loc_conf_t;
 
 struct ngx_http_core_loc_conf_s {
     int value;
 };
-"#;
+";
     let ts_lang = crate::lang::outline::outline_language(crate::types::Lang::C).unwrap();
 
     let defs = find_defs_treesitter(
@@ -182,7 +182,7 @@ end
 
 #[test]
 fn elixir_guard_clause_definitions() {
-    let code = r#"defmodule Guards do
+    let code = r"defmodule Guards do
   def safe_div(a, b) when b != 0 do
     a / b
   end
@@ -191,7 +191,7 @@ fn elixir_guard_clause_definitions() {
 
   defguard is_positive(x) when x > 0
 end
-"#;
+";
     // Guard clause with `when` — block form
     assert!(
         !elixir_find(code, "safe_div").is_empty(),
@@ -237,7 +237,7 @@ end
 
 #[test]
 fn elixir_protocol_impl_exception() {
-    let code = r#"defprotocol Printable do
+    let code = r"defprotocol Printable do
   @callback format(t) :: String.t()
   def to_string(data)
 end
@@ -249,7 +249,7 @@ end
 defmodule MyError do
   defexception [:message, :code]
 end
-"#;
+";
     // Protocol + defimpl: both indexed under the protocol name "Printable"
     let defs = elixir_find(code, "Printable");
     assert!(
@@ -273,14 +273,14 @@ end
 
 #[test]
 fn elixir_delegate_and_nested_modules() {
-    let code = r#"defmodule Outer do
+    let code = r"defmodule Outer do
   defdelegate count(list), to: Enum
 
   defmodule Inner do
     def nested_func, do: :ok
   end
 end
-"#;
+";
     // defdelegate
     assert!(
         !elixir_find(code, "count").is_empty(),
@@ -393,14 +393,14 @@ fn suggest_skips_non_source_files() {
 
 #[test]
 fn tree_sitter_definition_metadata_preserves_impl_and_base_targets() {
-    let rust = r#"trait Matcher {
+    let rust = r"trait Matcher {
     fn find(&self);
 }
 struct RegexMatcher;
 impl Matcher for RegexMatcher {
     fn find(&self) {}
 }
-"#;
+";
     let rust_lang = crate::lang::outline::outline_language(crate::types::Lang::Rust).unwrap();
     let defs = find_defs_treesitter(
         std::path::Path::new("lib.rs"),
@@ -498,14 +498,14 @@ fn batch_search_matches_single_search_for_defs_usages_and_comments() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("lib.rs"),
-        r#"fn alpha() {
+        r"fn alpha() {
     beta();
 }
 
 fn beta() {}
 
 // beta appears in a comment-only usage
-"#,
+",
     )
     .unwrap();
 

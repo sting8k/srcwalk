@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_extract_symbols_rust() {
-        let content = r#"
+        let content = r"
 pub struct Foo {
     bar: u32,
 }
@@ -386,7 +386,7 @@ trait MyTrait {
 impl MyTrait for Foo {
     fn do_thing(&self) {}
 }
-"#;
+";
         let dir = std::env::temp_dir().join("srcwalk_test_extract_symbols");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.rs");
@@ -470,7 +470,7 @@ impl MyTrait for Foo {
 
     #[test]
     fn test_extract_symbols_typescript() {
-        let content = r#"
+        let content = r"
 function greet(name: string): string {
     return `Hello, ${name}!`;
 }
@@ -485,7 +485,7 @@ class Greeter {
 interface Printable {
     print(): void;
 }
-"#;
+";
         let dir = std::env::temp_dir().join("srcwalk_test_extract_ts");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.ts");
@@ -512,14 +512,14 @@ interface Printable {
 
     #[test]
     fn test_extract_symbols_python() {
-        let content = r#"
+        let content = r"
 def hello():
     pass
 
 class MyClass:
     def method(self):
         pass
-"#;
+";
         let dir = std::env::temp_dir().join("srcwalk_test_extract_py");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.py");

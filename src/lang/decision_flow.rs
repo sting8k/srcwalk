@@ -1136,7 +1136,7 @@ mod tests {
 
     #[test]
     fn rust_if_and_match_emit_decisions() {
-        let source = r#"
+        let source = r"
 fn route(mode: Mode) {
     if matches!(mode, Mode::Files) {
         run_files();
@@ -1147,7 +1147,7 @@ fn route(mode: Mode) {
         _ => run_symbol(),
     }
 }
-"#;
+";
         let out = render_decision_flow(
             &target("src/lib.rs:route", TargetSelector::Symbol("route".into())),
             source,

@@ -1199,21 +1199,6 @@ impl AccessFilter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_function_outline_line;
-
-    #[test]
-    fn context_target_outline_filter_accepts_only_function_rows() {
-        assert!(is_function_outline_line("[3-5]        fn mark_args"));
-        assert!(is_function_outline_line("[3-5]        def render"));
-        assert!(is_function_outline_line("[3-5]        fun render"));
-        assert!(!is_function_outline_line("[1-10]       class Handler"));
-        assert!(!is_function_outline_line("[2]          let value"));
-        assert!(!is_function_outline_line("[4-8]        section Usage"));
-    }
-}
-
 impl Counts {
     fn from_hits(hits: &[AccessHit]) -> Self {
         let mut counts = Self::default();
@@ -1230,5 +1215,20 @@ impl Counts {
             AccessKind::Read => self.read += 1,
             AccessKind::Unknown => self.unknown += 1,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_function_outline_line;
+
+    #[test]
+    fn context_target_outline_filter_accepts_only_function_rows() {
+        assert!(is_function_outline_line("[3-5]        fn mark_args"));
+        assert!(is_function_outline_line("[3-5]        def render"));
+        assert!(is_function_outline_line("[3-5]        fun render"));
+        assert!(!is_function_outline_line("[1-10]       class Handler"));
+        assert!(!is_function_outline_line("[2]          let value"));
+        assert!(!is_function_outline_line("[4-8]        section Usage"));
     }
 }

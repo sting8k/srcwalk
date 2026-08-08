@@ -1035,7 +1035,7 @@ mod tests {
 
     #[test]
     fn c_declarator_function_names_are_not_anonymous() {
-        let code = r#"
+        let code = r"
 static int normal_func(int x) { return x; }
 char *make_name(void) { return 0; }
 static int rust_demangle_callback(data, len)
@@ -1044,7 +1044,7 @@ static int rust_demangle_callback(data, len)
 {
   return 0;
 }
-"#;
+";
 
         let entries = get_outline_entries(code, Lang::C);
         let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
@@ -1061,13 +1061,13 @@ static int rust_demangle_callback(data, len)
     }
     #[test]
     fn c_named_struct_body_is_not_anonymous() {
-        let code = r#"
+        let code = r"
 typedef struct ngx_http_core_loc_conf_s  ngx_http_core_loc_conf_t;
 
 struct ngx_http_core_loc_conf_s {
     int value;
 };
-"#;
+";
 
         let entries = get_outline_entries(code, Lang::C);
         let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();

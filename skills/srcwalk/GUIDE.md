@@ -102,7 +102,7 @@ Drill down with exact call-site reads or `context` on a caller/callee.
 
 ### Inspect file coupling
 
-Use `deps` for imports, links/assets, local symbol deps, and dependents. Run it before file moves, deletes, or coupling explanations.
+Use `deps` for imports, links/assets, local symbol deps, and dependents. Run it before file moves, deletes, or coupling explanations. For JS/TS/TSX, alias-derived edges marked `(via tsconfig paths)` are config-derived static evidence, not runtime proof, and `Uses (unresolved local-looking)` lists local-looking specifiers (`./`, `../`, `@/`, `~/`) that resolve to no existing file — known-missing local references, not external packages.
 
 ```bash
 srcwalk deps <file>
@@ -151,6 +151,6 @@ srcwalk <artifact-file> --artifact
 srcwalk <artifact-file> --artifact --section bytes:<start>-<end>
 ```
 
-Code/source structure varies by command: Rust, TypeScript/TSX, JavaScript, Python, Go, Java/Scala/Kotlin, C/C++, Ruby, PHP, C#, Swift, Elixir, CSS/SCSS/Less. `context`/Flow Map support is narrower: trust confirmed structural targets emitted by srcwalk for exact `show` reads, and use `context` only when you need a rich local packet instead of guessing command support.
+Code/source structure varies by command: Rust, TypeScript/TSX (incl. `.mts`/`.cts`), JavaScript (incl. `.jsx`, `.mjs`, `.cjs`), Python, Go, Java/Scala/Kotlin, C/C++, Ruby, PHP, C#, Swift, Elixir, CSS/SCSS/Less. `context`/Flow Map support is narrower: trust confirmed structural targets emitted by srcwalk for exact `show` reads, and use `context` only when you need a rich local packet instead of guessing command support. Flow Maps hard-abstain with an exact caveat instead of emitting a partial graph on constructs the IR cannot represent; trust the caveat.
 
 Documents: HTML/HTM plus Markdown-style `.md`, `.mdx`, `.rst` fallback. Covers sections, elements, code blocks, links, assets. Treat document output as navigation evidence, not rendered or runtime proof.

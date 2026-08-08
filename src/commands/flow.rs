@@ -83,7 +83,12 @@ pub(crate) fn run_flow(
             }
             Err(err) if is_flow_map_fallback_error(&err) => {
                 symbol_level_fallback = matches!(resolved.selector, TargetSelector::Symbol(_));
-                append_context_flow_map_fallback(&mut out, &display_path, &resolved.selector);
+                append_context_flow_map_fallback(
+                    &mut out,
+                    &display_path,
+                    &resolved.selector,
+                    flow_map_fallback_reason(&err),
+                );
                 (
                     selector_range(&resolved.selector),
                     context_call_target(&resolved.selector),
@@ -354,6 +359,7 @@ fn append_context_flow_map_fallback(
     out: &mut String,
     display_path: &str,
     selector: &TargetSelector,
+    reason: Option<&str>,
 ) {
     use std::fmt::Write as _;
 
@@ -366,7 +372,9 @@ fn append_context_flow_map_fallback(
     out.push_str(
         "\n\n## Flow Map\nfile-level evidence only; structural function map unavailable for this target",
     );
-    if let TargetSelector::Symbol(_) = selector {
+    if let Some(reason) = reason {
+        let _ = write!(out, "\ncaveat: {reason}");
+    } else if let TargetSelector::Symbol(_) = selector {
         out.push_str(
             "\ncaveat: requested symbol selector was not resolved to a structural function range; packet is file-level only",
         );
@@ -396,8 +404,21 @@ fn is_flow_map_fallback_error(err: &SrcwalkError) -> bool {
                 || reason.contains("decision-flow requires a source code file")
                 || reason.contains("symbol target did not provide a definition range")
                 || reason.contains("line/range target must be inside one supported function")
+                || reason.starts_with(decision_flow::ABSTENTION_MARKER)
         }
         _ => false,
+    }
+}
+
+/// Return only the stable Ruby abstention marker as a user-facing caveat. The other fallback errors retain their generic text.
+fn flow_map_fallback_reason(err: &SrcwalkError) -> Option<&str> {
+    match err {
+        SrcwalkError::InvalidQuery { reason, .. }
+            if reason.starts_with(decision_flow::ABSTENTION_MARKER) =>
+        {
+            Some(reason)
+        }
+        _ => None,
     }
 }
 

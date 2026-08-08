@@ -1,16 +1,18 @@
 mod evidence;
+mod flow_lang;
 mod render;
+mod ruby;
 mod types;
 
 use tree_sitter::Node;
 
+pub(crate) use ruby::ABSTENTION_MARKER;
 use types::{Branch, FlowEdge, FlowGraph, FlowNode, FlowNodeKind, IncomingEdge};
 pub(crate) use types::{FlowTarget, TargetSelector};
 
 use crate::error::SrcwalkError;
-use crate::lang::outline::outline_language;
-use crate::lang::treesitter::{extract_definition_name, js_function_context_name};
 use crate::types::Lang;
+use flow_lang::{active_flow_language, supports_flow_lang, FlowLanguage};
 
 const DEFAULT_MAX_NODES: usize = 80;
 const MIN_BUDGET_MAX_NODES: usize = 12;
@@ -27,7 +29,7 @@ pub(crate) struct RenderedFlowMap {
 
 struct FlowBuilder<'a> {
     source: &'a str,
-    lang: Lang,
+    language: FlowLanguage,
     max_nodes: usize,
     focus: Option<(u32, u32)>,
     graph: FlowGraph,
@@ -59,7 +61,16 @@ fn build_target_graph(
     lang: Lang,
     budget_tokens: Option<u64>,
 ) -> Result<FlowGraph, SrcwalkError> {
-    let Some(ts_lang) = outline_language(lang) else {
+    let Some(language) = active_flow_language(lang) else {
+        return Err(SrcwalkError::InvalidQuery {
+            query: target.display_target.clone(),
+            reason: format!(
+                "decision-flow currently supports Rust, JavaScript, TypeScript, TSX, Python, Go, Java, C, C++, and C#, as well as Ruby; {lang:?} is not supported"
+            ),
+        });
+    };
+
+    let Some(ts_lang) = flow_lang::flow_language(lang) else {
         return Err(SrcwalkError::InvalidQuery {
             query: target.display_target.clone(),
             reason: format!(
@@ -67,15 +78,6 @@ fn build_target_graph(
             ),
         });
     };
-
-    if !is_supported_decision_flow_lang(lang) {
-        return Err(SrcwalkError::InvalidQuery {
-            query: target.display_target.clone(),
-            reason: format!(
-                "decision-flow currently supports Rust, JavaScript, TypeScript, TSX, Python, Go, Java, C, C++, and C#; {lang:?} is not supported"
-            ),
-        });
-    }
 
     let mut parser = tree_sitter::Parser::new();
     parser
@@ -91,15 +93,23 @@ fn build_target_graph(
             reason: "tree-sitter parser returned no tree".to_string(),
         })?;
 
-    let function = find_target_function(tree.root_node(), source, lang, &target.selector)
+    let function = find_target_function(tree.root_node(), source, &language, &target.selector)
         .ok_or_else(|| SrcwalkError::InvalidQuery {
             query: target.display_target.clone(),
             reason: unresolved_target_reason(&target.selector),
         })?;
+    if lang == Lang::Ruby {
+        if let Some(reason) = ruby::unsupported_direct_construct_reason(function) {
+            return Err(SrcwalkError::InvalidQuery {
+                query: target.display_target.clone(),
+                reason,
+            });
+        }
+    }
     Ok(build_graph(
         target,
         source,
-        lang,
+        &language,
         function,
         target_focus(&target.selector),
         node_cap_for_budget(budget_tokens),
@@ -127,7 +137,7 @@ fn node_cap_for_budget(budget_tokens: Option<u64>) -> usize {
 }
 
 pub(crate) fn is_supported_flow_target_lang(lang: Lang) -> bool {
-    is_supported_decision_flow_lang(lang)
+    supports_flow_lang(lang)
 }
 
 pub(crate) fn find_flow_target_function<'tree>(
@@ -136,23 +146,8 @@ pub(crate) fn find_flow_target_function<'tree>(
     lang: Lang,
     selector: &TargetSelector,
 ) -> Option<Node<'tree>> {
-    find_target_function(root, source, lang, selector)
-}
-
-fn is_supported_decision_flow_lang(lang: Lang) -> bool {
-    matches!(
-        lang,
-        Lang::Rust
-            | Lang::JavaScript
-            | Lang::TypeScript
-            | Lang::Tsx
-            | Lang::Python
-            | Lang::Go
-            | Lang::Java
-            | Lang::C
-            | Lang::Cpp
-            | Lang::CSharp
-    )
+    let language = active_flow_language(lang)?;
+    find_target_function(root, source, &language, selector)
 }
 
 pub(crate) fn find_unique_flow_target_definition<'tree>(
@@ -161,13 +156,16 @@ pub(crate) fn find_unique_flow_target_definition<'tree>(
     lang: Lang,
     selector: &TargetSelector,
 ) -> Option<Node<'tree>> {
+    let language = active_flow_language(lang)?;
+    let lines = source.lines().collect::<Vec<_>>();
     let mut candidates = Vec::new();
-    collect_unique_function_nodes(root, lang, &mut candidates);
+    collect_unique_function_nodes(root, &language, &mut candidates);
 
     match selector {
         TargetSelector::Symbol(symbol) => {
             candidates.retain(|candidate| {
-                function_display_name(*candidate, source, lang).is_some_and(|name| name == *symbol)
+                flow_lang::function_display_name(&language, *candidate, source, &lines)
+                    .is_some_and(|name| name == *symbol)
             });
         }
         TargetSelector::LineRange { start, end } => {
@@ -198,7 +196,9 @@ pub(crate) fn find_unique_flow_target_definition<'tree>(
 }
 
 pub(crate) fn is_function_like_node(node: Node<'_>, lang: Lang) -> bool {
-    normalized_function_node(node, lang).is_some()
+    active_flow_language(lang)
+        .and_then(|language| normalized_function_node(node, &language))
+        .is_some()
 }
 
 pub(crate) fn function_has_parameter_named(
@@ -212,18 +212,19 @@ pub(crate) fn function_has_parameter_named(
 fn build_graph(
     target: &FlowTarget,
     source: &str,
-    lang: Lang,
+    language: &FlowLanguage,
     function: Node<'_>,
     focus: Option<(u32, u32)>,
     max_nodes: usize,
 ) -> FlowGraph {
     let start = line_start(function);
     let end = line_end(function);
-    let entry_label = function_display_name(function, source, lang)
+    let lines: Vec<&str> = source.lines().collect();
+    let entry_label = flow_lang::function_display_name(language, function, source, &lines)
         .unwrap_or_else(|| compact_node_text(function, source));
     let mut builder = FlowBuilder {
         source,
-        lang,
+        language: *language,
         max_nodes,
         focus,
         graph: FlowGraph {
@@ -245,7 +246,8 @@ fn build_graph(
         function,
         source,
     );
-    let body = function_body(function).map_or_else(Vec::new, statement_children);
+    let body = flow_lang::function_body(language, function)
+        .map_or_else(Vec::new, |b| branch_body_nodes(b, language));
     let tails = builder.append_sequence(
         &body,
         vec![IncomingEdge {
@@ -342,20 +344,25 @@ impl FlowBuilder<'_> {
         statement: Node<'_>,
         incoming: Vec<IncomingEdge>,
     ) -> Vec<IncomingEdge> {
-        if is_transparent_statement(statement.kind()) {
+        let language = &self.language;
+        if self.language.lang == Lang::Ruby && ruby::is_nested_definition_kind(statement.kind()) {
+            // Nested class/module/method definitions are separate scopes: skip
+            // them entirely instead of descending into their bodies.
+            return incoming;
+        }
+        if flow_lang::is_transparent_statement(language, statement.kind()) {
             return self.append_sequence(&statement_children(statement), incoming);
         }
-
-        if is_if_node(statement.kind()) {
+        if flow_lang::is_if_node(language, statement.kind()) {
             return self.append_if(statement, incoming);
         }
-        if is_match_or_switch_node(statement.kind()) {
+        if flow_lang::is_match_or_switch_node(language, statement.kind()) {
             return self.append_branching_decision(statement, incoming);
         }
-        if is_loop_node(statement.kind()) {
+        if flow_lang::is_loop_node(language, statement.kind()) {
             return self.append_loop(statement, incoming);
         }
-        if is_return_node(statement.kind()) {
+        if flow_lang::is_return_node(language, statement.kind()) {
             let label = compact_node_text(statement, self.source);
             let id = self.add_node(
                 FlowNodeKind::Return,
@@ -368,12 +375,15 @@ impl FlowBuilder<'_> {
                 &self.graph.path,
                 statement,
                 self.source,
-                self.lang,
+                self.language.lang,
             );
             self.connect_all(incoming, id);
             return Vec::new();
         }
-        if is_throw_node(statement.kind()) {
+        if flow_lang::is_throw_node(language, statement.kind())
+            || (self.language.lang == Lang::Ruby
+                && ruby::is_receiverless_raise_or_fail(statement, self.source))
+        {
             let label = compact_node_text(statement, self.source);
             let id = self.add_node(
                 FlowNodeKind::Throw,
@@ -386,19 +396,24 @@ impl FlowBuilder<'_> {
                 &self.graph.path,
                 statement,
                 self.source,
-                self.lang,
+                self.language.lang,
             );
             self.connect_all(incoming, id);
             return Vec::new();
         }
-        if let Some(call) = find_first_call(statement, self.lang) {
-            let label = compact_node_text(call, self.source);
+        if let Some(call) = find_first_call(statement, language) {
+            let label = if self.language.lang == Lang::Ruby {
+                ruby::call_label(call, self.source)
+            } else {
+                compact_node_text(call, self.source)
+            };
             let id = self.add_node(FlowNodeKind::Call, &label, line_start(call), line_end(call));
             evidence::add_call_annotations(
                 &mut self.graph.nodes[id],
                 &self.graph.path,
                 call,
                 self.source,
+                self.language.lang,
             );
             evidence::add_assignment_write_annotations(
                 &mut self.graph.nodes[id],
@@ -441,6 +456,9 @@ impl FlowBuilder<'_> {
     }
 
     fn append_if(&mut self, node: Node<'_>, incoming: Vec<IncomingEdge>) -> Vec<IncomingEdge> {
+        if self.language.lang == Lang::Ruby {
+            return ruby::append_ruby_if(self, node, incoming);
+        }
         let label = condition_label(node, self.source)
             .unwrap_or_else(|| compact_node_text(node, self.source));
         let id = self.add_node(
@@ -463,10 +481,10 @@ impl FlowBuilder<'_> {
             None
         };
         let mut tails = Vec::new();
-        let consequence = if_consequence_body(node, self.lang);
+        let consequence = if_consequence_body(node, &self.language);
         tails.extend(self.append_branch(id, "yes", &consequence));
 
-        if let Some(alternative) = if_alternative_body(node, self.lang) {
+        if let Some(alternative) = if_alternative_body(node, &self.language) {
             tails.extend(self.append_branch(id, "no", &alternative));
         } else {
             tails.push(IncomingEdge {
@@ -486,6 +504,9 @@ impl FlowBuilder<'_> {
         node: Node<'_>,
         incoming: Vec<IncomingEdge>,
     ) -> Vec<IncomingEdge> {
+        if self.language.lang == Lang::Ruby {
+            return ruby::append_ruby_case(self, node, incoming);
+        }
         let label = condition_label(node, self.source)
             .unwrap_or_else(|| compact_node_text(node, self.source));
         let id = self.add_node(
@@ -502,7 +523,7 @@ impl FlowBuilder<'_> {
             self.source,
         );
 
-        let branches = match_or_switch_branches(node, self.source);
+        let branches = match_or_switch_branches(node, self.source, &self.language);
         if branches.is_empty() {
             return vec![IncomingEdge {
                 from: id,
@@ -527,8 +548,12 @@ impl FlowBuilder<'_> {
     }
 
     fn append_loop(&mut self, node: Node<'_>, incoming: Vec<IncomingEdge>) -> Vec<IncomingEdge> {
-        let label = condition_label(node, self.source)
-            .unwrap_or_else(|| compact_node_text(node, self.source));
+        let label = if self.language.lang == Lang::Ruby {
+            ruby::loop_label(node, self.source)
+        } else {
+            condition_label(node, self.source)
+        }
+        .unwrap_or_else(|| compact_node_text(node, self.source));
         let id = self.add_node(FlowNodeKind::Loop, &label, line_start(node), line_end(node));
         self.connect_all(incoming, id);
         evidence::add_condition_read_annotations(
@@ -541,7 +566,7 @@ impl FlowBuilder<'_> {
         let body = node
             .child_by_field_name("body")
             .or_else(|| node.child_by_field_name("consequence"))
-            .map_or_else(Vec::new, branch_body_nodes);
+            .map_or_else(Vec::new, |n| branch_body_nodes(n, &self.language));
         let body_tails = self.append_branch(id, "body", &body);
         for tail in body_tails {
             let edges_before = self.graph.edges.len();
@@ -684,21 +709,21 @@ fn nodes_intersect_range(nodes: &[Node<'_>], range: (u32, u32)) -> bool {
 fn find_target_function<'tree>(
     root: Node<'tree>,
     source: &str,
-    lang: Lang,
+    language: &FlowLanguage,
     selector: &TargetSelector,
 ) -> Option<Node<'tree>> {
     let mut matches = Vec::new();
-    collect_function_nodes(root, source, lang, selector, &mut matches);
+    collect_function_nodes(root, source, language, selector, &mut matches);
     matches.sort_by_key(|node| (node.end_byte() - node.start_byte(), line_start(*node)));
     matches.into_iter().next()
 }
 
 fn collect_unique_function_nodes<'tree>(
     node: Node<'tree>,
-    lang: Lang,
+    language: &FlowLanguage,
     candidates: &mut Vec<Node<'tree>>,
 ) {
-    if let Some(candidate) = normalized_function_node(node, lang) {
+    if let Some(candidate) = normalized_function_node(node, language) {
         if !candidates
             .iter()
             .any(|existing| existing.id() == candidate.id())
@@ -709,7 +734,7 @@ fn collect_unique_function_nodes<'tree>(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_unique_function_nodes(child, lang, candidates);
+        collect_unique_function_nodes(child, language, candidates);
     }
 }
 
@@ -721,16 +746,20 @@ fn declaration_name_node(node: Node<'_>) -> Option<Node<'_>> {
 fn collect_function_nodes<'tree>(
     node: Node<'tree>,
     source: &str,
-    lang: Lang,
+    language: &FlowLanguage,
     selector: &TargetSelector,
     matches: &mut Vec<Node<'tree>>,
 ) {
-    let candidate = normalized_function_node(node, lang);
+    let candidate = normalized_function_node(node, language);
     if let Some(candidate) = candidate {
         let is_match = match selector {
-            TargetSelector::Symbol(symbol) => {
-                function_display_name(candidate, source, lang).is_some_and(|name| name == *symbol)
-            }
+            TargetSelector::Symbol(symbol) => flow_lang::function_display_name(
+                language,
+                candidate,
+                source,
+                &source.lines().collect::<Vec<_>>(),
+            )
+            .is_some_and(|name| name == *symbol),
             TargetSelector::LineRange { start, end }
             | TargetSelector::FocusedLineRange { start, end } => {
                 line_start(candidate) <= *start && line_end(candidate) >= *end
@@ -743,57 +772,18 @@ fn collect_function_nodes<'tree>(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_function_nodes(child, source, lang, selector, matches);
+        collect_function_nodes(child, source, language, selector, matches);
     }
 }
 
-fn normalized_function_node(node: Node<'_>, lang: Lang) -> Option<Node<'_>> {
-    if node.kind() == "decorated_definition" && lang == Lang::Python {
+fn normalized_function_node<'tree>(
+    node: Node<'tree>,
+    language: &FlowLanguage,
+) -> Option<Node<'tree>> {
+    if node.kind() == "decorated_definition" && language.lang == Lang::Python {
         return first_named_child_kind(node, "function_definition");
     }
-    is_function_like(node.kind(), lang).then_some(node)
-}
-
-fn is_function_like(kind: &str, lang: Lang) -> bool {
-    match lang {
-        Lang::Rust => kind == "function_item",
-        Lang::Go => matches!(kind, "function_declaration" | "method_declaration"),
-        Lang::Java => matches!(kind, "method_declaration" | "constructor_declaration"),
-        Lang::C | Lang::Cpp | Lang::Python => kind == "function_definition",
-        Lang::CSharp => matches!(kind, "method_declaration" | "constructor_declaration"),
-        Lang::JavaScript | Lang::TypeScript | Lang::Tsx => matches!(
-            kind,
-            "function_declaration"
-                | "function_expression"
-                | "generator_function"
-                | "arrow_function"
-                | "method_definition"
-        ),
-        _ => false,
-    }
-}
-
-fn function_display_name(node: Node<'_>, source: &str, lang: Lang) -> Option<String> {
-    let lines: Vec<&str> = source.lines().collect();
-    if matches!(lang, Lang::JavaScript | Lang::TypeScript | Lang::Tsx) {
-        return js_function_context_name(node, &lines)
-            .or_else(|| extract_definition_name(node, &lines));
-    }
-    extract_definition_name(node, &lines).or_else(|| {
-        node.child_by_field_name("name")
-            .map(|name| compact_node_text(name, source))
-    })
-}
-
-fn function_body(node: Node<'_>) -> Option<Node<'_>> {
-    if let Some(body) = node.child_by_field_name("body") {
-        return Some(body);
-    }
-    let mut cursor = node.walk();
-    let body = node
-        .children(&mut cursor)
-        .find(|child| is_block_like(child.kind()));
-    body
+    flow_lang::is_function_like(language, node.kind()).then_some(node)
 }
 
 fn statement_children(node: Node<'_>) -> Vec<Node<'_>> {
@@ -803,64 +793,62 @@ fn statement_children(node: Node<'_>) -> Vec<Node<'_>> {
         .collect()
 }
 
-fn branch_body_nodes(node: Node<'_>) -> Vec<Node<'_>> {
-    if is_block_like(node.kind()) {
+fn branch_body_nodes<'tree>(node: Node<'tree>, language: &FlowLanguage) -> Vec<Node<'tree>> {
+    if flow_lang::is_block_like(language, node.kind()) {
         statement_children(node)
     } else {
         vec![node]
     }
 }
 
-fn is_block_like(kind: &str) -> bool {
-    matches!(
-        kind,
-        "block"
-            | "statement_block"
-            | "compound_statement"
-            | "declaration_list"
-            | "switch_block"
-            | "switch_body"
-    )
-}
-
-fn if_consequence_body(node: Node<'_>, lang: Lang) -> Vec<Node<'_>> {
-    if lang == Lang::Python {
-        return first_child_block_body(node);
+fn if_consequence_body<'tree>(node: Node<'tree>, language: &FlowLanguage) -> Vec<Node<'tree>> {
+    if language.lang == Lang::Python {
+        return first_child_block_body(node, language);
     }
     node.child_by_field_name("consequence")
         .or_else(|| node.child_by_field_name("body"))
-        .map_or_else(|| first_child_block_body(node), branch_body_nodes)
+        .map_or_else(
+            || first_child_block_body(node, language),
+            |n| branch_body_nodes(n, language),
+        )
 }
 
-fn if_alternative_body(node: Node<'_>, lang: Lang) -> Option<Vec<Node<'_>>> {
-    if lang != Lang::Python {
+fn if_alternative_body<'tree>(
+    node: Node<'tree>,
+    language: &FlowLanguage,
+) -> Option<Vec<Node<'tree>>> {
+    if language.lang != Lang::Python {
         if let Some(alternative) = node.child_by_field_name("alternative") {
-            return Some(branch_body_nodes(alternative));
+            return Some(branch_body_nodes(alternative, language));
         }
     }
     let mut cursor = node.walk();
     let alternative = node
         .named_children(&mut cursor)
         .find(|child| matches!(child.kind(), "else_clause" | "elif_clause"))
-        .map(branch_body_nodes);
+        .map(|n| branch_body_nodes(n, language));
     alternative
 }
 
-fn first_child_block_body(node: Node<'_>) -> Vec<Node<'_>> {
+fn first_child_block_body<'tree>(node: Node<'tree>, language: &FlowLanguage) -> Vec<Node<'tree>> {
     let mut cursor = node.walk();
     let body = node
         .named_children(&mut cursor)
-        .find(|child| is_block_like(child.kind()))
-        .map_or_else(Vec::new, branch_body_nodes);
+        .find(|child| flow_lang::is_block_like(language, child.kind()))
+        .map_or_else(Vec::new, |n| branch_body_nodes(n, language));
     body
 }
 
-fn match_or_switch_branches<'tree>(node: Node<'tree>, source: &str) -> Vec<Branch<'tree>> {
+fn match_or_switch_branches<'tree>(
+    node: Node<'tree>,
+    source: &str,
+    language: &FlowLanguage,
+) -> Vec<Branch<'tree>> {
     let mut branches = Vec::new();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
-            "match_arm" => branches.push(rust_match_branch(child, source)),
+            "match_arm" => branches.push(rust_match_branch(child, source, language)),
             "switch_case" | "switch_default" => branches.push(js_switch_branch(child, source)),
             "expression_case"
             | "default_case"
@@ -870,21 +858,25 @@ fn match_or_switch_branches<'tree>(node: Node<'tree>, source: &str) -> Vec<Branc
             | "case_clause"
             | "default_clause" => branches.push(generic_case_branch(child, source)),
             _ => {
-                branches.extend(match_or_switch_branches(child, source));
+                branches.extend(match_or_switch_branches(child, source, language));
             }
         }
     }
     branches
 }
 
-fn rust_match_branch<'tree>(node: Node<'tree>, source: &str) -> Branch<'tree> {
+fn rust_match_branch<'tree>(
+    node: Node<'tree>,
+    source: &str,
+    language: &FlowLanguage,
+) -> Branch<'tree> {
     let label = node.child_by_field_name("pattern").map_or_else(
         || first_named_child_text(node, source),
         |pattern| compact_node_text(pattern, source),
     );
     let body = node.child_by_field_name("body").map_or_else(
         || last_named_child(node).into_iter().collect(),
-        branch_body_nodes,
+        |body| branch_body_nodes(body, language),
     );
     Branch { label, body }
 }
@@ -969,7 +961,7 @@ fn condition_node(node: Node<'_>) -> Option<Node<'_>> {
 }
 
 fn is_if_node(kind: &str) -> bool {
-    matches!(kind, "if_expression" | "if_statement" | "elif_clause")
+    matches!(kind, "if_expression" | "if_statement" | "elif_clause") || ruby::is_if_node(kind)
 }
 
 fn is_match_or_switch_node(kind: &str) -> bool {
@@ -981,7 +973,7 @@ fn is_match_or_switch_node(kind: &str) -> bool {
             | "switch_expression"
             | "expression_switch_statement"
             | "type_switch_statement"
-    )
+    ) || ruby::is_case_node(kind)
 }
 
 fn is_loop_node(kind: &str) -> bool {
@@ -998,34 +990,11 @@ fn is_loop_node(kind: &str) -> bool {
             | "enhanced_for_statement"
             | "foreach_statement"
             | "for_each_statement"
-    )
+    ) || ruby::is_loop_node(kind)
 }
 
-fn is_return_node(kind: &str) -> bool {
-    matches!(kind, "return_expression" | "return_statement")
-}
-
-fn is_throw_node(kind: &str) -> bool {
-    matches!(kind, "throw_statement" | "raise_statement")
-}
-
-fn is_transparent_statement(kind: &str) -> bool {
-    matches!(
-        kind,
-        "expression_statement" | "parenthesized_expression" | "else_clause"
-    ) || is_block_like(kind)
-}
-
-fn is_call_node(kind: &str, lang: Lang) -> bool {
-    matches!(kind, "call_expression")
-        || (lang == Lang::Python && kind == "call")
-        || matches!(kind, "method_invocation" | "invocation_expression")
-        || (lang == Lang::Rust && matches!(kind, "macro_invocation"))
-        || matches!(kind, "await_expression")
-}
-
-fn find_first_call(node: Node<'_>, lang: Lang) -> Option<Node<'_>> {
-    if is_call_node(node.kind(), lang) {
+fn find_first_call<'tree>(node: Node<'tree>, language: &FlowLanguage) -> Option<Node<'tree>> {
+    if flow_lang::is_call_node(language, node.kind()) {
         return Some(node);
     }
     let mut cursor = node.walk();
@@ -1033,7 +1002,7 @@ fn find_first_call(node: Node<'_>, lang: Lang) -> Option<Node<'_>> {
         if is_control_node(child.kind()) {
             continue;
         }
-        if let Some(call) = find_first_call(child, lang) {
+        if let Some(call) = find_first_call(child, language) {
             return Some(call);
         }
     }

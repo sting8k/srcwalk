@@ -20,6 +20,8 @@ use crate::search::callees::{extract_callee_names, resolve_callees};
 use crate::search::callers::find_callers_batch;
 use crate::types::{Lang, OutlineKind};
 
+pub(crate) mod ruby;
+
 /// Maximum number of exported symbols to search for in the reverse direction.
 const MAX_EXPORTED_SYMBOLS: usize = 25;
 
@@ -43,21 +45,18 @@ pub struct DepsResult {
 pub struct LocalDep {
     pub path: PathBuf,
     pub symbols: Vec<String>,
+    /// Provenance: `Ast` for parser-backed edges, `Text` otherwise.
+    pub(crate) evidence: EvidenceSource,
 }
 
 impl LocalDep {
     fn to_evidence_atom(&self) -> EvidenceAtom {
-        let source = if self.symbols.is_empty() {
-            EvidenceSource::Text
-        } else {
-            EvidenceSource::Ast
-        };
         EvidenceAtom::new(
             EvidenceKind::Dependency,
             Some(EvidenceRole::LocalDependency),
             Anchor::file(&self.path),
             self.symbols.join(", "),
-            source,
+            self.evidence,
         )
     }
 }
@@ -197,9 +196,14 @@ pub fn analyze_deps(
         local_by_file.entry(dep_path).or_default().push(symbol);
     }
 
-    // Merge in import-resolved files (may not have resolved callees if symbols
-    // weren't matched, but the import relationship itself is meaningful)
-    let import_files = resolve_related_files_with_content(path, &content);
+    // Merge in import-resolved files. Ruby needs the all-resolver so >8 static
+    // requires are complete; others keep the historical capped behavior.
+    let (import_files, ruby_ast_paths) = if lang == Lang::Ruby {
+        crate::search::deps::ruby::resolved_import_files(path, &content)
+    } else {
+        let files = resolve_related_files_with_content(path, &content);
+        (files, HashSet::new())
+    };
     for import_path in import_files {
         let import_path = import_path.canonicalize().unwrap_or(import_path);
         local_by_file.entry(import_path).or_default();
@@ -211,9 +215,17 @@ pub fn analyze_deps(
         .map(|(dep_path, mut syms)| {
             syms.sort();
             syms.dedup();
+            // Parser-backed Ruby require edges and resolved callee symbols are
+            // Ast; generic legacy import-only edges stay Text.
+            let evidence = if !syms.is_empty() || ruby_ast_paths.contains(&dep_path) {
+                EvidenceSource::Ast
+            } else {
+                EvidenceSource::Text
+            };
             LocalDep {
                 path: dep_path,
                 symbols: syms,
+                evidence,
             }
         })
         .collect();
@@ -232,6 +244,11 @@ pub fn analyze_deps(
                 external_set.insert(source.clone());
             }
         }
+    } else if lang == Lang::Ruby {
+        // Unresolved static bare `require` => external; ruby.rs filters out
+        // relative, native, and garbage sources, so nothing else to check here.
+        let dir = path.parent().unwrap_or(scope);
+        external_set.extend(crate::search::deps::ruby::external_requires(&content, dir));
     } else {
         for line in content.lines() {
             if !is_import_line(line, lang) {
@@ -269,7 +286,12 @@ pub fn analyze_deps(
     let descriptor_dependent_targets =
         crate::capabilities::descriptor_dependent_targets(lang, &entries).unwrap_or_default();
 
-    let used_by = if searched_count > 0 || !descriptor_dependent_targets.is_empty() {
+    // Reverse search runs for exported symbols, descriptor dependents, and Ruby
+    // files even with zero exported symbols (import dependents matter).
+    let used_by = if searched_count > 0
+        || !descriptor_dependent_targets.is_empty()
+        || lang == Lang::Ruby
+    {
         let mut by_file: HashMap<PathBuf, Vec<(String, String, u32)>> = HashMap::new();
 
         if searched_count > 0 {
@@ -303,6 +325,11 @@ pub fn analyze_deps(
                 &descriptor_dependent_targets,
                 &mut by_file,
             )?;
+        }
+
+        // Merge reverse import dependents through the shared parser resolver.
+        if lang == Lang::Ruby {
+            crate::search::deps::ruby::merge_reverse_import_dependents(path, scope, &mut by_file)?;
         }
 
         // Build Dependent list
@@ -1005,6 +1032,7 @@ mod tests {
         let dep = LocalDep {
             path: PathBuf::from("dep.rs"),
             symbols: Vec::new(),
+            evidence: EvidenceSource::Text,
         };
 
         assert_eq!(dep.to_evidence_atom().source(), EvidenceSource::Text);
@@ -1015,6 +1043,7 @@ mod tests {
         let dep = LocalDep {
             path: PathBuf::from("dep.rs"),
             symbols: vec!["render".to_string()],
+            evidence: EvidenceSource::Ast,
         };
 
         assert_eq!(dep.to_evidence_atom().source(), EvidenceSource::Ast);

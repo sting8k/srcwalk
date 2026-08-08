@@ -13,7 +13,7 @@ use dashmap::DashMap;
 
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
-use crate::lang::treesitter::{extract_definition_name, DEFINITION_KINDS};
+use crate::lang::treesitter::{extract_definition_name, is_definition_kind};
 use crate::types::FileType;
 
 /// Maximum file size to index (500 KB). Matches the limit in symbol search.
@@ -293,8 +293,12 @@ fn collect_provider_outline_symbols(
 ///
 /// Unlike `search::symbol::walk_for_definitions` which searches for a specific name,
 /// this extracts ALL definition names for index building.
-/// Depth-limited to 3 levels (matching search behavior) to avoid descending
-/// into deeply nested anonymous blocks.
+/// Maximum AST depth for symbol extraction. Most languages keep the historical
+/// depth-3 cap; Ruby namespace paths (`module -> class -> method`) reach depth 5
+/// and get an extended cap so nested class methods are indexed.
+const MAX_INDEX_DEPTH: usize = 3;
+const MAX_INDEX_DEPTH_RUBY: usize = 8;
+
 fn walk_definitions(
     node: tree_sitter::Node,
     lines: &[&str],
@@ -302,13 +306,18 @@ fn walk_definitions(
     lang: crate::types::Lang,
     depth: usize,
 ) {
-    if depth > 3 {
+    let max_depth = if lang == crate::types::Lang::Ruby {
+        MAX_INDEX_DEPTH_RUBY
+    } else {
+        MAX_INDEX_DEPTH
+    };
+    if depth > max_depth {
         return;
     }
 
     let kind = node.kind();
 
-    if DEFINITION_KINDS.contains(&kind) {
+    if is_definition_kind(Some(lang), kind) {
         if let Some(name) = extract_definition_name(node, lines) {
             let line = node.start_position().row as u32 + 1;
             symbols.push((Arc::from(name.as_str()), line, true));
@@ -413,6 +422,37 @@ impl MyTrait for Foo {
         let _ = fs::remove_file(&path);
     }
 
+    #[test]
+    fn test_extract_symbols_ruby_nested_namespaces() {
+        let content = r"
+module Billing
+  class Invoice
+    def paid?; end
+
+    def self.find(id); end
+
+    class << self
+      def build = new
+    end
+  end
+end
+";
+        let dir = std::env::temp_dir().join("srcwalk_test_extract_symbols_ruby");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("test.rb");
+        let mut f = fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+
+        let symbols = extract_symbols(&path, content);
+        let names: Vec<&str> = symbols.iter().map(|(n, _, _)| n.as_ref()).collect();
+
+        for expected in ["Billing", "Invoice", "paid?", "find", "build"] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
+        assert!(symbols.iter().all(|(_, _, is_def)| *is_def));
+
+        let _ = fs::remove_file(&path);
+    }
     #[test]
     fn test_index_file() {
         let content = "pub fn hello() {}\npub fn world() {}";

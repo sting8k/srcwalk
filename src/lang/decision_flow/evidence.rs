@@ -2,6 +2,7 @@ use std::path::Path;
 
 use tree_sitter::Node;
 
+use super::flow_lang::active_flow_language;
 use super::types::{FlowAnnotation, FlowNode};
 use super::{clean_label, compact_node_text, condition_node, find_first_call, line_start};
 use crate::evidence::EvidenceRole;
@@ -55,8 +56,13 @@ pub(super) fn add_call_annotations(
     path: &Path,
     call: Node<'_>,
     source: &str,
+    lang: crate::types::Lang,
 ) {
-    let text = call_annotation_text(call, source);
+    let text = if lang == crate::types::Lang::Ruby {
+        super::ruby::call_label(call, source)
+    } else {
+        call_annotation_text(call, source)
+    };
     if !text.is_empty() {
         add_annotation(
             flow_node,
@@ -127,8 +133,12 @@ pub(super) fn add_return_or_throw_annotations(
     source: &str,
     lang: Lang,
 ) {
-    if let Some(call) = find_first_call(statement, lang) {
-        add_call_annotations(flow_node, path, call, source);
+    let Some(language) = active_flow_language(lang) else {
+        add_read_annotations(flow_node, path, statement, source, EvidenceRole::Return);
+        return;
+    };
+    if let Some(call) = find_first_call(statement, &language) {
+        add_call_annotations(flow_node, path, call, source, lang);
     } else {
         add_read_annotations(flow_node, path, statement, source, EvidenceRole::Return);
     }
@@ -340,6 +350,7 @@ fn is_assignment_node(kind: &str) -> bool {
             | "init_declarator"
             | "variable_declaration"
             | "local_variable_declaration"
+            | "operator_assignment"
     )
 }
 

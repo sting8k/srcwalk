@@ -191,6 +191,19 @@ pub fn read_file(
     Ok(format!("{body}\n\n{next}"))
 }
 
+/// Strip `keyword` from the start of `text` when it is followed by whitespace.
+///
+/// Returns the rest including the leading whitespace so callers can trim as
+/// needed. Returns `None` when the keyword is absent, is a prefix of a longer
+/// identifier (`important`), or has nothing after it.
+pub(crate) fn keyword_rest<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    let rest = text.strip_prefix(keyword)?;
+    if !rest.chars().next()?.is_whitespace() {
+        return None;
+    }
+    Some(rest)
+}
+
 /// Would this file produce an outline (rather than full content) in default read mode?
 /// Used by the MCP layer to decide whether to append related-file hints.
 pub fn would_outline(path: &Path) -> bool {
@@ -201,3 +214,31 @@ pub fn would_outline(path: &Path) -> bool {
 mod completion_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod keyword_rest_tests {
+    use super::keyword_rest;
+
+    #[test]
+    fn keyword_rest_accepts_any_whitespace() {
+        assert_eq!(
+            keyword_rest("import java.util.List", "import"),
+            Some(" java.util.List")
+        );
+        assert_eq!(
+            keyword_rest("import\tjava.util.List", "import"),
+            Some("\tjava.util.List")
+        );
+        assert_eq!(
+            keyword_rest("static  java.util.List", "static"),
+            Some("  java.util.List")
+        );
+    }
+
+    #[test]
+    fn keyword_rest_rejects_non_keyword_forms() {
+        assert_eq!(keyword_rest("import", "import"), None);
+        assert_eq!(keyword_rest("important java.util.List", "import"), None);
+        assert_eq!(keyword_rest("_import java.util.List", "import"), None);
+    }
+}

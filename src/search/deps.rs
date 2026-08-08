@@ -734,6 +734,21 @@ fn is_stdlib(source: &str, lang: crate::types::Lang) -> bool {
             )
         }
         Lang::Go => source.starts_with("fmt") || !source.contains('.'),
+        // JVM reserved stdlib roots with a dot boundary so `javaparser.`,
+        // `kotlinx.`, or `scalaz.` never match. Application imports stay visible.
+        Lang::Java => source
+            .strip_prefix("java")
+            .is_some_and(|rest| rest.starts_with('.')),
+        Lang::Kotlin => ["java", "kotlin"].iter().any(|root| {
+            source
+                .strip_prefix(root)
+                .is_some_and(|rest| rest.starts_with('.'))
+        }),
+        Lang::Scala => ["java", "scala"].iter().any(|root| {
+            source
+                .strip_prefix(root)
+                .is_some_and(|rest| rest.starts_with('.'))
+        }),
         _ => false,
     }
 }
@@ -970,6 +985,20 @@ fn assemble(parts: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jvm_stdlib_roots_need_dot_boundary() {
+        use crate::types::Lang;
+        assert!(is_stdlib("java.util.List", Lang::Java));
+        assert!(!is_stdlib("javaparser.ParserConfig", Lang::Java));
+        assert!(!is_stdlib("com.acme.Thing", Lang::Java));
+        assert!(is_stdlib("kotlin.collections.List", Lang::Kotlin));
+        assert!(is_stdlib("java.io.File", Lang::Kotlin));
+        assert!(!is_stdlib("kotlinx.coroutines.flow.Flow", Lang::Kotlin));
+        assert!(is_stdlib("scala.collection.mutable.Map", Lang::Scala));
+        assert!(!is_stdlib("scalaz.Monad", Lang::Scala));
+        assert!(!is_stdlib("kotlin.collections.List", Lang::Scala));
+    }
 
     #[test]
     fn import_only_local_dep_uses_text_source() {

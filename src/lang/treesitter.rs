@@ -1,4 +1,5 @@
 //! Shared tree-sitter utilities used by symbol search and caller search.
+use crate::types::Lang;
 
 /// Definition node kinds across tree-sitter grammars.
 pub(crate) const DEFINITION_KINDS: &[&str] = &[
@@ -47,6 +48,43 @@ pub(crate) const DEFINITION_KINDS: &[&str] = &[
     "export_statement",
     "label",
 ];
+
+/// Ruby definition node kinds. Kept out of [`DEFINITION_KINDS`] because
+/// `class`/`module`/`method` are too generic across grammars and would
+/// create false definitions elsewhere.
+const RUBY_DEFINITION_KINDS: &[&str] = &["class", "module", "method", "singleton_method"];
+
+/// Language-aware definition-kind check.
+///
+/// Ruby kinds are only definitions when `lang` is Ruby; all generic kinds
+/// remain definitions for any language.
+pub(crate) fn is_definition_kind(lang: Option<Lang>, kind: &str) -> bool {
+    DEFINITION_KINDS.contains(&kind)
+        || (lang == Some(Lang::Ruby) && RUBY_DEFINITION_KINDS.contains(&kind))
+}
+
+/// Type/namespace-like node kinds that can own (enclose) function definitions.
+///
+/// Extends the caller-search type-owner set with Ruby `class`/`module` when
+/// `lang` is Ruby; generic type kinds apply to every language.
+pub(crate) fn is_type_definition_kind(lang: Lang, kind: &str) -> bool {
+    matches!(
+        kind,
+        "class_declaration"
+            | "class_definition"
+            | "struct_item"
+            | "impl_item"
+            | "interface_declaration"
+            | "trait_item"
+            | "trait_declaration"
+            | "type_declaration"
+            | "enum_item"
+            | "enum_declaration"
+            | "module"
+            | "mod_item"
+            | "namespace_definition"
+    ) || (lang == Lang::Ruby && kind == "class")
+}
 
 /// Extract the name defined by a tree-sitter definition node.
 ///
@@ -559,12 +597,93 @@ pub(crate) fn definition_weight(kind: &str) -> u16 {
         | "enum_specifier"
         | "type_item"
         | "type_declaration"
-        | "decorated_definition" => 100,
+        | "decorated_definition"
+        | "class"
+        | "method"
+        | "singleton_method" => 100,
         "impl_item" | "object_declaration" | "label" => 90,
         "const_item" | "const_declaration" | "static_item" => 80,
-        "mod_item" | "namespace_definition" | "property_declaration" => 70,
+        "mod_item" | "namespace_definition" | "property_declaration" | "module" => 70,
         "lexical_declaration" | "variable_declaration" => 40,
         "export_statement" => 30,
         _ => 50,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tree_sitter::Parser;
+
+    fn ruby_tree(code: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_ruby::LANGUAGE.into())
+            .expect("ruby grammar");
+        parser.parse(code, None).expect("parse ruby")
+    }
+
+    fn walk(node: tree_sitter::Node<'_>, lines: &[&str], out: &mut Vec<(&'static str, String)>) {
+        if node.is_named() {
+            let name = extract_definition_name(node, lines);
+            out.push((node.kind(), name.unwrap_or_default()));
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, lines, out);
+        }
+    }
+
+    #[test]
+    fn ruby_definition_kinds_are_scoped_to_ruby() {
+        for kind in ["class", "module", "method", "singleton_method"] {
+            assert!(
+                !is_definition_kind(None, kind),
+                "{kind} must not be generic"
+            );
+            assert!(
+                !is_definition_kind(Some(Lang::Rust), kind),
+                "{kind} must not leak"
+            );
+            assert!(
+                is_definition_kind(Some(Lang::Ruby), kind),
+                "{kind} under Ruby"
+            );
+        }
+        // Generic kinds stay generic for Ruby too.
+        assert!(is_definition_kind(Some(Lang::Ruby), "method_definition"));
+        assert!(is_definition_kind(Some(Lang::Ruby), "class_declaration"));
+    }
+
+    #[test]
+    fn ruby_type_owner_kind_recognizes_class() {
+        assert!(is_type_definition_kind(Lang::Ruby, "class"));
+        assert!(is_type_definition_kind(Lang::Ruby, "module"));
+        assert!(!is_type_definition_kind(Lang::Ruby, "singleton_method"));
+        assert!(!is_type_definition_kind(Lang::Rust, "class"));
+        // `module` is a generic type owner (preserved from TYPE_KINDS).
+        assert!(is_type_definition_kind(Lang::Rust, "module"));
+    }
+
+    #[test]
+    fn ruby_method_names_extract_from_all_subtypes() {
+        let source = "class Invoice\n  def paid?; end\n  def save!; end\n  def []=(k, v); end\n  def +(other) = other\n  def self.find(id); end\n  def ready? = true\nend";
+        let tree = ruby_tree(source);
+        let lines: Vec<&str> = source.lines().collect();
+        let mut out = Vec::new();
+        walk(tree.root_node(), &lines, &mut out);
+        let names: Vec<&str> = out
+            .iter()
+            .filter(|(k, n)| matches!(*k, "method" | "singleton_method" | "class") && !n.is_empty())
+            .map(|(_, n)| n.as_str())
+            .collect();
+        for expected in ["Invoice", "paid?", "save!", "[]=", "+", "find", "ready?"] {
+            assert!(names.contains(&expected), "missing {expected} in {names:?}");
+        }
+        // Inheritance must not leak into the class name.
+        assert_eq!(
+            out.iter().find(|(k, _)| *k == "class").unwrap().1,
+            "Invoice"
+        );
     }
 }

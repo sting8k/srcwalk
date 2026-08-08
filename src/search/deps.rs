@@ -25,6 +25,8 @@ use crate::search::callees::{extract_callee_names, resolve_callees};
 use crate::search::callers::find_callers_batch;
 use crate::types::{Lang, OutlineKind};
 
+pub(crate) mod ruby;
+
 /// Maximum number of exported symbols to search for in the reverse direction.
 const MAX_EXPORTED_SYMBOLS: usize = 25;
 
@@ -54,6 +56,8 @@ pub struct LocalDep {
     pub path: PathBuf,
     pub symbols: Vec<String>,
     pub(crate) via_tsconfig_paths: bool,
+    /// Provenance: `Ast` for parser-backed edges, `Text` otherwise.
+    pub(crate) evidence: EvidenceSource,
 }
 
 /// A static JS/TS/TSX import that expresses local intent but has no verified
@@ -65,17 +69,12 @@ pub struct UnresolvedLocalDep {
 
 impl LocalDep {
     fn to_evidence_atom(&self) -> EvidenceAtom {
-        let source = if self.symbols.is_empty() {
-            EvidenceSource::Text
-        } else {
-            EvidenceSource::Ast
-        };
         EvidenceAtom::new(
             EvidenceKind::Dependency,
             Some(EvidenceRole::LocalDependency),
             Anchor::file(&self.path),
             self.symbols.join(", "),
-            source,
+            self.evidence,
         )
     }
 }
@@ -260,12 +259,16 @@ pub fn analyze_deps(
         local_by_file.entry(dep_path).or_default().push(symbol);
     }
 
-    // Merge import-resolved files; relative candidates fill the historical
-    // slots before aliases, even when an alias appears earlier in source order.
-    let import_files = if is_js_like {
-        ordered_local_paths(&js_import_decisions, Some(8))
+    // Merge import-resolved files. JS/TS keeps alias-decision ordering with the
+    // historical cap; Ruby needs the all-resolver so >8 static requires are
+    // complete; other languages keep the historical capped behavior.
+    let (import_files, ruby_ast_paths) = if is_js_like {
+        (ordered_local_paths(&js_import_decisions, Some(8)), HashSet::new())
+    } else if lang == Lang::Ruby {
+        crate::search::deps::ruby::resolved_import_files(path, &content)
     } else {
-        resolve_related_files_with_content(path, &content)
+        let files = resolve_related_files_with_content(path, &content);
+        (files, HashSet::new())
     };
     for import_path in import_files {
         let import_path = import_path.canonicalize().unwrap_or(import_path);
@@ -284,10 +287,18 @@ pub fn analyze_deps(
             let via_tsconfig_paths = is_js_like
                 && alias_import_paths.contains(&dep_path)
                 && !non_alias_paths.contains(&dep_path);
+            // Parser-backed Ruby require edges and resolved callee symbols are
+            // Ast; generic legacy import-only edges stay Text.
+            let evidence = if !syms.is_empty() || ruby_ast_paths.contains(&dep_path) {
+                EvidenceSource::Ast
+            } else {
+                EvidenceSource::Text
+            };
             LocalDep {
                 path: dep_path,
                 symbols: syms,
                 via_tsconfig_paths,
+                evidence,
             }
         })
         .collect();
@@ -312,7 +323,7 @@ pub fn analyze_deps(
         for decision in &js_import_decisions {
             match &decision.resolution {
                 JsImportResolution::External
-                    if !is_stdlib(&decision.source, lang)
+                    if !is_stdlib(path, &decision.source, lang)
                         && is_valid_module_path(&decision.source) =>
                 {
                     external_set.insert(decision.source.clone());
@@ -327,6 +338,11 @@ pub fn analyze_deps(
                 JsImportResolution::Local { .. } | JsImportResolution::External => {}
             }
         }
+    } else if lang == Lang::Ruby {
+        // Unresolved static bare `require` => external; ruby.rs filters out
+        // relative, native, and garbage sources, so nothing else to check here.
+        let dir = path.parent().unwrap_or(scope);
+        external_set.extend(crate::search::deps::ruby::external_requires(&content, dir));
     } else {
         let sources: Vec<String> = if lang == Lang::Go {
             crate::read::go_imports::import_sources(&content)
@@ -378,7 +394,12 @@ pub fn analyze_deps(
     let descriptor_dependent_targets =
         crate::capabilities::descriptor_dependent_targets(lang, &entries).unwrap_or_default();
 
-    let used_by = if searched_count > 0 || !descriptor_dependent_targets.is_empty() {
+    // Reverse search runs for exported symbols, descriptor dependents, and Ruby
+    // files even with zero exported symbols (import dependents matter).
+    let used_by = if searched_count > 0
+        || !descriptor_dependent_targets.is_empty()
+        || lang == Lang::Ruby
+    {
         let mut by_file: HashMap<PathBuf, Vec<(String, String, u32)>> = HashMap::new();
 
         if searched_count > 0 {
@@ -412,6 +433,11 @@ pub fn analyze_deps(
                 &descriptor_dependent_targets,
                 &mut by_file,
             )?;
+        }
+
+        // Merge reverse import dependents through the shared parser resolver.
+        if lang == Lang::Ruby {
+            crate::search::deps::ruby::merge_reverse_import_dependents(path, scope, &mut by_file)?;
         }
 
         // Build Dependent list
@@ -1185,6 +1211,7 @@ mod tests {
             path: PathBuf::from("dep.rs"),
             symbols: Vec::new(),
             via_tsconfig_paths: false,
+            evidence: EvidenceSource::Text,
         };
 
         assert_eq!(dep.to_evidence_atom().source(), EvidenceSource::Text);
@@ -1196,6 +1223,7 @@ mod tests {
             path: PathBuf::from("dep.rs"),
             symbols: vec!["render".to_string()],
             via_tsconfig_paths: false,
+            evidence: EvidenceSource::Ast,
         };
 
         assert_eq!(dep.to_evidence_atom().source(), EvidenceSource::Ast);

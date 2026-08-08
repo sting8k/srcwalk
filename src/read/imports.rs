@@ -12,6 +12,20 @@ pub(crate) use crate::read::js_alias::{
 
 const MAX_SUGGESTIONS: usize = 8;
 
+/// True if `source` is absolute on any host: a leading `/` (Unix) or a Windows
+/// drive prefix (`C:/` or `C:\`). `Path::is_absolute()` alone is host-specific
+/// — `C:/x` is not absolute on macOS — but Ruby treats a drive path as
+/// absolute, so rejecting it everywhere keeps resolution and external
+/// classification identical on all platforms.
+pub(crate) fn is_absolute_source(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    source.starts_with('/')
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\'))
+}
+
 /// Extract import sources from already-read code content and resolve them to local file paths.
 pub fn resolve_related_files_with_content(file_path: &Path, content: &str) -> Vec<PathBuf> {
     resolve_related_files_with_limit(file_path, content, Some(MAX_SUGGESTIONS))
@@ -80,6 +94,13 @@ fn resolve_related_files_with_limit(
             }
         }
         return results;
+    }
+
+    // Ruby uses parser-backed require/require_relative resolution instead of
+    // the generic text line scan, so dynamic and receiver-scoped forms are
+    // never promoted to local file relations.
+    if lang == Lang::Ruby {
+        return resolve_ruby_related(dir, content, limit);
     }
 
     for line in content.lines() {
@@ -412,8 +433,157 @@ fn resolve_c_include(dir: &Path, source: &str) -> Option<PathBuf> {
     }
 }
 
+// --- Ruby ---
+
+/// Resolve static `require` / `require_relative` references to existing local
+/// files. Deduplicates resolved paths; `require_relative` resolves from the
+/// current file's parent, bare `require` resolves only under bounded inferred
+/// load roots. Returns at most `limit` results when `limit` is set.
+fn resolve_ruby_related(dir: &Path, content: &str, limit: Option<usize>) -> Vec<PathBuf> {
+    let refs = crate::lang::ruby::require_refs(content);
+    let mut results = Vec::new();
+    for reference in refs {
+        if limit.is_some_and(|cap| results.len() >= cap) {
+            break;
+        }
+        let resolved = match reference.kind {
+            crate::lang::ruby::RubyRequireKind::RequireRelative => {
+                resolve_ruby_require_relative(dir, &reference.source)
+            }
+            crate::lang::ruby::RubyRequireKind::Require => {
+                resolve_ruby_require(dir, &reference.source)
+            }
+        };
+        if let Some(path) = resolved {
+            if !results.contains(&path) {
+                results.push(path);
+            }
+        }
+    }
+    results
+}
+
+/// Resolve a static `require_relative` source from the current file's parent.
+/// A source ending in `.rb` resolves to that exact file; a bare source gets
+/// exactly one `<source>.rb` candidate. Unsupported extensions and non-files are
+/// skipped. Existing paths are canonicalized for comparison boundaries.
+pub(crate) fn resolve_ruby_require_relative(dir: &Path, source: &str) -> Option<PathBuf> {
+    if source.is_empty() || is_absolute_source(source) {
+        // Absolute targets are never file-relative; `require_relative` must
+        // stay inside the current file's parent tree.
+        return None;
+    }
+    let path = Path::new(source);
+    let candidate = match path.extension().and_then(|ext| ext.to_str()) {
+        Some("rb") => dir.join(path),
+        Some(_) => return None, // unsupported extension (e.g. .so, .erb)
+        None => dir.join(format!("{source}.rb")),
+    };
+    canonicalize_existing(&candidate)
+}
+
+/// Resolve a static bare `require` source under bounded inferred load roots.
+/// Never scans the whole repo and never claims runtime `$LOAD_PATH`. Roots are
+/// the nearest ancestor directory named `lib` and the nearest package root
+/// (containing `Gemfile` or any `*.gemspec`) joined with `lib`. An explicit
+/// `./`/`../` source resolves against that package root (inferred CWD
+/// convention). If zero or more than one distinct existing candidate exists,
+/// the reference is left unresolved (no guessing).
+pub(crate) fn resolve_ruby_require(dir: &Path, source: &str) -> Option<PathBuf> {
+    if source.is_empty() {
+        return None;
+    }
+    // Absolute targets are never local load-roots (Unix or Windows drive form).
+    if is_absolute_source(source) {
+        return None;
+    }
+
+    let explicit_relative = source.starts_with("./") || source.starts_with("../");
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if explicit_relative {
+        // Explicit ./../ source resolves against the package root (inferred CWD).
+        if let Some(pkg) = nearest_ruby_package_root(dir) {
+            roots.push(pkg.to_path_buf());
+        }
+    } else {
+        if let Some(lib) = nearest_ancestor_named_lib(dir) {
+            roots.push(lib.to_path_buf());
+        }
+        if let Some(pkg) = nearest_ruby_package_root(dir) {
+            roots.push(pkg.join("lib"));
+        }
+    }
+    roots.sort();
+    roots.dedup();
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        let path = Path::new(source);
+        let candidate = match path.extension().and_then(|ext| ext.to_str()) {
+            Some("rb") => root.join(path),
+            Some(_) => continue, // unsupported native/dynamic target
+            None => root.join(format!("{source}.rb")),
+        };
+        if let Some(existing) = canonicalize_existing(&candidate) {
+            if !candidates.contains(&existing) {
+                candidates.push(existing);
+            }
+        }
+    }
+    // Only a unique existing candidate resolves; ambiguity stays unresolved.
+    if candidates.len() == 1 {
+        Some(candidates.pop().expect("one candidate"))
+    } else {
+        None
+    }
+}
+
+fn canonicalize_existing(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        path.canonicalize().ok()
+    } else {
+        None
+    }
+}
+
+/// Nearest ancestor directory whose file name is `lib` (the file's own parent
+/// may qualify), used as a bounded Ruby load root.
+fn nearest_ancestor_named_lib(start: &Path) -> Option<&Path> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if dir.file_name().and_then(|name| name.to_str()) == Some("lib") {
+            return Some(dir);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+/// Nearest ancestor package root containing a `Gemfile` or any `*.gemspec`.
+/// Preserves the nearest package boundary in monorepos (stops at the first
+/// match walking up).
+fn nearest_ruby_package_root(start: &Path) -> Option<&Path> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if dir.join("Gemfile").is_file() || has_gemspec(dir) {
+            return Some(dir);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn has_gemspec(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut entries| {
+        entries.any(|entry| {
+            entry.is_ok_and(|e| e.path().extension().is_some_and(|ext| ext == "gemspec"))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
     use std::fs;
     use std::path::PathBuf;
 
@@ -476,6 +646,205 @@ mod tests {
         );
 
         assert_eq!(related, vec![dir.join("foo.ts"), dir.join("bar.ts")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- Ruby resolver ---
+
+    fn ruby_temp_dir(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::create_dir_all(dir.join("app/models")).unwrap();
+        dir
+    }
+
+    /// Canonicalize the expected path so comparisons match the resolver's
+    /// canonicalized output on all platforms (macOS resolves /var -> /private/var).
+    fn canon(dir: &Path, rel: &str) -> PathBuf {
+        dir.join(rel).canonicalize().unwrap()
+    }
+
+    #[test]
+    fn ruby_require_relative_same_and_parent_dir() {
+        let dir = ruby_temp_dir("ruby_relative");
+        fs::write(dir.join("lib/a.rb"), "puts 1\n").unwrap();
+        fs::write(dir.join("lib/b.rb"), "puts 2\n").unwrap();
+        fs::write(dir.join("app/models/post.rb"), "puts 3\n").unwrap();
+
+        // Same dir: require_relative './a' -> lib/a.rb
+        let file = dir.join("lib/main.rb");
+        let related = resolve_related_files_with_content(
+            &file,
+            "require_relative './a'\nrequire_relative 'b'\n",
+        );
+        assert_eq!(
+            related,
+            vec![canon(&dir, "lib/a.rb"), canon(&dir, "lib/b.rb")]
+        );
+
+        // Parent dir: require_relative '../lib/...' from app/models
+        let file = dir.join("app/models/post.rb");
+        let related = resolve_related_files_with_content(&file, "require_relative '../../lib/a'\n");
+        assert_eq!(related, vec![canon(&dir, "lib/a.rb")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_require_relative_explicit_rb_and_unsupported_extension() {
+        let dir = ruby_temp_dir("ruby_relative_ext");
+        fs::write(dir.join("lib/exact.rb"), "puts 1\n").unwrap();
+
+        let file = dir.join("lib/main.rb");
+        let related = resolve_related_files_with_content(&file, "require_relative './exact.rb'\n");
+        assert_eq!(related, vec![canon(&dir, "lib/exact.rb")]);
+
+        // Unsupported extension: never resolves.
+        let related = resolve_related_files_with_content(&file, "require_relative './native.so'\n");
+        assert!(related.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_absolute_sources_never_resolve_and_helper_is_platform_stable() {
+        // Cross-platform helper: Unix absolute and Windows drive absolute are
+        // both rejected identically on every host (macOS, Linux, Windows).
+        assert!(is_absolute_source("/tmp/x"));
+        assert!(is_absolute_source("C:/x"));
+        assert!(is_absolute_source(r"C:\x"));
+        assert!(is_absolute_source("d:/repo/lib.rb"));
+        assert!(!is_absolute_source("json"));
+        assert!(!is_absolute_source("./rel"));
+        assert!(!is_absolute_source("../rel"));
+
+        let dir = ruby_temp_dir("ruby_absolute");
+        fs::write(dir.join("local.rb"), "puts 1\n").unwrap();
+        let file = dir.join("main.rb");
+
+        // require_relative must stay file-relative: absolute never escapes the
+        // parent tree, even when a same-named file exists next to the source.
+        let related = resolve_related_files_with_content(&file, "require_relative '/tmp/x'\n");
+        assert!(related.is_empty());
+        let related = resolve_related_files_with_content(&file, "require_relative 'C:/x'\n");
+        assert!(related.is_empty());
+
+        // Bare require with an absolute target is never a load-root candidate.
+        let related = resolve_related_files_with_content(&file, "require '/tmp/x'\n");
+        assert!(related.is_empty());
+        let related = resolve_related_files_with_content(&file, "require 'C:/x'\n");
+        assert!(related.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_require_resolves_nearest_lib() {
+        let dir = ruby_temp_dir("ruby_nearest_lib");
+        fs::write(dir.join("lib/order.rb"), "class Order; end\n").unwrap();
+
+        // File inside lib/: bare require 'order' resolves via nearest lib root.
+        let file = dir.join("lib/main.rb");
+        let related = resolve_related_files_with_content(&file, "require 'order'\n");
+        assert_eq!(related, vec![canon(&dir, "lib/order.rb")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_require_resolves_package_root_lib_via_gemfile_and_gemspec() {
+        let dir = ruby_temp_dir("ruby_package_root");
+        fs::write(dir.join("Gemfile"), "source :rubygems\n").unwrap();
+        fs::write(dir.join("lib/shop.rb"), "module Shop; end\n").unwrap();
+
+        // File outside lib (app/models): bare require resolves via <pkg>/lib.
+        let file = dir.join("app/models/order.rb");
+        let related = resolve_related_files_with_content(&file, "require 'shop'\n");
+        assert_eq!(related, vec![canon(&dir, "lib/shop.rb")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_require_gemspec_root_works_without_gemfile() {
+        let dir = ruby_temp_dir("ruby_gemspec");
+        fs::write(dir.join("shop.gemspec"), "Gem::Specification.new\n").unwrap();
+        fs::write(dir.join("lib/shop.rb"), "module Shop; end\n").unwrap();
+
+        let file = dir.join("app/main.rb");
+        let related = resolve_related_files_with_content(&file, "require 'shop'\n");
+        assert_eq!(related, vec![canon(&dir, "lib/shop.rb")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_require_explicit_relative_resolves_against_package_root() {
+        let dir = ruby_temp_dir("ruby_explicit_relative");
+        fs::write(dir.join("Gemfile"), "source :rubygems\n").unwrap();
+        fs::write(dir.join("lib/config.rb"), "module Config; end\n").unwrap();
+
+        // require './config' treated as inferred CWD = package root => <root>/config.rb?
+        // Per the bounded convention only <root>/lib is a root, so ./config must
+        // resolve against the package root itself. Create it to prove resolution.
+        fs::write(dir.join("config.rb"), "module RootConfig; end\n").unwrap();
+        let file = dir.join("app/main.rb");
+        let related = resolve_related_files_with_content(&file, "require './config'\n");
+        assert_eq!(related, vec![canon(&dir, "config.rb")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_require_ambiguity_stays_unresolved() {
+        let dir = ruby_temp_dir("ruby_ambiguity");
+        fs::write(dir.join("Gemfile"), "source :rubygems\n").unwrap();
+        fs::write(dir.join("lib/shared.rb"), "module Shared; end\n").unwrap();
+        fs::write(dir.join("shared.rb"), "module RootShared; end\n").unwrap();
+
+        // Bare require 'shared' could hit <lib>/shared.rb (nearest lib) only for
+        // a file under lib; from app/ only <pkg>/lib is a root, so unique.
+        let file = dir.join("app/main.rb");
+        let related = resolve_related_files_with_content(&file, "require 'shared'\n");
+        assert_eq!(related, vec![canon(&dir, "lib/shared.rb")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_require_dynamic_and_receiver_forms_abstain() {
+        let dir = ruby_temp_dir("ruby_dynamic");
+        fs::write(dir.join("lib/foo.rb"), "puts 1\n").unwrap();
+        fs::write(dir.join("lib/bar.rb"), "puts 2\n").unwrap();
+
+        let file = dir.join("lib/main.rb");
+        let related = resolve_related_files_with_content(
+            &file,
+            "require_relative './foo'\nrequire variable\nrequire File.expand_path('bar')\nobj.require 'foo'\nrequire_relative './missing'\n",
+        );
+        // Only the provably exact static require_relative resolves; the
+        // unresolved require_relative is left alone.
+        assert_eq!(related, vec![canon(&dir, "lib/foo.rb")]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_resolve_all_returns_more_than_capped_for_deps() {
+        let dir = ruby_temp_dir("ruby_many");
+        let mut content = String::new();
+        for i in 0..12 {
+            fs::write(dir.join(format!("lib/mod{i}.rb")), "puts 1\n").unwrap();
+            let _ = writeln!(content, "require_relative './mod{i}'");
+        }
+        let file = dir.join("lib/main.rb");
+        // Capped resolver keeps the historical suggestion cap for read/callees.
+        let capped = resolve_related_files_with_content(&file, &content);
+        assert!(capped.len() <= crate::read::imports::MAX_SUGGESTIONS);
+        // The all-resolver returns everything so deps >8 requires are complete.
+        let all = resolve_all_related_files_with_content(&file, &content);
+        assert_eq!(all.len(), 12);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ruby_paths_with_spaces_resolve() {
+        let dir = ruby_temp_dir("ruby spaces");
+        fs::write(dir.join("lib/my lib.rb"), "puts 1\n").unwrap();
+        let file = dir.join("lib/main.rb");
+        let related = resolve_related_files_with_content(&file, "require_relative './my lib'\n");
+        assert_eq!(related, vec![canon(&dir, "lib/my lib.rb")]);
         let _ = fs::remove_dir_all(&dir);
     }
 }

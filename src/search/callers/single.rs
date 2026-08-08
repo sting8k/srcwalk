@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use streaming_iterator::StreamingIterator;
 
 use crate::lang::treesitter::{
-    extract_definition_name, is_js_function_expression_kind, js_function_context_name,
-    DEFINITION_KINDS,
+    extract_definition_name, is_definition_kind, is_js_function_expression_kind,
+    is_type_definition_kind, js_function_context_name,
 };
 
 use crate::cache::OutlineCache;
@@ -851,23 +851,6 @@ fn extract_arg_count(call_node: tree_sitter::Node) -> Option<u8> {
 
 /// Walk up the AST from a node to find the enclosing function definition.
 /// Returns (`function_name`, `line_range`).
-/// Type-like node kinds that can enclose a function definition.
-const TYPE_KINDS: &[&str] = &[
-    "class_declaration",
-    "class_definition",
-    "struct_item",
-    "impl_item",
-    "interface_declaration",
-    "trait_item",
-    "trait_declaration",
-    "type_declaration",
-    "enum_item",
-    "enum_declaration",
-    "module",
-    "mod_item",
-    "namespace_definition",
-];
-
 fn find_enclosing_function(
     node: tree_sitter::Node,
     lines: &[&str],
@@ -895,7 +878,7 @@ fn find_enclosing_function(
         };
         let def_name = if let Some(name) = js_function_name() {
             Some(name)
-        } else if DEFINITION_KINDS.contains(&kind)
+        } else if is_definition_kind(Some(lang), kind)
             && !matches!(kind, "lexical_declaration" | "variable_declaration")
         {
             extract_definition_name(n, lines)
@@ -916,7 +899,7 @@ fn find_enclosing_function(
             // Walk further up to find an enclosing type and qualify the name
             let mut parent = n.parent();
             while let Some(p) = parent {
-                if TYPE_KINDS.contains(&p.kind()) {
+                if is_type_definition_kind(lang, p.kind()) {
                     if let Some(type_name) = extract_definition_name(p, lines) {
                         return (format!("{type_name}.{name}"), range);
                     }

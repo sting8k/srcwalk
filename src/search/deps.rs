@@ -233,19 +233,26 @@ pub fn analyze_deps(
             }
         }
     } else {
-        for line in content.lines() {
-            if !is_import_line(line, lang) {
-                continue;
-            }
-            let source = extract_import_source(line, Some(lang));
-            if source.is_empty() {
-                continue;
-            }
+        let sources: Vec<String> = if lang == Lang::Go {
+            crate::read::go_imports::import_sources(&content)
+        } else {
+            content
+                .lines()
+                .filter_map(|line| {
+                    if !is_import_line(line, lang) {
+                        return None;
+                    }
+                    let source = extract_import_source(line, Some(lang));
+                    (!source.is_empty()).then_some(source)
+                })
+                .collect()
+        };
+        for source in sources {
             if is_external(&source, lang)
-                && !is_stdlib(&source, lang)
+                && !is_stdlib(path, &source, lang)
                 && is_valid_module_path(&source)
             {
-                external_set.insert(source.clone());
+                external_set.insert(source);
             }
         }
     }
@@ -697,8 +704,7 @@ fn is_placeholder_name(name: &str) -> bool {
 
 /// Returns true if the import source is a standard library module.
 /// Agents can't navigate into stdlib — showing these is noise.
-fn is_stdlib(source: &str, lang: crate::types::Lang) -> bool {
-    use crate::types::Lang;
+fn is_stdlib(path: &Path, source: &str, lang: Lang) -> bool {
     match lang {
         Lang::Rust => {
             source.starts_with("std::")
@@ -733,7 +739,7 @@ fn is_stdlib(source: &str, lang: crate::types::Lang) -> bool {
                     | "asyncio"
             )
         }
-        Lang::Go => source.starts_with("fmt") || !source.contains('.'),
+        Lang::Go => super::go_imports::is_stdlib(path, source),
         // JVM reserved stdlib roots with a dot boundary so `javaparser.`,
         // `kotlinx.`, or `scalaz.` never match. Application imports stay visible.
         Lang::Java => source
@@ -989,15 +995,20 @@ mod tests {
     #[test]
     fn jvm_stdlib_roots_need_dot_boundary() {
         use crate::types::Lang;
-        assert!(is_stdlib("java.util.List", Lang::Java));
-        assert!(!is_stdlib("javaparser.ParserConfig", Lang::Java));
-        assert!(!is_stdlib("com.acme.Thing", Lang::Java));
-        assert!(is_stdlib("kotlin.collections.List", Lang::Kotlin));
-        assert!(is_stdlib("java.io.File", Lang::Kotlin));
-        assert!(!is_stdlib("kotlinx.coroutines.flow.Flow", Lang::Kotlin));
-        assert!(is_stdlib("scala.collection.mutable.Map", Lang::Scala));
-        assert!(!is_stdlib("scalaz.Monad", Lang::Scala));
-        assert!(!is_stdlib("kotlin.collections.List", Lang::Scala));
+        let path = Path::new("missing.go");
+        assert!(is_stdlib(path, "java.util.List", Lang::Java));
+        assert!(!is_stdlib(path, "javaparser.ParserConfig", Lang::Java));
+        assert!(!is_stdlib(path, "com.acme.Thing", Lang::Java));
+        assert!(is_stdlib(path, "kotlin.collections.List", Lang::Kotlin));
+        assert!(is_stdlib(path, "java.io.File", Lang::Kotlin));
+        assert!(!is_stdlib(
+            path,
+            "kotlinx.coroutines.flow.Flow",
+            Lang::Kotlin
+        ));
+        assert!(is_stdlib(path, "scala.collection.mutable.Map", Lang::Scala));
+        assert!(!is_stdlib(path, "scalaz.Monad", Lang::Scala));
+        assert!(!is_stdlib(path, "kotlin.collections.List", Lang::Scala));
     }
 
     #[test]

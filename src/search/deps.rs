@@ -15,11 +15,11 @@ use crate::evidence::{
 use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
 use crate::lang::js_imports::logical_sources;
-use crate::lang::outline::{extract_import_source, get_outline_entries};
+use crate::lang::outline::get_outline_entries;
 use crate::lang::tsconfig::ConfigCache;
 use crate::read::imports::{
-    classify_js_imports, is_external, is_import_line, ordered_local_paths,
-    resolve_related_files_with_content, JsImportResolution,
+    classify_js_imports, import_sources_with_lines, is_external, ordered_local_paths,
+    resolve_import_source, resolve_related_files_with_content_and_scope, JsImportResolution,
 };
 use crate::search::callees::{extract_callee_names, resolve_callees};
 use crate::search::callers::find_callers_batch;
@@ -72,11 +72,10 @@ impl LocalDep {
     }
 }
 
-/// An unresolved local-looking JS/TS/TSX module import: canonical static
-/// `import`/`export`/`require` syntax with a `./`, `../`, `@/`, or `~/`
-/// specifier that resolves to no existing file. A distinct evidence class so
-/// it is never mislabeled local or external. Provenance is text (generic line
-/// extraction, never AST).
+/// An unresolved static import source that could not be classified as local or
+/// external under the language resolver's bounded evidence. This is a distinct
+/// evidence class so it is never mislabeled local or external. Provenance is
+/// the parser-backed source line where available, or the generic line extractor.
 pub struct UnresolvedLocalDep {
     pub source: String,
     /// 1-based source line of the first occurrence in the target file.
@@ -274,7 +273,13 @@ pub fn analyze_deps(
     } else if lang == Lang::Ruby {
         crate::search::deps::ruby::resolved_import_files(path, &content)
     } else {
-        let files = resolve_related_files_with_content(path, &content);
+        let files = resolve_related_files_with_content_and_scope(
+            path,
+            &content,
+            scope,
+            &config_cache,
+            Some(8),
+        );
         (files, HashSet::new())
     };
     for import_path in import_files {
@@ -311,8 +316,8 @@ pub fn analyze_deps(
         .collect();
     uses_local.sort_by(|a, b| a.path.cmp(&b.path));
 
-    // External and unresolved JS/TS/TSX rows consume the same decisions used
-    // for local imports. Other languages retain the historical line scan.
+    // JS/TS/TSX share parser decisions. Python, PHP, and C/C++ use the same
+    // bounded resolver evidence for local/external/unresolved classification.
     let mut external_set: HashSet<String> = HashSet::new();
     let mut unresolved_by_source: HashMap<String, u32> = HashMap::new();
     if crate::lang::css::is_stylesheet_lang(lang) || is_document {
@@ -350,19 +355,59 @@ pub fn analyze_deps(
         // relative, native, and garbage sources, so nothing else to check here.
         let dir = path.parent().unwrap_or(scope);
         external_set.extend(crate::search::deps::ruby::external_requires(&content, dir));
+    } else if matches!(lang, Lang::Python | Lang::Php | Lang::C | Lang::Cpp) {
+        for (source, line) in import_sources_with_lines(&content, lang) {
+            if source.is_empty() || is_stdlib(path, &source, lang) {
+                continue;
+            }
+            if resolve_import_source(path, &source, lang, Some(scope)).is_some() {
+                continue;
+            }
+
+            match lang {
+                Lang::Python => {
+                    let ambiguous = path.parent().is_some_and(|dir| {
+                        crate::read::python_resolve::is_ambiguous(dir, &source, Some(scope))
+                    });
+                    if ambiguous {
+                        unresolved_by_source
+                            .entry(source)
+                            .and_modify(|existing| *existing = (*existing).min(line))
+                            .or_insert(line);
+                    } else if is_external(&source, lang) && is_valid_python_source(&source) {
+                        external_set.insert(source);
+                    } else {
+                        unresolved_by_source
+                            .entry(source)
+                            .and_modify(|existing| *existing = (*existing).min(line))
+                            .or_insert(line);
+                    }
+                }
+                Lang::Php => {
+                    unresolved_by_source
+                        .entry(source)
+                        .and_modify(|existing| *existing = (*existing).min(line))
+                        .or_insert(line);
+                }
+                Lang::C | Lang::Cpp if source.starts_with('<') => {
+                    external_set.insert(source);
+                }
+                Lang::C | Lang::Cpp => {
+                    unresolved_by_source
+                        .entry(source)
+                        .and_modify(|existing| *existing = (*existing).min(line))
+                        .or_insert(line);
+                }
+                _ => unreachable!(),
+            }
+        }
     } else {
         let sources: Vec<String> = if lang == Lang::Go {
             crate::read::go_imports::import_sources(&content)
         } else {
-            content
-                .lines()
-                .filter_map(|line| {
-                    if !is_import_line(line, lang) {
-                        return None;
-                    }
-                    let source = extract_import_source(line, Some(lang));
-                    (!source.is_empty()).then_some(source)
-                })
+            import_sources_with_lines(&content, lang)
+                .into_iter()
+                .map(|(source, _)| source)
                 .collect()
         };
         for source in sources {
@@ -920,6 +965,17 @@ fn is_stdlib(path: &Path, source: &str, lang: Lang) -> bool {
         }),
         _ => false,
     }
+}
+
+/// Premium-parity validity gate for Python external classification: module
+/// paths may carry an ` as ` alias tail in raw line evidence, so spaces are
+/// allowed; only a non-identifier lead character or embedded newline rejects.
+fn is_valid_python_source(source: &str) -> bool {
+    source
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_alphanumeric() || matches!(ch, '@' | '.' | '\\'))
+        && !source.contains('\n')
 }
 
 /// Returns true if the string looks like a valid module/package path.

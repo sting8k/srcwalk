@@ -13,6 +13,8 @@ All notable changes to srcwalk are documented here.
 - Alias-aware callee resolution and read-layer related-file suggestions for JS/TS.
 - JVM (Java/Kotlin/Scala) standard-library imports omitted from external deps with dot-boundary safety (`javaparser.*` stays visible).
 - Go grouped `import (...)` block parsing and `go.mod` module-directive awareness so dotless module-local imports stay visible.
+- Bounded Python, PHP, and C/C++ include resolution in `deps`: unique local candidates resolve, stdlib is external or omitted, and ambiguous or missing targets stay honestly unresolved.
+- Overview `[relations]` are alias-aware for JS/TS via shared tsconfig-paths classification, and `[outbound deps]` list JS/TS targets outside `--scope` (relative and alias forms).
 - `.mjs/.cjs/.mts/.cts` structural support with runtime-to-source extension swaps.
 - Private-member caller/callee evidence and export-wrapper definition dedup (`context <symbol>` no longer reports duplicate candidates for one definition).
 - Deterministic reverse-dependency evidence across worker counts; determinism test suites for deps and overview relations.
@@ -22,6 +24,7 @@ All notable changes to srcwalk are documented here.
 
 ### Changed
 - Parse-cache admission serialized to close a concurrent cap-bypass race; ranking and parse memory bounded; comment tagging and map relation scans parallelized with stable output ordering.
+- Ruby require/require_relative resolution is scope-bounded: targets outside the active `--scope` are no longer claimed as local edges.
 
 ### Fixed
 - Import keyword detection accepts tabs/multiple spaces; JVM `import static` and alias forms normalize correctly.

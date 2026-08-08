@@ -12,6 +12,7 @@ use crate::evidence::{
 };
 use crate::format;
 use crate::format::rel_nonempty;
+use crate::lang::tsconfig::ConfigCache;
 use crate::read;
 use crate::session::Session;
 use crate::types::{estimate_tokens, FileType, Match, OutlineKind, SearchResult};
@@ -140,7 +141,8 @@ pub fn format_raw_result(
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result(result, cache, None, &bloom, 0, None)
+    let config_cache = ConfigCache::new();
+    format_search_result(result, cache, None, &bloom, &config_cache, 0, None)
 }
 
 pub fn format_raw_result_with_header(
@@ -149,7 +151,8 @@ pub fn format_raw_result_with_header(
     header: String,
 ) -> Result<String, SrcwalkError> {
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result_with_header(result, cache, None, &bloom, 0, None, header)
+    let config_cache = ConfigCache::new();
+    format_search_result_with_header(result, cache, None, &bloom, &config_cache, 0, None, header)
 }
 
 pub fn search_files_glob(
@@ -263,6 +266,7 @@ pub(super) fn format_matches(
     cache: &OutlineCache,
     session: Option<&Session>,
     bloom: &crate::index::bloom::BloomFilterCache,
+    config_cache: &ConfigCache,
     expand_remaining: &mut usize,
     expand_budget: &mut ExpandBudget,
     expanded_files: &mut HashSet<PathBuf>,
@@ -288,6 +292,7 @@ pub(super) fn format_matches(
                     cache,
                     session,
                     bloom,
+                    config_cache,
                     expand_remaining,
                     expand_budget,
                     expanded_files,
@@ -471,6 +476,7 @@ pub(super) fn format_search_result(
     cache: &OutlineCache,
     session: Option<&Session>,
     bloom: &crate::index::bloom::BloomFilterCache,
+    config_cache: &ConfigCache,
     expand: usize,
     budget_tokens: Option<u64>,
 ) -> Result<String, SrcwalkError> {
@@ -480,7 +486,16 @@ pub(super) fn format_search_result(
         result.matches.len(),
         result.page_evidence_counts(),
     );
-    format_search_result_with_header(result, cache, session, bloom, expand, budget_tokens, header)
+    format_search_result_with_header(
+        result,
+        cache,
+        session,
+        bloom,
+        config_cache,
+        expand,
+        budget_tokens,
+        header,
+    )
 }
 
 pub(super) fn format_search_result_with_header(
@@ -488,6 +503,7 @@ pub(super) fn format_search_result_with_header(
     cache: &OutlineCache,
     session: Option<&Session>,
     bloom: &crate::index::bloom::BloomFilterCache,
+    config_cache: &ConfigCache,
     expand: usize,
     budget_tokens: Option<u64>,
     header: String,
@@ -531,6 +547,7 @@ pub(super) fn format_search_result_with_header(
                     cache,
                     session,
                     bloom,
+                    config_cache,
                     &mut expand_remaining,
                     &mut expand_budget,
                     &mut expanded_files,
@@ -562,6 +579,7 @@ pub(super) fn format_search_result_with_header(
                     cache,
                     session,
                     bloom,
+                    config_cache,
                     &mut expand_remaining,
                     &mut expand_budget,
                     &mut expanded_files,
@@ -584,6 +602,7 @@ pub(super) fn format_search_result_with_header(
                     cache,
                     session,
                     bloom,
+                    config_cache,
                     &mut expand_remaining,
                     &mut expand_budget,
                     &mut expanded_files,
@@ -636,6 +655,7 @@ pub(super) fn format_search_result_with_header(
                     cache,
                     session,
                     bloom,
+                    config_cache,
                     &mut expand_remaining,
                     &mut expand_budget,
                     &mut expanded_files,
@@ -659,6 +679,7 @@ pub(super) fn format_search_result_with_header(
                     cache,
                     session,
                     bloom,
+                    config_cache,
                     &mut expand_remaining,
                     &mut expand_budget,
                     &mut expanded_files,
@@ -677,6 +698,7 @@ pub(super) fn format_search_result_with_header(
             cache,
             session,
             bloom,
+            config_cache,
             &mut expand_remaining,
             &mut expand_budget,
             &mut expanded_files,

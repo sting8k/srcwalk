@@ -25,6 +25,7 @@ use crate::error::SrcwalkError;
 use crate::evidence::{render_next_actions, NextAction};
 use crate::format;
 use crate::format::rel;
+use crate::lang::tsconfig::ConfigCache;
 use crate::session::Session;
 use crate::types::SearchResult;
 use crate::ArtifactMode;
@@ -161,7 +162,8 @@ pub fn search_symbol_with_artifact(
     paginate(&mut result, limit, offset);
     compact_artifact_snippets(&mut result, artifact);
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    let mut out = format_search_result(&result, cache, None, &bloom, 0, None)?;
+    let config_cache = ConfigCache::new();
+    let mut out = format_search_result(&result, cache, None, &bloom, &config_cache, 0, None)?;
     let did_suggest = append_did_you_mean(&mut out, &result, scope, glob, filter);
     append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest);
     let has_structural_target = has_confirmed_structural_targets(&result, cache);
@@ -227,15 +229,9 @@ pub fn search_symbol_glob_with_artifact(
     paginate(&mut result, limit, offset);
     compact_artifact_snippets(&mut result, artifact);
     let header = search_names_header(&result, scope);
-    format_search_result_with_header(
-        &result,
-        cache,
-        None,
-        &crate::index::bloom::BloomFilterCache::new(),
-        0,
-        None,
-        header,
-    )
+    let bloom = crate::index::bloom::BloomFilterCache::new();
+    let config_cache = ConfigCache::new();
+    format_search_result_with_header(&result, cache, None, &bloom, &config_cache, 0, None, header)
 }
 
 pub fn search_symbol_glob_expanded(
@@ -256,11 +252,13 @@ pub fn search_symbol_glob_expanded(
     apply_general_filter(&mut result, scope, cache, filter)?;
     paginate(&mut result, limit, offset);
     let header = search_names_header(&result, scope);
+    let config_cache = ConfigCache::new();
     format_search_result_with_header(
         &result,
         cache,
         Some(session),
         bloom,
+        &config_cache,
         expand,
         budget_tokens,
         header,
@@ -296,8 +294,16 @@ pub fn search_symbol_expanded(
     let mut result = symbol::search(query, scope, Some(cache), context, glob)?;
     apply_general_filter(&mut result, scope, cache, filter)?;
     paginate(&mut result, limit, offset);
-    let mut out =
-        format_search_result(&result, cache, Some(session), bloom, expand, budget_tokens)?;
+    let config_cache = ConfigCache::new();
+    let mut out = format_search_result(
+        &result,
+        cache,
+        Some(session),
+        bloom,
+        &config_cache,
+        expand,
+        budget_tokens,
+    )?;
     let did_suggest = append_did_you_mean(&mut out, &result, scope, glob, filter);
     append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest);
     Ok(out)
@@ -345,6 +351,7 @@ pub fn search_multi_symbol_expanded(
     let mut context_shown_files = HashSet::new();
     let mut rendered_source_lines = RenderedSourceLines::default();
     let mut expand_budget = ExpandBudget::new(expand_per_query * queries.len(), budget_tokens);
+    let config_cache = ConfigCache::new();
     for mut result in results {
         let mut smart_truncated = false;
         paginate(&mut result, page_limit, offset);
@@ -362,6 +369,7 @@ pub fn search_multi_symbol_expanded(
             cache,
             Some(session),
             bloom,
+            &config_cache,
             &mut budget,
             &mut expand_budget,
             &mut expanded_files,
@@ -422,7 +430,16 @@ pub fn search_content_expanded(
     apply_general_filter(&mut result, scope, cache, filter)?;
     paginate(&mut result, limit, offset);
     let bloom = crate::index::bloom::BloomFilterCache::new();
-    format_search_result(&result, cache, Some(session), &bloom, expand, budget_tokens)
+    let config_cache = ConfigCache::new();
+    format_search_result(
+        &result,
+        cache,
+        Some(session),
+        &bloom,
+        &config_cache,
+        expand,
+        budget_tokens,
+    )
 }
 
 /// Raw symbol search — returns structured result for programmatic inspection.

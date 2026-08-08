@@ -1,16 +1,19 @@
 //! Resolve import statements to local file paths.
 //! Used by the MCP layer to hint related files after an outlined read.
 
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::lang::detect_file_type;
-use crate::lang::tsconfig::{self, ConfigCache, PathAliasMatch, TsConfig};
 use crate::types::Lang;
+
+pub(crate) use crate::read::js_alias::{
+    classify_js_imports, ordered_local_paths, JsImportResolution,
+};
 
 const MAX_SUGGESTIONS: usize = 8;
 
+#[allow(dead_code)]
 /// Extract import sources from a code file and resolve them to existing local file paths.
 /// Returns empty Vec for non-code files, files with no imports, or when all imports are external.
 pub fn resolve_related_files(file_path: &Path) -> Vec<PathBuf> {
@@ -25,166 +28,26 @@ pub fn resolve_related_files_with_content(file_path: &Path, content: &str) -> Ve
     resolve_related_files_with_limit(file_path, content, Some(MAX_SUGGESTIONS))
 }
 
-/// Classification of one static JS/TS/TSX import source.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum JsImportResolution {
-    Local {
-        path: PathBuf,
-        via_tsconfig_paths: bool,
-    },
-    External,
-    Unresolved,
-}
-
-/// One logical import with its opening-line evidence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct JsImportDecision {
-    pub(crate) source: String,
-    pub(crate) opening_line: usize,
-    pub(crate) resolution: JsImportResolution,
-}
-
-/// Classify one shared JS/TS/TSX logical-import stream.
-pub(crate) fn classify_js_imports(
-    source_path: &Path,
-    logical_sources: &[(String, usize)],
+/// Scoped/content adapter used by production consumers. JS/TS/TSX use the
+/// shared alias-aware decision stream; other languages retain the old resolver.
+pub(crate) fn resolve_related_files_with_content_and_scope(
+    file_path: &Path,
+    content: &str,
     scope: &Path,
-    config_cache: &ConfigCache,
-) -> Vec<JsImportDecision> {
-    let Some(dir) = source_path.parent() else {
-        return Vec::new();
-    };
-    let scope_canonical = fs::canonicalize(scope).ok();
-    let config = config_cache
-        .nearest_config(dir, scope)
-        .and_then(|path| tsconfig::load_config(&path));
-
-    logical_sources
-        .iter()
-        .filter(|(source, _)| !source.is_empty())
-        .map(|(source, opening_line)| JsImportDecision {
-            source: source.clone(),
-            opening_line: *opening_line,
-            resolution: classify_js_source(
-                dir,
-                source,
-                scope_canonical.as_deref(),
-                config.as_ref(),
-            ),
-        })
-        .collect()
-}
-
-fn classify_js_source(
-    dir: &Path,
-    source: &str,
-    scope: Option<&Path>,
-    config: Option<&TsConfig>,
-) -> JsImportResolution {
-    if is_local_looking_source(source) {
-        if let Some(path) = resolve_js_in_scope(dir, source, scope) {
-            return JsImportResolution::Local {
-                path,
-                via_tsconfig_paths: false,
-            };
-        }
-    }
-
-    let Some(config) = config else {
-        return phase_two_classification(source);
-    };
-    match tsconfig::match_path_alias(source, config) {
-        PathAliasMatch::Match { targets } => {
-            let config_dir = config
-                .config_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."));
-            let target_base = config
-                .base_url
-                .as_ref()
-                .map_or_else(|| config_dir.to_path_buf(), |base| config_dir.join(base));
-            for target in targets {
-                if let Some(path) = resolve_js_in_scope(&target_base, &target, scope) {
-                    return JsImportResolution::Local {
-                        path,
-                        via_tsconfig_paths: true,
-                    };
-                }
-            }
-            JsImportResolution::Unresolved
-        }
-        PathAliasMatch::Abstain => JsImportResolution::Unresolved,
-        PathAliasMatch::NoMatch => phase_two_classification(source),
-    }
-}
-
-fn phase_two_classification(source: &str) -> JsImportResolution {
-    if is_local_looking_source(source) {
-        JsImportResolution::Unresolved
-    } else {
-        JsImportResolution::External
-    }
-}
-
-fn resolve_js_in_scope(base: &Path, target: &str, scope: Option<&Path>) -> Option<PathBuf> {
-    let candidate = resolve_js(base, target)?;
-    let scope = scope?;
-    let canonical = fs::canonicalize(&candidate).ok()?;
-    canonical.starts_with(scope).then_some(candidate)
-}
-
-/// Keep relative imports ahead of aliases under the historical local cap.
-pub(crate) fn ordered_local_paths(
-    decisions: &[JsImportDecision],
+    config_cache: &crate::lang::tsconfig::ConfigCache,
     limit: Option<usize>,
 ) -> Vec<PathBuf> {
-    let mut relative = Vec::new();
-    let mut aliases = Vec::new();
-    let mut relative_seen = HashSet::new();
-    let mut alias_seen = HashSet::new();
-
-    for decision in decisions {
-        let JsImportResolution::Local {
-            path,
-            via_tsconfig_paths,
-        } = &decision.resolution
-        else {
-            continue;
-        };
-        let (paths, seen) = if *via_tsconfig_paths {
-            (&mut aliases, &mut alias_seen)
-        } else {
-            (&mut relative, &mut relative_seen)
-        };
-        let identity = canonical_identity(path);
-        if seen.insert(identity) {
-            paths.push(path.clone());
-        }
+    let Some(lang) = detect_file_type(file_path).structural_lang() else {
+        return Vec::new();
+    };
+    if matches!(lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript) {
+        let stream = crate::lang::js_imports::logical_sources(content, lang);
+        return ordered_local_paths(
+            &classify_js_imports(file_path, &stream, scope, config_cache),
+            limit,
+        );
     }
-
-    let cap = limit.unwrap_or(usize::MAX);
-    let mut ordered = Vec::new();
-    let mut seen = HashSet::new();
-    for path in relative.into_iter().chain(aliases) {
-        if seen.insert(canonical_identity(&path)) {
-            ordered.push(path);
-            if ordered.len() == cap {
-                break;
-            }
-        }
-    }
-    ordered
-}
-
-fn canonical_identity(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-pub(crate) fn is_local_looking_source(source: &str) -> bool {
-    source.starts_with("./")
-        || source.starts_with("../")
-        || source.starts_with("@/")
-        || source.starts_with("~/")
+    resolve_related_files_with_limit(file_path, content, limit)
 }
 
 pub(crate) fn resolve_all_related_files_with_content(
@@ -452,7 +315,7 @@ fn find_src_ancestor(start: &Path) -> Option<&Path> {
 
 // --- JS/TS ---
 
-fn resolve_js(dir: &Path, source: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_js(dir: &Path, source: &str) -> Option<PathBuf> {
     let base = dir.join(source);
     if base.exists() && base.is_file() {
         return Some(base);

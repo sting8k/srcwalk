@@ -1,4 +1,5 @@
 pub mod imports;
+pub(crate) mod js_alias;
 pub mod outline;
 
 pub(crate) mod completion;

@@ -5,6 +5,7 @@ use crate::cache::OutlineCache;
 use crate::commands::context::ArtifactMode;
 use crate::error::SrcwalkError;
 use crate::evidence::{render_next_actions, NextAction};
+use crate::lang::tsconfig::ConfigCache;
 use crate::{budget, format, index, lang, search, types};
 
 use crate::commands::call_format::{
@@ -139,6 +140,26 @@ pub(crate) fn run_callees_with_artifact(
     let file_type = lang::detect_file_type(&def_match.path);
     let types::FileType::Code(lang) = file_type else {
         return Ok(format!("# Callees: {target}\n\n(not a code file)"));
+    };
+
+    let config_cache = ConfigCache::new();
+    let logical_sources = if matches!(
+        lang,
+        types::Lang::JavaScript | types::Lang::TypeScript | types::Lang::Tsx
+    ) {
+        lang::js_imports::logical_sources(&content, lang)
+    } else {
+        Vec::new()
+    };
+    let decisions = if logical_sources.is_empty() {
+        None
+    } else {
+        Some(crate::read::js_alias::classify_js_imports(
+            &def_match.path,
+            &logical_sources,
+            scope,
+            &config_cache,
+        ))
     };
 
     let rel = format::rel_nonempty(&def_match.path, scope);
@@ -283,14 +304,18 @@ pub(crate) fn run_callees_with_artifact(
         })
         .collect()
     } else {
-        search::callees::resolve_callees_transitive(
+        search::callees::resolve_callees_transitive_with_stream(
             &callee_names,
             &def_match.path,
             &content,
+            &logical_sources,
+            decisions.as_deref(),
             cache,
             &bloom,
             depth_limit,
             50,
+            scope,
+            &config_cache,
         )
     };
 

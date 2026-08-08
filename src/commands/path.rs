@@ -166,6 +166,37 @@ pub(crate) fn run_path_exact_with_artifact_and_context(
     } else {
         output
     };
+    let output = if section.is_none()
+        && !full
+        && !artifact_mode.enabled()
+        && read::would_outline(&path)
+        && !crate::capabilities::is_binary_artifact_path(&path)
+    {
+        let related = std::fs::read_to_string(&path)
+            .ok()
+            .map(|content| {
+                read::imports::resolve_related_files_with_content_and_scope(
+                    &path,
+                    &content,
+                    scope,
+                    &crate::lang::tsconfig::ConfigCache::new(),
+                    Some(8),
+                )
+            })
+            .unwrap_or_default();
+        if related.is_empty() {
+            output
+        } else {
+            let hints = related
+                .iter()
+                .map(|related| crate::format::rel_nonempty(related, scope))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{output}\n\n> Related: {hints}")
+        }
+    } else {
+        output
+    };
     let output = with_artifact_note(output, artifact_mode);
     Ok(match budget_tokens {
         Some(b) => budget::apply_preserving_footer(&output, b),

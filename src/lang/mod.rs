@@ -17,9 +17,9 @@ pub fn detect_file_type(path: &Path) -> FileType {
         return file_type;
     }
     match path.extension().and_then(|e| e.to_str()) {
-        Some("ts") => FileType::Code(Lang::TypeScript),
+        Some("ts" | "mts" | "cts") => FileType::Code(Lang::TypeScript),
         Some("tsx") => FileType::Code(Lang::Tsx),
-        Some("js" | "jsx") => FileType::Code(Lang::JavaScript),
+        Some("js" | "jsx" | "mjs" | "cjs") => FileType::Code(Lang::JavaScript),
         Some("py" | "pyi") => FileType::Code(Lang::Python),
         Some("rs") => FileType::Code(Lang::Rust),
         Some("go") => FileType::Code(Lang::Go),
@@ -79,5 +79,53 @@ pub(crate) fn package_root(path: &Path) -> Option<&Path> {
             }
         }
         dir = dir.parent()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detect(ext: &str) -> FileType {
+        detect_file_type(Path::new(&format!("dir/file.{ext}")))
+    }
+
+    /// US-052 Phase 3 detection matrix: modern JS/TS module extensions enter
+    /// the same structural tier as their language; gjs/gts stay unsupported.
+    #[test]
+    fn modern_js_ts_module_extensions_detect_to_language_tiers() {
+        assert_eq!(
+            detect("mjs"),
+            FileType::Code(Lang::JavaScript),
+            ".mjs must map to the JavaScript structural tier"
+        );
+        assert_eq!(
+            detect("cjs"),
+            FileType::Code(Lang::JavaScript),
+            ".cjs must map to the JavaScript structural tier"
+        );
+        assert_eq!(
+            detect("mts"),
+            FileType::Code(Lang::TypeScript),
+            ".mts must map to the TypeScript structural tier"
+        );
+        assert_eq!(
+            detect("cts"),
+            FileType::Code(Lang::TypeScript),
+            ".cts must map to the TypeScript structural tier"
+        );
+        // Existing tiers unchanged.
+        assert_eq!(detect("js"), FileType::Code(Lang::JavaScript));
+        assert_eq!(detect("jsx"), FileType::Code(Lang::JavaScript));
+        assert_eq!(detect("ts"), FileType::Code(Lang::TypeScript));
+        assert_eq!(detect("tsx"), FileType::Code(Lang::Tsx));
+    }
+
+    /// Ember/Glimmer and other non-canonical JS-like extensions stay out of
+    /// scope: no new language tier, no gjs/gts support.
+    #[test]
+    fn glimmer_extensions_remain_unsupported() {
+        assert_eq!(detect("gjs"), FileType::Other);
+        assert_eq!(detect("gts"), FileType::Other);
     }
 }

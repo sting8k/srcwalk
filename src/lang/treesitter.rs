@@ -63,6 +63,21 @@ pub(crate) fn is_definition_kind(lang: Option<Lang>, kind: &str) -> bool {
         || (lang == Some(Lang::Ruby) && RUBY_DEFINITION_KINDS.contains(&kind))
 }
 
+/// True when an `export_statement` wrapper is fully transparent: its
+/// `declaration` field is itself a definition, so the wrapper and the inner
+/// declaration describe ONE source declaration and must not each emit a
+/// candidate (US-052 Phase 5). Re-export / no-declaration forms
+/// (`export { name }`, `export * from`) have no `declaration` field and are
+/// unaffected. Wrappers around non-`DEFINITION_KINDS` declarations
+/// (`export function*`, `export abstract class`, `export namespace`) are a
+/// pre-existing name-resolution gap and are not treated as transparent here.
+pub(crate) fn is_transparent_export_wrapper(node: tree_sitter::Node, lang: Option<Lang>) -> bool {
+    node.kind() == "export_statement"
+        && node
+            .child_by_field_name("declaration")
+            .is_some_and(|child| is_definition_kind(lang, child.kind()))
+}
+
 /// Type/namespace-like node kinds that can own (enclose) function definitions.
 ///
 /// Extends the caller-search type-owner set with Ruby `class`/`module` when

@@ -391,6 +391,23 @@ fn is_ident_continue(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// Return the first identifier token (`[a-zA-Z_][a-zA-Z0-9_]*`) found in `s`,
+/// or `None` when the string contains no identifier characters.
+///
+/// Caller search uses this to probe the Bloom filter with a token the filter
+/// can actually index: raw targets like `#evict`, `save!`, `valid?`, or
+/// `foo::bar` are not indexed verbatim, but their leading identifier is.
+pub(crate) fn first_identifier(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    let start = bytes.iter().position(|&b| is_ident_start(b))?;
+    let mut end = start + 1;
+    while end < bytes.len() && is_ident_continue(bytes[end]) {
+        end += 1;
+    }
+    // Safety: identifier runs are pure ASCII, so byte slicing is valid UTF-8.
+    Some(&s[start..end])
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -513,6 +530,22 @@ mod tests {
     fn test_identifier_extraction_empty() {
         let idents: Vec<&str> = extract_identifiers("").collect();
         assert!(idents.is_empty());
+    }
+
+    #[test]
+    fn test_first_identifier() {
+        assert_eq!(first_identifier("save!"), Some("save"));
+        assert_eq!(first_identifier("valid?"), Some("valid"));
+        assert_eq!(first_identifier("#evict"), Some("evict"));
+        assert_eq!(first_identifier("persist"), Some("persist"));
+        assert_eq!(first_identifier("foo::bar"), Some("foo"));
+        assert_eq!(first_identifier("foo.bar"), Some("foo"));
+        assert_eq!(first_identifier("sym.imp.puts"), Some("sym"));
+        assert_eq!(first_identifier("123abc"), Some("abc"));
+        assert_eq!(first_identifier("save_123!"), Some("save_123"));
+        assert_eq!(first_identifier(""), None);
+        assert_eq!(first_identifier("!?"), None);
+        assert_eq!(first_identifier("123"), None);
     }
 
     #[test]

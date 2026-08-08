@@ -15,7 +15,10 @@ use crate::evidence::{
 use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
 use crate::lang::outline::{extract_import_source, get_outline_entries};
-use crate::read::imports::{is_external, is_import_line, resolve_related_files_with_content};
+use crate::read::imports::{
+    is_external, is_import_line, resolve_related_files_with_content,
+    unresolved_local_looking_sources,
+};
 use crate::search::callees::{extract_callee_names, resolve_callees};
 use crate::search::callers::find_callers_batch;
 use crate::types::{Lang, OutlineKind};
@@ -28,11 +31,15 @@ const MAX_EXPORTED_SYMBOLS: usize = 25;
 /// Maximum number of dependents to show before truncation.
 const MAX_DEPENDENTS: usize = 15;
 
+/// Maximum unresolved local-looking import rows to render before an omitted note.
+const MAX_UNRESOLVED_ROWS: usize = 20;
+
 /// Result of a full dependency analysis for a single file.
 pub struct DepsResult {
     pub target: PathBuf,
     pub uses_local: Vec<LocalDep>,
     pub uses_external: Vec<String>,
+    pub uses_unresolved_local_looking: Vec<UnresolvedLocalDep>,
     pub used_by: Vec<Dependent>,
     /// Total dependents found before truncation.
     pub total_dependents: usize,
@@ -59,6 +66,17 @@ impl LocalDep {
             self.evidence,
         )
     }
+}
+
+/// An unresolved local-looking JS/TS/TSX module import: canonical static
+/// `import`/`export`/`require` syntax with a `./`, `../`, `@/`, or `~/`
+/// specifier that resolves to no existing file. A distinct evidence class so
+/// it is never mislabeled local or external. Provenance is text (generic line
+/// extraction, never AST).
+pub struct UnresolvedLocalDep {
+    pub source: String,
+    /// 1-based source line of the first occurrence in the target file.
+    pub line: u32,
 }
 
 /// A file that depends on the target, with symbol-level call detail.
@@ -113,6 +131,7 @@ pub fn analyze_deps(
             target: path.clone(),
             uses_local: Vec::new(),
             uses_external: Vec::new(),
+            uses_unresolved_local_looking: Vec::new(),
             used_by: Vec::new(),
             total_dependents: 0,
             exported_count: 0,
@@ -281,6 +300,20 @@ pub fn analyze_deps(
     let mut uses_external: Vec<String> = external_set.into_iter().collect();
     uses_external.sort();
 
+    // Unresolved local-looking imports (JS/TS/TSX only): canonical static
+    // module syntax expressing local intent (`./`, `../`, `@/`, `~/`) that
+    // resolves to no existing file. Kept as its own evidence class; never
+    // relabeled local or external. Text provenance.
+    let uses_unresolved_local_looking: Vec<UnresolvedLocalDep> =
+        if matches!(lang, Lang::JavaScript | Lang::TypeScript | Lang::Tsx) {
+            unresolved_local_looking_sources(path, &content)
+                .into_iter()
+                .map(|(source, line)| UnresolvedLocalDep { source, line })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
     // ── Phase 3: Reverse dependencies ────────────────────────────────────────
 
     let descriptor_dependent_targets =
@@ -296,7 +329,14 @@ pub fn analyze_deps(
 
         if searched_count > 0 {
             let symbols_set: HashSet<String> = searched_names.iter().cloned().collect();
-            let raw_matches = find_callers_batch(&symbols_set, scope, bloom, None, None, Some(50))?;
+            // Deterministic reverse evidence: collect the complete caller set
+            // (no racy early-quit callsite cap), then group into dependents and
+            // cap only the *display* at MAX_DEPENDENTS. The old Some(50)
+            // early-quit selected a scheduling-dependent subset when the search
+            // exceeded the cap, making the grouped dependent count vary across
+            // runs (US-052 Phase 2B). This mirrors the BFS hops, which already
+            // walk fully and cap downstream.
+            let raw_matches = find_callers_batch(&symbols_set, scope, bloom, None, None, None)?;
 
             for (matched_symbol, caller_match) in raw_matches {
                 // Exclude calls from within the target file itself (self-references)
@@ -369,6 +409,7 @@ pub fn analyze_deps(
         target: path.clone(),
         uses_local,
         uses_external,
+        uses_unresolved_local_looking,
         used_by,
         total_dependents,
         exported_count,
@@ -404,19 +445,35 @@ pub fn format_deps(
 
     // ── Build sections (full fidelity first) ─────────────────────────────────
 
-    // Header
+    // Header. The `, N unresolved` fragment is emitted only when unresolved
+    // local-looking evidence exists, so every zero-unresolved deps header
+    // (JS/TS included) stays byte-identical to the pre-Phase-2 shape.
     let rel_target = rel_nonempty(&result.target, scope);
+    let unresolved_fragment = if result.uses_unresolved_local_looking.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", {} unresolved",
+            result.uses_unresolved_local_looking.len()
+        )
+    };
     let header = format!(
-        "# Deps: {} — {} local, {} external, {} dependent{}",
+        "# Deps: {} — {} local, {} external{}",
         rel_target,
         result.uses_local.len(),
         result.uses_external.len(),
+        unresolved_fragment,
+    );
+    let header = format!(
+        "{header}, {} dependent{}",
         dep_count,
         if dep_count == 1 { "" } else { "s" },
     );
 
     let uses_local_section = format_uses_local(&result.uses_local, scope, true);
     let uses_external_section = format_uses_external(&result.uses_external, &result.target);
+    let uses_unresolved_section =
+        format_uses_unresolved_local(&result.uses_unresolved_local_looking);
     let used_by_section = format_used_by(&prod_deps, scope, "## Used by");
     let used_by_tests_section = if test_deps.is_empty() {
         String::new()
@@ -441,6 +498,9 @@ pub fn format_deps(
     }
     if !uses_external_section.is_empty() {
         parts.push(uses_external_section.clone());
+    }
+    if !uses_unresolved_section.is_empty() {
+        parts.push(uses_unresolved_section.clone());
     }
     if !used_by_section.is_empty() {
         parts.push(used_by_section.clone());
@@ -469,6 +529,7 @@ pub fn format_deps(
                 &header,
                 &uses_local_section,
                 &uses_external_section,
+                &uses_unresolved_section,
                 &prod_deps,
                 &test_deps,
                 &barrel_note,
@@ -851,6 +912,27 @@ fn format_uses_external(externals: &[String], target: &Path) -> String {
     out
 }
 
+/// Format the "Uses (unresolved local-looking)" section. Rendered only when
+/// non-empty (unresolved evidence is opt-in); rows are bounded by
+/// `MAX_UNRESOLVED_ROWS` and the remainder is reported as an omitted count.
+fn format_uses_unresolved_local(deps: &[UnresolvedLocalDep]) -> String {
+    if deps.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("## Uses (unresolved local-looking)");
+    for dep in deps.iter().take(MAX_UNRESOLVED_ROWS) {
+        let _ = write!(out, "\n  {}  {}", dep.line, dep.source);
+    }
+    let omitted = deps.len().saturating_sub(MAX_UNRESOLVED_ROWS);
+    if omitted > 0 {
+        let _ = write!(
+            out,
+            "\n\n… and {omitted} more unresolved local-looking imports"
+        );
+    }
+    out
+}
+
 #[derive(Debug)]
 struct UsedByRow {
     dir: String,
@@ -927,6 +1009,7 @@ fn apply_budget_truncation(
     header: &str,
     uses_local_full: &str,
     uses_external_full: &str,
+    uses_unresolved_full: &str,
     prod_deps: &[&Dependent],
     test_deps: &[&Dependent],
     barrel_note: &str,
@@ -939,29 +1022,30 @@ fn apply_budget_truncation(
         &str,
         &str,
         &str,
+        &str,
         &[&Dependent],
         &[&Dependent],
         &str,
         &Path,
     ) -> String] = &[
         // Level 0: no tests
-        |hdr, ul, ue, pd, _td, bn, sc| {
-            assemble(&[hdr, ul, ue, &format_used_by(pd, sc, "## Used by"), bn])
+        |hdr, ul, ue, uu, pd, _td, bn, sc| {
+            assemble(&[hdr, ul, ue, uu, &format_used_by(pd, sc, "## Used by"), bn])
         },
         // Level 1: no used-by entries at all
-        |hdr, ul, ue, pd, _td, bn, _sc| {
+        |hdr, ul, ue, uu, pd, _td, bn, _sc| {
             let count = pd.len();
             let note = if count > 0 {
                 format!("\n\n(... {count} more dependents)")
             } else {
                 String::new()
             };
-            assemble(&[hdr, ul, ue, &note, bn])
+            assemble(&[hdr, ul, ue, uu, &note, bn])
         },
-        // Level 2: external as count only
-        |hdr, ul, _ue, _pd, _td, bn, _sc| assemble(&[hdr, ul, bn]),
+        // Level 2: external and unresolved as counts only
+        |hdr, ul, _ue, _uu, _pd, _td, bn, _sc| assemble(&[hdr, ul, bn]),
         // Level 3: local as paths only (no symbols)
-        |hdr, ul, _ue, _pd, _td, _bn, _sc| {
+        |hdr, ul, _ue, _uu, _pd, _td, _bn, _sc| {
             // Strip symbol lists: each line is "path_padded  symbols" — take only up to first space run
             let local_lines: Vec<&str> = ul
                 .lines()
@@ -976,7 +1060,7 @@ fn apply_budget_truncation(
             assemble(&[hdr, &paths_only])
         },
         // Level 4: header only
-        |hdr, _ul, _ue, _pd, _td, _bn, _sc| hdr.to_string(),
+        |hdr, _ul, _ue, _uu, _pd, _td, _bn, _sc| hdr.to_string(),
     ];
 
     for candidate_fn in candidates {
@@ -984,6 +1068,7 @@ fn apply_budget_truncation(
             header,
             uses_local_full,
             uses_external_full,
+            uses_unresolved_full,
             prod_deps,
             test_deps,
             barrel_note,
@@ -1060,6 +1145,45 @@ mod tests {
         assert_eq!(
             dep.to_evidence_atom(12, &["render".to_string()]).source(),
             EvidenceSource::Text
+        );
+    }
+
+    #[test]
+    fn unresolved_local_section_renders_rows_and_omitted_count() {
+        // Empty deps render no section (unresolved is opt-in evidence).
+        assert_eq!(format_uses_unresolved_local(&[]), String::new());
+
+        let deps: Vec<UnresolvedLocalDep> = (1..=3)
+            .map(|line| UnresolvedLocalDep {
+                source: format!("./missing{line}.js"),
+                line: line as u32,
+            })
+            .collect();
+        let rendered = format_uses_unresolved_local(&deps);
+        assert!(
+            rendered.starts_with("## Uses (unresolved local-looking)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("\n  1  ./missing1.js"), "{rendered}");
+        assert!(rendered.contains("\n  3  ./missing3.js"), "{rendered}");
+        assert!(!rendered.contains("more unresolved"), "{rendered}");
+
+        // Over-cap: rows are bounded and the omitted count is reported.
+        let many: Vec<UnresolvedLocalDep> = (1..=(MAX_UNRESOLVED_ROWS + 3))
+            .map(|line| UnresolvedLocalDep {
+                source: format!("./m{line}.js"),
+                line: line as u32,
+            })
+            .collect();
+        let rendered = format_uses_unresolved_local(&many);
+        assert_eq!(
+            rendered.matches("./m").count(),
+            MAX_UNRESOLVED_ROWS,
+            "rows must be capped:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("… and 3 more unresolved local-looking imports"),
+            "{rendered}"
         );
     }
 }

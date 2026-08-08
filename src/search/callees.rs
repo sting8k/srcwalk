@@ -84,6 +84,7 @@ pub(crate) fn callee_query_str(lang: Lang) -> Option<&'static str> {
         Lang::JavaScript => Some(concat!(
             "(call_expression function: (identifier) @callee)\n",
             "(call_expression function: (member_expression property: (property_identifier) @callee))\n",
+            "(call_expression function: (member_expression property: (private_property_identifier) @callee))\n",
             // new Foo()
             "(new_expression constructor: (identifier) @callee)\n",
             // class Foo extends Bar
@@ -92,6 +93,7 @@ pub(crate) fn callee_query_str(lang: Lang) -> Option<&'static str> {
         Lang::TypeScript | Lang::Tsx => Some(concat!(
             "(call_expression function: (identifier) @callee)\n",
             "(call_expression function: (member_expression property: (property_identifier) @callee))\n",
+            "(call_expression function: (member_expression property: (private_property_identifier) @callee))\n",
             // new Foo()
             "(new_expression constructor: (identifier) @callee)\n",
             // extends / implements

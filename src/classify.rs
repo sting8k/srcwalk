@@ -242,14 +242,14 @@ pub(crate) fn looks_like_file_glob(s: &str) -> bool {
 /// Known source-file extensions. If `after` matches one of these, treat as filename.
 /// Anything else with identifier on both sides → dotted symbol (method/property access).
 const FILE_EXTENSIONS: &[&str] = &[
-    "rs", "go", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "java", "kt", "kts", "scala",
-    "swift", "rb", "php", "cs", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "m", "mm", "lua",
-    "dart", "ex", "exs", "erl", "hrl", "elm", "hs", "clj", "cljs", "cljc", "ml", "mli", "fs",
-    "fsi", "fsx", "vb", "pas", "pl", "pm", "r", "jl", "nim", "zig", "v", "sh", "bash", "zsh",
-    "fish", "ps1", "bat", "cmd", "html", "htm", "css", "scss", "sass", "less", "vue", "svelte",
-    "astro", "md", "mdx", "rst", "adoc", "txt", "tex", "yaml", "yml", "toml", "json", "jsonc",
-    "json5", "xml", "ini", "cfg", "conf", "env", "proto", "graphql", "gql", "sql", "prisma",
-    "wasm", "lock",
+    "rs", "go", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "java", "kt",
+    "kts", "scala", "swift", "rb", "php", "cs", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx",
+    "m", "mm", "lua", "dart", "ex", "exs", "erl", "hrl", "elm", "hs", "clj", "cljs", "cljc", "ml",
+    "mli", "fs", "fsi", "fsx", "vb", "pas", "pl", "pm", "r", "jl", "nim", "zig", "v", "sh", "bash",
+    "zsh", "fish", "ps1", "bat", "cmd", "html", "htm", "css", "scss", "sass", "less", "vue",
+    "svelte", "astro", "md", "mdx", "rst", "adoc", "txt", "tex", "yaml", "yml", "toml", "json",
+    "jsonc", "json5", "xml", "ini", "cfg", "conf", "env", "proto", "graphql", "gql", "sql",
+    "prisma", "wasm", "lock",
 ];
 
 /// Is this a dotted symbol (method/property access) rather than a filename?

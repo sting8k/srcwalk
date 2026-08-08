@@ -404,7 +404,7 @@ fn is_flow_map_fallback_error(err: &SrcwalkError) -> bool {
                 || reason.contains("decision-flow requires a source code file")
                 || reason.contains("symbol target did not provide a definition range")
                 || reason.contains("line/range target must be inside one supported function")
-                || reason.starts_with(decision_flow::ABSTENTION_MARKER)
+                || decision_flow::is_abstention_reason(reason)
         }
         _ => false,
     }
@@ -414,7 +414,7 @@ fn is_flow_map_fallback_error(err: &SrcwalkError) -> bool {
 fn flow_map_fallback_reason(err: &SrcwalkError) -> Option<&str> {
     match err {
         SrcwalkError::InvalidQuery { reason, .. }
-            if reason.starts_with(decision_flow::ABSTENTION_MARKER) =>
+            if decision_flow::is_abstention_reason(reason) =>
         {
             Some(reason)
         }

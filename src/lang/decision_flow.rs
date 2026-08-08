@@ -4,8 +4,11 @@ mod render;
 mod ruby;
 mod types;
 
+mod abstention;
 use tree_sitter::Node;
 
+pub(crate) use abstention::is_abstention_reason;
+#[cfg(test)]
 pub(crate) use ruby::ABSTENTION_MARKER;
 use types::{Branch, FlowEdge, FlowGraph, FlowNode, FlowNodeKind, IncomingEdge};
 pub(crate) use types::{FlowTarget, TargetSelector};
@@ -98,13 +101,11 @@ fn build_target_graph(
             query: target.display_target.clone(),
             reason: unresolved_target_reason(&target.selector),
         })?;
-    if lang == Lang::Ruby {
-        if let Some(reason) = ruby::unsupported_direct_construct_reason(function) {
-            return Err(SrcwalkError::InvalidQuery {
-                query: target.display_target.clone(),
-                reason,
-            });
-        }
+    if let Some(reason) = unsupported_direct_construct_reason(function, lang) {
+        return Err(SrcwalkError::InvalidQuery {
+            query: target.display_target.clone(),
+            reason,
+        });
     }
     Ok(build_graph(
         target,
@@ -114,6 +115,14 @@ fn build_target_graph(
         target_focus(&target.selector),
         node_cap_for_budget(budget_tokens),
     ))
+}
+
+fn unsupported_direct_construct_reason(function: Node<'_>, lang: Lang) -> Option<String> {
+    if lang == Lang::Ruby {
+        ruby::unsupported_direct_construct_reason(function)
+    } else {
+        abstention::unsupported_direct_construct_reason(function, lang)
+    }
 }
 
 fn unresolved_target_reason(selector: &TargetSelector) -> String {

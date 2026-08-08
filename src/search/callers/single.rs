@@ -166,7 +166,7 @@ pub fn find_callers_with_artifact(
             let skip_bloom = crate::capabilities::is_private_text_file_type(file_type);
 
             // Bloom tokenization is tuned for source identifiers
-            // (`[a-zA-Z_][a-zA-Z0-9_]*`); asm/disasm/smali symbols can contain punctuation, so
+            // (`[a-zA-Z_][a-zA-Z0-9_]*`); some symbol formats can contain punctuation, so
             // the byte prefilter above already proved the literal substring. Raw targets that
             // are not pure identifiers (JS/TS `#evict`, Ruby `save!`, qualified `foo::bar`) are
             // not indexed verbatim, so probe the first identifier token to keep the MAYBE

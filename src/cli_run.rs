@@ -1040,65 +1040,6 @@ fn apply_cli_token_budget_inner(
     output
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        apply_cli_token_budget_preserving_footer, resolve_output_budget,
-        same_file_range_shorthand_route, SameFileRangeShorthandRoute,
-    };
-    use crate::cli::DEFAULT_OUTPUT_BUDGET;
-
-    #[test]
-    fn cli_footer_preservation_handles_trailing_newline() {
-        let body = (0..200)
-            .map(|i| format!("line {i}: lots of generated content"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let output = format!("# Header\n{body}\n\n> Caveat: partial\n> Next: use --expand next\n");
-
-        let rendered = apply_cli_token_budget_preserving_footer(output, Some(80));
-
-        assert!(rendered.contains("truncated to fit --budget"), "{rendered}");
-        assert!(
-            rendered.ends_with("> Caveat: partial\n> Next: use --expand next"),
-            "{rendered}"
-        );
-    }
-    #[test]
-    fn same_file_range_shorthand_parses_windows_drive_path() {
-        let targets = [r"C:\repo\src\lib.rs:1", "3-4"];
-        let Some(SameFileRangeShorthandRoute::Clean(route)) =
-            same_file_range_shorthand_route(&targets)
-        else {
-            panic!("expected clean same-file shorthand route");
-        };
-
-        assert_eq!(route.path, r"C:\repo\src\lib.rs");
-        assert_eq!(route.selector, "1,3-4");
-    }
-
-    #[test]
-    fn ambiguous_same_file_shorthand_uses_placeholder_when_path_cannot_be_quoted() {
-        let targets = ["bad\npath.rs:1", "3", "other.rs:1"];
-        let Some(SameFileRangeShorthandRoute::Ambiguous(reason)) =
-            same_file_range_shorthand_route(&targets)
-        else {
-            panic!("expected ambiguous same-file shorthand route");
-        };
-
-        assert!(reason.contains("srcwalk show <path> --section 1,3"));
-        assert!(!reason.contains("bad\npath.rs"), "{reason:?}");
-    }
-    #[test]
-    fn output_budget_resolution_preserves_default_and_overrides() {
-        assert_eq!(DEFAULT_OUTPUT_BUDGET, 6_000);
-        assert_eq!(resolve_output_budget(None, false), Some(6_000));
-        assert_eq!(resolve_output_budget(Some(1_234), false), Some(1_234));
-        assert_eq!(resolve_output_budget(None, true), None);
-        assert_eq!(resolve_output_budget(Some(1_234), true), None);
-    }
-}
-
 fn estimate_tokens(byte_len: u64) -> u64 {
     byte_len.div_ceil(4)
 }
@@ -1404,4 +1345,63 @@ fn run_show(
 
     let output = assemble_labeled_batch(&header, separator, &target_headers, &outputs);
     Ok(apply_cli_token_budget_preserving_footer(output, budget))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_cli_token_budget_preserving_footer, resolve_output_budget,
+        same_file_range_shorthand_route, SameFileRangeShorthandRoute,
+    };
+    use crate::cli::DEFAULT_OUTPUT_BUDGET;
+
+    #[test]
+    fn cli_footer_preservation_handles_trailing_newline() {
+        let body = (0..200)
+            .map(|i| format!("line {i}: lots of generated content"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = format!("# Header\n{body}\n\n> Caveat: partial\n> Next: use --expand next\n");
+
+        let rendered = apply_cli_token_budget_preserving_footer(output, Some(80));
+
+        assert!(rendered.contains("truncated to fit --budget"), "{rendered}");
+        assert!(
+            rendered.ends_with("> Caveat: partial\n> Next: use --expand next"),
+            "{rendered}"
+        );
+    }
+    #[test]
+    fn same_file_range_shorthand_parses_windows_drive_path() {
+        let targets = [r"C:\repo\src\lib.rs:1", "3-4"];
+        let Some(SameFileRangeShorthandRoute::Clean(route)) =
+            same_file_range_shorthand_route(&targets)
+        else {
+            panic!("expected clean same-file shorthand route");
+        };
+
+        assert_eq!(route.path, r"C:\repo\src\lib.rs");
+        assert_eq!(route.selector, "1,3-4");
+    }
+
+    #[test]
+    fn ambiguous_same_file_shorthand_uses_placeholder_when_path_cannot_be_quoted() {
+        let targets = ["bad\npath.rs:1", "3", "other.rs:1"];
+        let Some(SameFileRangeShorthandRoute::Ambiguous(reason)) =
+            same_file_range_shorthand_route(&targets)
+        else {
+            panic!("expected ambiguous same-file shorthand route");
+        };
+
+        assert!(reason.contains("srcwalk show <path> --section 1,3"));
+        assert!(!reason.contains("bad\npath.rs"), "{reason:?}");
+    }
+    #[test]
+    fn output_budget_resolution_preserves_default_and_overrides() {
+        assert_eq!(DEFAULT_OUTPUT_BUDGET, 6_000);
+        assert_eq!(resolve_output_budget(None, false), Some(6_000));
+        assert_eq!(resolve_output_budget(Some(1_234), false), Some(1_234));
+        assert_eq!(resolve_output_budget(None, true), None);
+        assert_eq!(resolve_output_budget(Some(1_234), true), None);
+    }
 }

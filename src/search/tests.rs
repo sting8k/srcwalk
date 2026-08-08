@@ -101,7 +101,7 @@ fn walker_invalid_glob_returns_error() {
 #[test]
 fn walker_brace_expansion_matches_multiple_extensions() {
     let scope = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let filtered = walk_paths(&scope, Some("*.{rs,toml}"));
+    let filtered = walk_paths(scope, Some("*.{rs,toml}"));
     let exts = extensions(&filtered);
     assert!(
         exts.contains("rs"),
@@ -124,8 +124,8 @@ fn walker_whitelist_fewer_than_unfiltered() {
     // Use project root (not src/) — project root has .toml, .md, .lock etc.
     // alongside .rs files, so *.rs is guaranteed to be a strict subset.
     let scope = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let all = walk_paths(&scope, None);
-    let rs_only = walk_paths(&scope, Some("*.rs"));
+    let all = walk_paths(scope, None);
+    let rs_only = walk_paths(scope, Some("*.rs"));
     assert!(
         rs_only.len() < all.len(),
         "whitelist ({}) should find fewer files than unfiltered ({})",
@@ -137,7 +137,7 @@ fn walker_whitelist_fewer_than_unfiltered() {
 #[test]
 fn walker_path_pattern_restricts_directory() {
     let scope = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let filtered = walk_paths(&scope, Some("src/**/*.rs"));
+    let filtered = walk_paths(scope, Some("src/**/*.rs"));
     assert!(!filtered.is_empty(), "path pattern should find files");
     let src_dir = scope.join("src");
     for p in &filtered {

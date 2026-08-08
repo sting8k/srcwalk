@@ -367,12 +367,12 @@ fn line_end(node: Node<'_>) -> u32 {
 mod tests {
     use super::*;
 
-    const SOURCE: &str = r#"function outer(value) {
+    const SOURCE: &str = r"function outer(value) {
   function helper(input) { return input + 1; }
   const first = helper(value);
   return helper(first);
 }
-"#;
+";
 
     #[test]
     fn extracts_parent_scope_with_a_deterministic_cap() {

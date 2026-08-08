@@ -1,4 +1,5 @@
 use super::*;
+use std::fmt::Write as _;
 
 #[test]
 fn heading_found() {
@@ -237,9 +238,11 @@ fn section_budget_controls_token_degradation() {
     let path = std::env::temp_dir().join("srcwalk_section_budget.rs");
     let mut body = String::from("fn noisy() {\n");
     for i in 0..80 {
-        body.push_str(&format!(
-                "    let value_{i} = \"padding padding padding padding padding padding padding padding\";\n"
-            ));
+        writeln!(
+            body,
+                "    let value_{i} = \"padding padding padding padding padding padding padding padding\";"
+            )
+        .unwrap();
     }
     body.push_str("}\n");
     std::fs::write(&path, body).unwrap();
@@ -278,15 +281,19 @@ fn over_limit_non_enclosed_numeric_section_does_not_emit_source_frame() {
     let path = std::env::temp_dir().join("srcwalk_overlimit_non_enclosed_frame.rs");
     let mut code = String::from("const VALUE: i32 = 1;\n\nfn first() {\n");
     for i in 0..80 {
-        code.push_str(&format!(
-            "    let a_{i} = \"padding padding padding padding padding padding\";\n"
-        ));
+        writeln!(
+            code,
+            "    let a_{i} = \"padding padding padding padding padding padding\";"
+        )
+        .unwrap();
     }
     code.push_str("}\n\nfn second() {\n");
     for i in 0..80 {
-        code.push_str(&format!(
-            "    let b_{i} = \"padding padding padding padding padding padding\";\n"
-        ));
+        writeln!(
+            code,
+            "    let b_{i} = \"padding padding padding padding padding padding\";"
+        )
+        .unwrap();
     }
     code.push_str("}\n");
     std::fs::write(&path, code).unwrap();
@@ -334,9 +341,11 @@ fn budget_cascade_full_to_outline() {
     // Build a file large enough that --full would emit ~5k tokens.
     let mut body = String::from("<?php\nclass Big {\n");
     for i in 0..120 {
-        body.push_str(&format!(
+        write!(
+            body,
                 "    public function method_{i}() {{\n        $x = {i}; // padding line {i}\n        return $x * 2;\n    }}\n"
-            ));
+            )
+        .unwrap();
     }
     body.push_str("}\n");
     let path = std::env::temp_dir().join("srcwalk_p11_cascade.php");
@@ -489,13 +498,13 @@ fn section_symbol_miss_shows_suggestions() {
 
 #[test]
 fn c_kr_function_section_resolves_by_name() {
-    let code = r#"static int rust_demangle_callback(data, len)
+    let code = r"static int rust_demangle_callback(data, len)
   const char *data;
   int len;
 {
   return 0;
 }
-"#;
+";
     let path = std::env::temp_dir().join("srcwalk_kr_section.c");
     std::fs::write(&path, code).unwrap();
 
@@ -511,14 +520,14 @@ fn c_kr_function_section_resolves_by_name() {
 
 #[test]
 fn c_preprocessor_function_section_resolves_by_name() {
-    let code = r#"#if (NGX_PCRE)
+    let code = r"#if (NGX_PCRE)
 void
 ngx_http_script_copy_capture_code(ngx_http_script_engine_t *e)
 {
     e->is_args = 1;
 }
 #endif
-"#;
+";
     let path = std::env::temp_dir().join("srcwalk_preproc_section.c");
     std::fs::write(&path, code).unwrap();
 
@@ -780,15 +789,11 @@ fn multi_section_mixes_symbol_and_line_range() {
 fn over_budget_multi_section_returns_compact_bodies_and_missing_notes() {
     let mut code = String::from("fn first() {\n");
     for i in 0..40 {
-        code.push_str(&format!(
-            "    let a_{i} = \"padding padding padding padding\";\n"
-        ));
+        writeln!(code, "    let a_{i} = \"padding padding padding padding\";").unwrap();
     }
     code.push_str("}\nfn second() {\n");
     for i in 0..40 {
-        code.push_str(&format!(
-            "    let b_{i} = \"padding padding padding padding\";\n"
-        ));
+        writeln!(code, "    let b_{i} = \"padding padding padding padding\";").unwrap();
     }
     code.push_str("}\n");
     let path = std::env::temp_dir().join("srcwalk_multi_section_budget.rs");
@@ -839,7 +844,7 @@ fn over_budget_multi_section_returns_compact_bodies_and_missing_notes() {
 fn compact_merged_symbol_and_range_keeps_range_anchor() {
     let mut code = String::from("fn big() {\n");
     for i in 0..80 {
-        code.push_str(&format!("    let value_{i} = {i};\n"));
+        writeln!(code, "    let value_{i} = {i};").unwrap();
     }
     code.push_str("}\n");
     let path = std::env::temp_dir().join("srcwalk_compact_range_anchor.rs");
@@ -1009,8 +1014,7 @@ fn path_symbol_target_reuses_section_resolution_and_rejects_drive_prefix() {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
+            .map_or(0, |duration| duration.as_nanos())
     ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("lib.rs"), "fn target() {\n    let x = 1;\n}\n").unwrap();

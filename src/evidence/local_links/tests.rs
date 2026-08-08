@@ -62,7 +62,7 @@ fn graph_dedups_semantic_edges_with_different_snippets() {
 
 #[test]
 fn graph_dedups_multiline_call_result_edges_from_call_sites() {
-    let rust = r#"
+    let rust = r"
 fn demo(req: Req, suffix: &str) {
     let path = build_path(
         req.path,
@@ -70,7 +70,7 @@ fn demo(req: Req, suffix: &str) {
     );
     OpenFile(path);
 }
-"#;
+";
     let graph =
         collect_local_links_for_function(Path::new("src/lib.rs"), rust, Lang::Rust, "demo", 1, 7);
     let call_result_links: Vec<_> = graph
@@ -156,26 +156,26 @@ fn graph_abstains_when_link_budget_is_exceeded() {
 
 #[test]
 fn extracts_rust_and_javascript_assignment_chains() {
-    let rust = r#"
+    let rust = r"
 fn demo(req: Req) {
 let path = req.path;
 let alias = path;
 ValidatePath(path);
 OpenFile(alias);
 }
-"#;
+";
     let rust_graph =
         collect_local_links_for_function(Path::new("src/lib.rs"), rust, Lang::Rust, "demo", 1, 7);
     assert!(rust_graph.unique_chain("req.path", "alias", 2).is_some());
 
-    let js = r#"
+    let js = r"
 function demo(req) {
   const path = req.path;
   const alias = path;
   ValidatePath(path);
   OpenFile(alias);
 }
-"#;
+";
     let js_graph = collect_local_links_for_function(
         Path::new("src/lib.js"),
         js,
@@ -212,12 +212,12 @@ fn predecessor_chain_is_bounded_and_abstains_on_ambiguity() {
 
 #[test]
 fn parenthesized_field_expression_is_not_a_call_result() {
-    let rust = r#"
+    let rust = r"
 fn demo(req: Request) {
     let value = (req.value);
     sink(value);
 }
-"#;
+";
     let graph =
         collect_local_links_for_function(Path::new("src/lib.rs"), rust, Lang::Rust, "demo", 1, 4);
 

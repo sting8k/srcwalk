@@ -402,6 +402,7 @@ fn smallest_function_matching_boundary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     fn function(start_line: u32, end_line: u32, children: Vec<OutlineEntry>) -> OutlineEntry {
         named_function("", start_line, end_line, children)
@@ -700,7 +701,7 @@ mod tests {
     fn rust_function(line_count: u32) -> String {
         let mut content = String::from("fn target() {\n");
         for line in 2..line_count {
-            content.push_str(&format!("    let v{line} = {line};\n"));
+            writeln!(content, "    let v{line} = {line};").unwrap();
         }
         content.push_str("}\n");
         content

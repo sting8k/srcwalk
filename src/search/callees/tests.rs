@@ -71,14 +71,14 @@ fn extract_kotlin_callee_names() {
 
 #[test]
 fn extract_php_callee_names() {
-    let php = r#"<?php
+    let php = r"<?php
 function run($svc): void {
     local_helper();
     Foo\Bar::staticCall();
     $svc->methodCall();
     $svc?->nullableCall();
 }
-"#;
+";
 
     let names = extract_callee_names(php, Lang::Php, None);
 
@@ -198,12 +198,12 @@ fn callee_queries_compile_for_all_supported_languages() {
 
 #[test]
 fn extract_call_sites_populates_callee_name() {
-    let rust = r#"
+    let rust = r"
 fn run(client: &Client) {
     let value = client.fetch(1);
     finish(value);
 }
-"#;
+";
     let sites = extract_call_sites(rust, Lang::Rust, None);
 
     let fetch = sites
@@ -282,14 +282,14 @@ async function downloadBinary(url, dest) {
 
 #[test]
 fn extract_csharp_optional_invocation_call_sites() {
-    let csharp = r#"
+    let csharp = r"
 class C {
     void Run() {
         _options.OnRegistered?.Invoke(ev);
         pending.RetryTimer?.Dispose();
     }
 }
-"#;
+";
     let sites = extract_call_sites(csharp, Lang::CSharp, None);
 
     let invoke = sites

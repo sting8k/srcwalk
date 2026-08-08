@@ -134,18 +134,16 @@ fn symbol_search_facets_use_semantic_compact_definition_rows() {
     for idx in 0..6 {
         std::fs::write(
             dir.path().join(format!("DependencyProperty{idx}.cs")),
-            format!(
-                r#"namespace Microsoft.UI.Xaml
-{{
+            r#"namespace Microsoft.UI.Xaml
+{
     public partial class DependencyProperty
-    {{
+    {
         public DependencyProperty()
-        {{
-        }}
-    }}
-}}
-"#
-            ),
+        {
+        }
+    }
+}
+"#,
         )
         .unwrap();
     }

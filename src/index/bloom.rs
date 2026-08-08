@@ -462,7 +462,7 @@ mod tests {
             }
         }
 
-        let fpr = false_positives as f64 / m as f64;
+        let fpr = f64::from(false_positives) / f64::from(m);
         // Target is 1%, allow up to 5% for statistical variance
         assert!(
             fpr < 0.05,

@@ -374,7 +374,7 @@ pub fn analyze_deps(
                             .entry(source)
                             .and_modify(|existing| *existing = (*existing).min(line))
                             .or_insert(line);
-                    } else if is_external(&source, lang) && is_valid_module_path(&source) {
+                    } else if is_external(&source, lang) && is_valid_python_source(&source) {
                         external_set.insert(source);
                     } else {
                         unresolved_by_source
@@ -965,6 +965,17 @@ fn is_stdlib(path: &Path, source: &str, lang: Lang) -> bool {
         }),
         _ => false,
     }
+}
+
+/// Premium-parity validity gate for Python external classification: module
+/// paths may carry an ` as ` alias tail in raw line evidence, so spaces are
+/// allowed; only a non-identifier lead character or embedded newline rejects.
+fn is_valid_python_source(source: &str) -> bool {
+    source
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_alphanumeric() || matches!(ch, '@' | '.' | '\\'))
+        && !source.contains('\n')
 }
 
 /// Returns true if the string looks like a valid module/package path.

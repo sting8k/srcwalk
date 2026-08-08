@@ -154,3 +154,23 @@ fn c_quoted_includes_need_unique_local_candidates_and_angle_includes_stay_extern
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn python_alias_import_stays_external_like_premium_line_evidence() {
+    let root = fixture("python-alias");
+    write(&root, "main.py", "import pkg.util as u\n");
+    write(&root, "pkg/__init__.py", "");
+    write(&root, "pkg/util.py", "def helper(): pass\n");
+
+    let stdout = deps(&root, "main.py");
+    assert!(
+        stdout.contains("# Deps: main.py — 0 local, 1 external, 0 dependents"),
+        "aliased module line evidence must classify external, not unresolved:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("pkg.util as u"),
+        "raw aliased source must be preserved as line evidence:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}

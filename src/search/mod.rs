@@ -8,6 +8,7 @@ mod display;
 pub mod facets;
 mod filter;
 pub mod glob;
+mod go_imports;
 pub mod io;
 pub mod pagination;
 pub mod rank;

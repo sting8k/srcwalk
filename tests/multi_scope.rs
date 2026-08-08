@@ -379,3 +379,126 @@ fn overlapping_scopes_are_deduped_before_pagination() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn space_separated_scope_values_get_route_aware_hints() {
+    let dir = temp_repo("space_separated_scope_hint");
+    write_file(&dir.join("docs/a.md"), "# doc\n");
+    write_file(&dir.join("src/lib.rs"), "pub fn shared_target() {}\n");
+    write_file(&dir.join("tests/lib.rs"), "pub fn shared_target() {}\n");
+
+    // discover --as symbol: repeat the flag.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "shared_target",
+            "--as",
+            "symbol",
+            "--scope",
+            "src",
+            "tests",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("hint: `discover --as symbol` requires `--scope` before each search root:")
+            && stderr
+                .contains("srcwalk discover shared_target --as symbol --scope src --scope tests"),
+        "expected symbol repeat-flag hint, got:\n{stderr}"
+    );
+
+    // discover --as text: one command per search root.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover", "needle", "--as", "text", "--scope", "docs", "src",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`discover --as text` accepts one --scope")
+            && stderr.contains("--scope docs")
+            && stderr.contains("--scope src")
+            && !stderr.contains("--scope docs --scope src"),
+        "expected split-commands hint, got:\n{stderr}"
+    );
+
+    // trace callers: one command per search root.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "trace",
+            "callers",
+            "shared_target",
+            "--scope",
+            "src",
+            "tests",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`trace callers` accepts one --scope")
+            && stderr.contains("--scope src")
+            && stderr.contains("--scope tests"),
+        "expected trace split-commands hint, got:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unknown_argument_without_scope_value_keeps_plain_error() {
+    let dir = temp_repo("space_separated_scope_negative");
+    write_file(&dir.join("src/lib.rs"), "pub fn shared_target() {}\n");
+
+    // `--json` after a valid scope is an UnknownArgument, but not a scope value:
+    // ambiguous -> stay silent, keep clap's original error.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "trace",
+            "callers",
+            "shared_target",
+            "--scope",
+            "src",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument '--json'") && !stderr.contains("hint:"),
+        "unknown non-scope argument should keep the plain clap error:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bare_discover_space_separated_scopes_gets_route_aware_hint() {
+    let dir = temp_repo("bare_space_separated_scope_hint");
+    write_file(&dir.join("src/lib.rs"), "pub fn shared_target() {}\n");
+    write_file(&dir.join("tests/lib.rs"), "pub fn shared_target() {}\n");
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "shared_target", "--scope", "src", "tests"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("hint:") && stderr.contains("--scope src --scope tests"),
+        "expected bare discover correction, got:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -112,7 +112,7 @@ pub(crate) fn run_flow(
                 );
                 (
                     selector_range(&resolved.selector),
-                    context_call_target(&resolved.selector),
+                    context_call_target(&resolved),
                 )
             }
             Err(err) => return Err(err),
@@ -414,10 +414,12 @@ fn selector_range(selector: &TargetSelector) -> Option<(u32, u32)> {
     }
 }
 
-fn context_call_target(selector: &TargetSelector) -> Option<String> {
-    match selector {
+fn context_call_target(target: &decision_flow::FlowTarget) -> Option<String> {
+    match &target.selector {
         TargetSelector::Symbol(name) => Some(name.clone()),
-        TargetSelector::LineRange { .. } | TargetSelector::FocusedLineRange { .. } => None,
+        TargetSelector::LineRange { .. } | TargetSelector::FocusedLineRange { .. } => {
+            target.resolved_symbol.clone()
+        }
     }
 }
 

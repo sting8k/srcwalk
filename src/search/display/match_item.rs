@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::OutlineCache;
 use crate::format::rel_nonempty;
+use crate::lang::tsconfig::ConfigCache;
 use crate::session::Session;
 use crate::types::Match;
 
@@ -20,6 +21,7 @@ pub(super) fn format_single_match(
     cache: &OutlineCache,
     session: Option<&Session>,
     bloom: &crate::index::bloom::BloomFilterCache,
+    config_cache: &ConfigCache,
     expand_remaining: &mut usize,
     expand_budget: &mut ExpandBudget,
     expanded_files: &mut HashSet<PathBuf>,
@@ -143,14 +145,26 @@ pub(super) fn format_single_match(
                             let callee_names =
                                 callees::extract_callee_names(&content, lang, m.def_range);
                             if !callee_names.is_empty() {
-                                let mut nodes = callees::resolve_callees_transitive(
+                                let logical_sources =
+                                    crate::lang::js_imports::logical_sources(&content, lang);
+                                let decisions = crate::read::js_alias::classify_js_imports(
+                                    &m.path,
+                                    &logical_sources,
+                                    scope,
+                                    config_cache,
+                                );
+                                let mut nodes = callees::resolve_callees_transitive_with_stream(
                                     &callee_names,
                                     &m.path,
                                     &content,
+                                    &logical_sources,
+                                    Some(&decisions),
                                     cache,
                                     bloom,
                                     2,
                                     15,
+                                    scope,
+                                    config_cache,
                                 );
 
                                 if let Some(ref name) = m.def_name {

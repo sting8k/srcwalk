@@ -11,6 +11,7 @@ use crate::evidence::{
     confidence_label_for, render_next_actions, Anchor, EvidenceSource, NextAction,
 };
 use crate::lang::decision_flow::{self, TargetSelector};
+use crate::lang::tsconfig::ConfigCache;
 use crate::{format, index, lang, search, types};
 
 const CONTEXT_SOURCE_EXCERPT_LINE_LIMIT: usize = 80;
@@ -44,6 +45,26 @@ pub(crate) fn run_flow(
         append_structural_artifact_header(&mut out, structural_artifact_context);
         out.push_str("\n\n(not a code file)");
         return Ok(out);
+    };
+
+    let config_cache = ConfigCache::new();
+    let logical_sources = if matches!(
+        lang,
+        types::Lang::JavaScript | types::Lang::TypeScript | types::Lang::Tsx
+    ) {
+        lang::js_imports::logical_sources(&content, lang)
+    } else {
+        Vec::new()
+    };
+    let decisions = if logical_sources.is_empty() {
+        None
+    } else {
+        Some(crate::read::js_alias::classify_js_imports(
+            &resolved.path,
+            &logical_sources,
+            scope,
+            &config_cache,
+        ))
     };
 
     let display_path = format::display_path(&resolved.path);
@@ -129,6 +150,9 @@ pub(crate) fn run_flow(
             scope,
             cache,
             &bloom,
+            &logical_sources,
+            decisions.as_deref(),
+            &config_cache,
             depth,
             filter,
         )?;
@@ -418,6 +442,9 @@ fn append_context_neighborhood(
     scope: &Path,
     cache: &OutlineCache,
     bloom: &index::bloom::BloomFilterCache,
+    logical_sources: &[(String, usize)],
+    decisions: Option<&[crate::read::js_alias::JsImportDecision]>,
+    config_cache: &ConfigCache,
     depth: Option<usize>,
     filter: Option<&str>,
 ) -> Result<(), SrcwalkError> {
@@ -471,14 +498,18 @@ fn append_context_neighborhood(
         search::callees::extract_callee_names(content, lang, focus_range)
     };
     let depth_limit = depth.map_or(1, |d| d.min(3) as u32);
-    let nodes = search::callees::resolve_callees_transitive(
+    let nodes = search::callees::resolve_callees_transitive_with_stream(
         &names,
         source_path,
         content,
+        logical_sources,
+        decisions,
         cache,
         bloom,
         depth_limit,
         30,
+        scope,
+        config_cache,
     );
     let flow_nodes = prioritize_flow_resolves(nodes, source_path);
     if !flow_nodes.is_empty() {

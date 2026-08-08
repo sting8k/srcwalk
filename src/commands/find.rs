@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::classify::{self, classify};
@@ -973,6 +974,8 @@ fn run_inner(
         return Err(err);
     }
 
+    let config_cache = crate::lang::tsconfig::ConfigCache::new();
+
     let query_type = classify(query, scope);
 
     // P1.2 — disambiguate bare-filename + --section.
@@ -1081,7 +1084,18 @@ fn run_inner(
                 && !artifact.enabled()
                 && !crate::capabilities::is_binary_artifact_path(&path)
             {
-                let related = read::imports::resolve_related_files(&path);
+                let related = fs::read_to_string(&path)
+                    .ok()
+                    .map(|content| {
+                        read::imports::resolve_related_files_with_content_and_scope(
+                            &path,
+                            &content,
+                            scope,
+                            &config_cache,
+                            Some(8),
+                        )
+                    })
+                    .unwrap_or_default();
                 if !related.is_empty() {
                     let hints: Vec<String> = related
                         .iter()

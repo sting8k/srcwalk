@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use dashmap::mapref::entry::Entry;
@@ -23,6 +23,8 @@ pub struct OutlineCache {
     /// Tree-sitter parse cache. Separate `DashMap` since `Tree` has no text-key lookup.
     /// Cleared wholesale when it exceeds `PARSE_CACHE_LIMIT` entries.
     trees: DashMap<(PathBuf, SystemTime), tree_sitter::Tree>,
+    /// Serializes cap checks, wholesale clears, and counter/map admission.
+    tree_admission: Mutex<()>,
     tree_count: AtomicUsize,
 }
 
@@ -31,6 +33,7 @@ impl Default for OutlineCache {
         Self {
             entries: DashMap::new(),
             trees: DashMap::new(),
+            tree_admission: Mutex::new(()),
             tree_count: AtomicUsize::new(0),
         }
     }
@@ -86,6 +89,12 @@ impl OutlineCache {
         parser.set_language(lang).ok()?;
         let tree = parser.parse(content, None)?;
 
+        // Couple the cap decision, reset, and insertion so concurrent misses cannot
+        // bypass the entry bound or desynchronize the counter from retained trees.
+        let _admission = self
+            .tree_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Cap check before insert. When exceeded, clear wholesale — simpler than LRU,
         // and the common case is either small repos (never exceeded) or MCP sessions
         // that revisit the same hot files (clear then refill naturally).

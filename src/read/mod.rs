@@ -1,3 +1,4 @@
+pub(crate) mod go_imports;
 pub mod imports;
 pub mod outline;
 

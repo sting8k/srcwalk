@@ -27,7 +27,7 @@ fn write_fixture(root: &Path, go_mod: Option<&str>) {
     }
     std::fs::write(
         root.join("main.go"),
-        "package main\n\nimport \"fmt\"\nimport \"net/http\"\nimport \"myapp/internal/config\"\n\nfunc main() { fmt.Println(http.StatusOK, config.Value) }\n",
+        "package main\n\nimport \"fmt\"\nimport (\n    \"myapp/internal/config\"\n    alias \"golang.org/x/tools\"\n    _ \"myapp/side\"\n)\nimport \"net/http\"\n\nfunc main() { fmt.Println(http.StatusOK, config.Value) }\n",
     )
     .unwrap();
 }
@@ -39,12 +39,13 @@ fn dotless_module_local_import_survives_stdlib_omission() {
 
     let stdout = deps(dir.path());
     assert!(
-        stdout.contains("# Deps: main.go — 0 local, 1 external, 0 dependents"),
+        stdout.contains("# Deps: main.go — 0 local, 3 external, 0 dependents"),
         "module-local dotless import must remain visible:\n{stdout}"
     );
     assert!(
-        stdout.contains("## Uses (external)\nmyapp/internal/config"),
-        "module-local source must not be omitted:\n{stdout}"
+        stdout
+            .contains("## Uses (external)\ngolang.org/x/tools\nmyapp/internal/config\nmyapp/side"),
+        "grouped and aliased sources must not be omitted:\n{stdout}"
     );
     assert!(!stdout.contains("fmt") && !stdout.contains("net/http"));
 }
@@ -56,7 +57,8 @@ fn missing_go_mod_keeps_unknown_dotless_import_but_omits_known_stdlib() {
 
     let stdout = deps(dir.path());
     assert!(
-        stdout.contains("## Uses (external)\nmyapp/internal/config"),
+        stdout
+            .contains("## Uses (external)\ngolang.org/x/tools\nmyapp/internal/config\nmyapp/side"),
         "without go.mod, uncertain dotless imports must stay visible:\n{stdout}"
     );
     assert!(!stdout.contains("fmt") && !stdout.contains("net/http"));

@@ -233,19 +233,26 @@ pub fn analyze_deps(
             }
         }
     } else {
-        for line in content.lines() {
-            if !is_import_line(line, lang) {
-                continue;
-            }
-            let source = extract_import_source(line, Some(lang));
-            if source.is_empty() {
-                continue;
-            }
+        let sources: Vec<String> = if lang == Lang::Go {
+            crate::read::go_imports::import_sources(&content)
+        } else {
+            content
+                .lines()
+                .filter_map(|line| {
+                    if !is_import_line(line, lang) {
+                        return None;
+                    }
+                    let source = extract_import_source(line, Some(lang));
+                    (!source.is_empty()).then_some(source)
+                })
+                .collect()
+        };
+        for source in sources {
             if is_external(&source, lang)
                 && !is_stdlib(path, &source, lang)
                 && is_valid_module_path(&source)
             {
-                external_set.insert(source.clone());
+                external_set.insert(source);
             }
         }
     }

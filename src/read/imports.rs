@@ -1,7 +1,6 @@
 //! Resolve import statements to local file paths.
 //! Used by the MCP layer to hint related files after an outlined read.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::lang::detect_file_type;
@@ -13,17 +12,7 @@ pub(crate) use crate::read::js_alias::{
 
 const MAX_SUGGESTIONS: usize = 8;
 
-#[allow(dead_code)]
-/// Extract import sources from a code file and resolve them to existing local file paths.
-/// Returns empty Vec for non-code files, files with no imports, or when all imports are external.
-pub fn resolve_related_files(file_path: &Path) -> Vec<PathBuf> {
-    let Ok(content) = fs::read_to_string(file_path) else {
-        return Vec::new();
-    };
-    resolve_related_files_with_content(file_path, &content)
-}
-
-/// Same as `resolve_related_files` but takes pre-read content to avoid a redundant file read.
+/// Extract import sources from already-read code content and resolve them to local file paths.
 pub fn resolve_related_files_with_content(file_path: &Path, content: &str) -> Vec<PathBuf> {
     resolve_related_files_with_limit(file_path, content, Some(MAX_SUGGESTIONS))
 }

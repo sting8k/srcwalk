@@ -92,7 +92,9 @@ pub(crate) fn is_import_line(line: &str, lang: Lang) -> bool {
         Lang::Rust => trimmed.starts_with("use "),
         Lang::TypeScript | Lang::Tsx | Lang::JavaScript => is_js_dependency_line(trimmed),
         Lang::Python => trimmed.starts_with("import ") || trimmed.starts_with("from "),
-        Lang::Go | Lang::Java | Lang::Scala | Lang::Kotlin => trimmed.starts_with("import "),
+        Lang::Go | Lang::Java | Lang::Scala | Lang::Kotlin => {
+            crate::read::keyword_rest(trimmed, "import").is_some()
+        }
         Lang::C | Lang::Cpp => trimmed.starts_with("#include"),
         Lang::Css | Lang::Scss | Lang::Less => {
             crate::lang::css::import_source(trimmed, lang).is_some()

@@ -834,6 +834,16 @@ pub(crate) fn extract_import_source(text: &str, lang: Option<crate::types::Lang>
         }
     }
 
+    // JVM imports: strip `static`, keep grouped/braced forms, drop alias tails.
+    if lang.is_some_and(|lang| {
+        matches!(
+            lang,
+            crate::types::Lang::Java | crate::types::Lang::Kotlin | crate::types::Lang::Scala
+        )
+    }) {
+        return extract_jvm_import_source(trimmed);
+    }
+
     // Stylesheets: `@import "theme.css"`, Sass `@use "tokens"`, or `url(...)`.
     if lang.is_some_and(crate::lang::css::is_stylesheet_lang) {
         if let Some(source) = crate::lang::css::import_source(trimmed, lang.unwrap()) {
@@ -865,9 +875,8 @@ pub(crate) fn extract_import_source(text: &str, lang: Option<crate::types::Lang>
         }
     }
 
-    if trimmed.starts_with("import") {
+    if let Some(after) = crate::read::keyword_rest(trimmed, "import") {
         // Non-JS imports such as Go `import "source"` and Python `import module`.
-        let after = trimmed.strip_prefix("import ").unwrap_or("");
         return after
             .trim()
             .trim_matches(|c| c == '"' || c == '\'' || c == ';')
@@ -894,6 +903,20 @@ pub(crate) fn extract_import_source(text: &str, lang: Option<crate::types::Lang>
         .last()
         .unwrap_or(trimmed)
         .to_string()
+}
+
+fn extract_jvm_import_source(trimmed: &str) -> String {
+    let Some(rest) = crate::read::keyword_rest(trimmed, "import") else {
+        return trimmed.to_string();
+    };
+    let rest = rest.trim_start();
+    let rest = crate::read::keyword_rest(rest, "static").map_or(rest, str::trim_start);
+    let source = if rest.contains('{') {
+        rest
+    } else {
+        rest.rsplit_once(" as ").map_or(rest, |(source, _)| source)
+    };
+    source.trim().to_string()
 }
 
 fn is_js_like_lang(lang: Option<crate::types::Lang>) -> bool {

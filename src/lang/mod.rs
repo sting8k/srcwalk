@@ -2,9 +2,11 @@ pub(crate) mod css;
 pub(crate) mod decision_flow;
 pub mod detection;
 pub(crate) mod document;
+pub(crate) mod js_imports;
 pub mod outline;
 pub(crate) mod scoped_occurrences;
 pub mod treesitter;
+pub(crate) mod tsconfig;
 
 use std::path::Path;
 

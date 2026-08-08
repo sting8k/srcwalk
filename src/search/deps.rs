@@ -14,8 +14,13 @@ use crate::evidence::{
 };
 use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
+use crate::lang::js_imports::logical_sources;
 use crate::lang::outline::{extract_import_source, get_outline_entries};
-use crate::read::imports::{is_external, is_import_line, resolve_related_files_with_content};
+use crate::lang::tsconfig::ConfigCache;
+use crate::read::imports::{
+    classify_js_imports, is_external, is_import_line, ordered_local_paths,
+    resolve_related_files_with_content, JsImportResolution,
+};
 use crate::search::callees::{extract_callee_names, resolve_callees};
 use crate::search::callers::find_callers_batch;
 use crate::types::{Lang, OutlineKind};
@@ -26,11 +31,16 @@ const MAX_EXPORTED_SYMBOLS: usize = 25;
 /// Maximum number of dependents to show before truncation.
 const MAX_DEPENDENTS: usize = 15;
 
+/// Maximum unresolved local-looking imports rendered before an omitted note.
+const MAX_UNRESOLVED_ROWS: usize = 20;
+const TS_CONFIG_PATHS_FOOTNOTE: &str = "> `via tsconfig paths` means the alias matched a `paths` entry in the nearest `tsconfig.json`/`jsconfig.json` for the source file and the target file was verified to exist on disk. This is config-guided static evidence only; it does not imply TypeScript compiler, Node, runtime, package-export, or bundler resolution.";
+
 /// Result of a full dependency analysis for a single file.
 pub struct DepsResult {
     pub target: PathBuf,
     pub uses_local: Vec<LocalDep>,
     pub uses_external: Vec<String>,
+    pub uses_unresolved_local_looking: Vec<UnresolvedLocalDep>,
     pub used_by: Vec<Dependent>,
     /// Total dependents found before truncation.
     pub total_dependents: usize,
@@ -43,6 +53,14 @@ pub struct DepsResult {
 pub struct LocalDep {
     pub path: PathBuf,
     pub symbols: Vec<String>,
+    pub(crate) via_tsconfig_paths: bool,
+}
+
+/// A static JS/TS/TSX import that expresses local intent but has no verified
+/// in-scope file target. It is kept separate from local and external evidence.
+pub struct UnresolvedLocalDep {
+    pub source: String,
+    pub line: u32,
 }
 
 impl LocalDep {
@@ -114,6 +132,7 @@ pub fn analyze_deps(
             target: path.clone(),
             uses_local: Vec::new(),
             uses_external: Vec::new(),
+            uses_unresolved_local_looking: Vec::new(),
             used_by: Vec::new(),
             total_dependents: 0,
             exported_count: 0,
@@ -169,6 +188,21 @@ pub fn analyze_deps(
 
     // ── Phase 2: Forward dependencies ────────────────────────────────────────
 
+    // JS/TS/TSX share one parser-backed source stream across local, external,
+    // and unresolved classification. Other languages keep their line stream.
+    let is_js_like = matches!(lang, Lang::JavaScript | Lang::TypeScript | Lang::Tsx);
+    let config_cache = ConfigCache::new();
+    let js_import_stream = if is_js_like {
+        logical_sources(&content, lang)
+    } else {
+        Vec::new()
+    };
+    let js_import_decisions = if is_js_like {
+        classify_js_imports(path, &js_import_stream, scope, &config_cache)
+    } else {
+        Vec::new()
+    };
+
     // Local deps via callee resolution. Document files have links/assets, not call edges.
     let callee_names = if file_type.is_code() {
         extract_callee_names(&content, lang, None)
@@ -181,11 +215,36 @@ pub fn analyze_deps(
         Vec::new()
     };
 
-    // Group resolved callees by file
+    // Group resolved callees by file.
     let mut local_by_file: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    let mut alias_import_paths = HashSet::new();
+    let mut non_alias_paths = HashSet::new();
+
+    for decision in &js_import_decisions {
+        if let JsImportResolution::Local {
+            path,
+            via_tsconfig_paths,
+        } = &decision.resolution
+        {
+            let paths = if *via_tsconfig_paths {
+                &mut alias_import_paths
+            } else {
+                &mut non_alias_paths
+            };
+            paths.insert(path.clone());
+            if let Ok(canonical) = path.canonicalize() {
+                paths.insert(canonical);
+            }
+        }
+    }
+
     for callee in resolved {
         if callee.file != *path {
             let callee_file = callee.file.canonicalize().unwrap_or(callee.file);
+            non_alias_paths.insert(callee_file.clone());
+            if let Ok(canonical) = callee_file.canonicalize() {
+                non_alias_paths.insert(canonical);
+            }
             local_by_file
                 .entry(callee_file)
                 .or_default()
@@ -194,33 +253,50 @@ pub fn analyze_deps(
     }
 
     for (dep_path, symbol) in crate::capabilities::local_deps(lang, path, &content) {
+        non_alias_paths.insert(dep_path.clone());
+        if let Ok(canonical) = dep_path.canonicalize() {
+            non_alias_paths.insert(canonical);
+        }
         local_by_file.entry(dep_path).or_default().push(symbol);
     }
 
-    // Merge in import-resolved files (may not have resolved callees if symbols
-    // weren't matched, but the import relationship itself is meaningful)
-    let import_files = resolve_related_files_with_content(path, &content);
+    // Merge import-resolved files; relative candidates fill the historical
+    // slots before aliases, even when an alias appears earlier in source order.
+    let import_files = if is_js_like {
+        ordered_local_paths(&js_import_decisions, Some(8))
+    } else {
+        resolve_related_files_with_content(path, &content)
+    };
     for import_path in import_files {
         let import_path = import_path.canonicalize().unwrap_or(import_path);
+        if !is_js_like {
+            non_alias_paths.insert(import_path.clone());
+        }
         local_by_file.entry(import_path).or_default();
     }
 
-    // Sort symbols within each dep, then build the list sorted by path
+    // Sort symbols within each dep, then build the list sorted by path.
     let mut uses_local: Vec<LocalDep> = local_by_file
         .into_iter()
         .map(|(dep_path, mut syms)| {
             syms.sort();
             syms.dedup();
+            let via_tsconfig_paths = is_js_like
+                && alias_import_paths.contains(&dep_path)
+                && !non_alias_paths.contains(&dep_path);
             LocalDep {
                 path: dep_path,
                 symbols: syms,
+                via_tsconfig_paths,
             }
         })
         .collect();
     uses_local.sort_by(|a, b| a.path.cmp(&b.path));
 
-    // External deps via explicit imports/resource references.
+    // External and unresolved JS/TS/TSX rows consume the same decisions used
+    // for local imports. Other languages retain the historical line scan.
     let mut external_set: HashSet<String> = HashSet::new();
+    let mut unresolved_by_source: HashMap<String, u32> = HashMap::new();
     if crate::lang::css::is_stylesheet_lang(lang) || is_document {
         let sources = if crate::lang::css::is_stylesheet_lang(lang) {
             crate::lang::css::dependency_sources(&content, lang)
@@ -229,7 +305,26 @@ pub fn analyze_deps(
         };
         for source in sources {
             if is_external(&source, lang) && !source.contains(' ') {
-                external_set.insert(source.clone());
+                external_set.insert(source);
+            }
+        }
+    } else if is_js_like {
+        for decision in &js_import_decisions {
+            match &decision.resolution {
+                JsImportResolution::External
+                    if !is_stdlib(&decision.source, lang)
+                        && is_valid_module_path(&decision.source) =>
+                {
+                    external_set.insert(decision.source.clone());
+                }
+                JsImportResolution::Unresolved => {
+                    let line = decision.opening_line as u32;
+                    unresolved_by_source
+                        .entry(decision.source.clone())
+                        .and_modify(|existing| *existing = (*existing).min(line))
+                        .or_insert(line);
+                }
+                JsImportResolution::Local { .. } | JsImportResolution::External => {}
             }
         }
     } else {
@@ -270,6 +365,13 @@ pub fn analyze_deps(
 
     let mut uses_external: Vec<String> = external_set.into_iter().collect();
     uses_external.sort();
+
+    let mut uses_unresolved_local_looking: Vec<UnresolvedLocalDep> = unresolved_by_source
+        .into_iter()
+        .map(|(source, line)| UnresolvedLocalDep { source, line })
+        .collect();
+    uses_unresolved_local_looking
+        .sort_by(|a, b| a.line.cmp(&b.line).then_with(|| a.source.cmp(&b.source)));
 
     // ── Phase 3: Reverse dependencies ────────────────────────────────────────
 
@@ -349,6 +451,7 @@ pub fn analyze_deps(
         target: path.clone(),
         uses_local,
         uses_external,
+        uses_unresolved_local_looking,
         used_by,
         total_dependents,
         exported_count,
@@ -384,19 +487,30 @@ pub fn format_deps(
 
     // ── Build sections (full fidelity first) ─────────────────────────────────
 
-    // Header
+    // Header. Unresolved local-looking evidence is opt-in so the no-row shape stays stable.
     let rel_target = rel_nonempty(&result.target, scope);
+    let unresolved_fragment = if result.uses_unresolved_local_looking.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", {} unresolved",
+            result.uses_unresolved_local_looking.len()
+        )
+    };
     let header = format!(
-        "# Deps: {} — {} local, {} external, {} dependent{}",
+        "# Deps: {} — {} local, {} external{}, {} dependent{}",
         rel_target,
         result.uses_local.len(),
         result.uses_external.len(),
+        unresolved_fragment,
         dep_count,
         if dep_count == 1 { "" } else { "s" },
     );
 
     let uses_local_section = format_uses_local(&result.uses_local, scope, true);
     let uses_external_section = format_uses_external(&result.uses_external, &result.target);
+    let uses_unresolved_section =
+        format_uses_unresolved_local(&result.uses_unresolved_local_looking);
     let used_by_section = format_used_by(&prod_deps, scope, "## Used by");
     let used_by_tests_section = if test_deps.is_empty() {
         String::new()
@@ -421,6 +535,9 @@ pub fn format_deps(
     }
     if !uses_external_section.is_empty() {
         parts.push(uses_external_section.clone());
+    }
+    if !uses_unresolved_section.is_empty() {
+        parts.push(uses_unresolved_section.clone());
     }
     if !used_by_section.is_empty() {
         parts.push(used_by_section.clone());
@@ -789,17 +906,27 @@ fn format_uses_local(deps: &[LocalDep], scope: &Path, with_symbols: bool) -> Str
     }
 
     let mut out = String::from("## Uses (local)");
+    let has_alias_marker = deps.iter().any(|dep| dep.via_tsconfig_paths);
     for (dir, mut rows) in by_dir {
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         let _ = write!(out, "\n{dir}");
         for (file, dep) in rows {
+            let file_label = if dep.via_tsconfig_paths {
+                format!("{file} (via tsconfig paths)")
+            } else {
+                file
+            };
             let atom = dep.to_evidence_atom();
             if with_symbols && !atom.snippet().is_empty() {
-                let _ = write!(out, "\n  {:<28} {}", file, atom.snippet());
+                let _ = write!(out, "\n  {file_label:<28} {}", atom.snippet());
             } else {
-                let _ = write!(out, "\n  {file}");
+                let _ = write!(out, "\n  {file_label}");
             }
         }
+    }
+    if has_alias_marker {
+        out.push_str("\n\n");
+        out.push_str(TS_CONFIG_PATHS_FOOTNOTE);
     }
     out
 }
@@ -826,6 +953,25 @@ fn format_uses_external(externals: &[String], target: &Path) -> String {
             EvidenceSource::Text,
         );
         let _ = write!(out, "\n{}", atom.snippet());
+    }
+    out
+}
+
+/// Format unresolved local-looking imports with a deterministic bounded list.
+fn format_uses_unresolved_local(deps: &[UnresolvedLocalDep]) -> String {
+    if deps.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("## Uses (unresolved local-looking)");
+    for dep in deps.iter().take(MAX_UNRESOLVED_ROWS) {
+        let _ = write!(out, "\n  {}  {}", dep.line, dep.source);
+    }
+    let omitted = deps.len().saturating_sub(MAX_UNRESOLVED_ROWS);
+    if omitted > 0 {
+        let _ = write!(
+            out,
+            "\n\n… and {omitted} more unresolved local-looking imports"
+        );
     }
     out
 }
@@ -942,15 +1088,37 @@ fn apply_budget_truncation(
         // Level 3: local as paths only (no symbols)
         |hdr, ul, _ue, _pd, _td, _bn, _sc| {
             // Strip symbol lists: each line is "path_padded  symbols" — take only up to first space run
-            let local_lines: Vec<&str> = ul
+            let has_alias_marker = ul.contains(" (via tsconfig paths)");
+            let local_lines: Vec<String> = ul
                 .lines()
                 .skip(1) // skip heading
-                .map(|l| l.split_whitespace().next().unwrap_or(l))
+                .filter_map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('>') {
+                        return None;
+                    }
+                    let marker = " (via tsconfig paths)";
+                    if let Some(end) = trimmed.find(marker).map(|index| index + marker.len()) {
+                        return Some(trimmed[..end].to_string());
+                    }
+                    Some(
+                        trimmed
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(trimmed)
+                            .to_string(),
+                    )
+                })
                 .collect();
             let paths_only = if local_lines.is_empty() {
                 String::new()
             } else {
                 format!("## Uses (local)\n{}", local_lines.join("\n"))
+            };
+            let paths_only = if has_alias_marker && !paths_only.is_empty() {
+                format!("{paths_only}\n\n{TS_CONFIG_PATHS_FOOTNOTE}")
+            } else {
+                paths_only
             };
             assemble(&[hdr, &paths_only])
         },
@@ -1016,6 +1184,7 @@ mod tests {
         let dep = LocalDep {
             path: PathBuf::from("dep.rs"),
             symbols: Vec::new(),
+            via_tsconfig_paths: false,
         };
 
         assert_eq!(dep.to_evidence_atom().source(), EvidenceSource::Text);
@@ -1026,6 +1195,7 @@ mod tests {
         let dep = LocalDep {
             path: PathBuf::from("dep.rs"),
             symbols: vec!["render".to_string()],
+            via_tsconfig_paths: false,
         };
 
         assert_eq!(dep.to_evidence_atom().source(), EvidenceSource::Ast);

@@ -4,7 +4,7 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
-## 1.4.0 - 2026-08-09
+## [1.4.0] - 2026-08-09
 
 ### Added
 - Ruby structural navigation: outline, `deps` require/require_relative resolution, Flow Map with honest abstention on unsupported constructs.

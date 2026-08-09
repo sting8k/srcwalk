@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use dashmap::mapref::entry::Entry;
@@ -15,15 +15,19 @@ struct CacheEntry {
 /// Trees can be 3-10x source size in memory; 2000 files ≈ a few hundred MB.
 /// Wholesale clear is simpler than LRU and adequate for intra-session scope.
 const PARSE_CACHE_LIMIT: usize = 2000;
+const PARSE_CACHE_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Outline + parse cache keyed by (canonical path, mtime). If the file changes,
 /// mtime changes and the old entry is never hit again.
 pub struct OutlineCache {
     entries: DashMap<(PathBuf, SystemTime), CacheEntry>,
     /// Tree-sitter parse cache. Separate `DashMap` since `Tree` has no text-key lookup.
-    /// Cleared wholesale when it exceeds `PARSE_CACHE_LIMIT` entries.
+    /// Cleared wholesale when it exceeds either count or source-byte caps.
     trees: DashMap<(PathBuf, SystemTime), tree_sitter::Tree>,
+    /// Serializes cap checks, wholesale clears, and counter/map admission.
+    tree_admission: Mutex<()>,
     tree_count: AtomicUsize,
+    tree_source_bytes: AtomicUsize,
 }
 
 impl Default for OutlineCache {
@@ -31,7 +35,9 @@ impl Default for OutlineCache {
         Self {
             entries: DashMap::new(),
             trees: DashMap::new(),
+            tree_admission: Mutex::new(()),
             tree_count: AtomicUsize::new(0),
+            tree_source_bytes: AtomicUsize::new(0),
         }
     }
 }
@@ -86,18 +92,38 @@ impl OutlineCache {
         parser.set_language(lang).ok()?;
         let tree = parser.parse(content, None)?;
 
+        // Couple the cap decision, reset, and insertion so concurrent misses cannot
+        // bypass the entry bound or desynchronize the counter from retained trees.
+        let _admission = self
+            .tree_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Do not retain one oversized source, and clear existing entries first.
+        if content.len() > PARSE_CACHE_SOURCE_BYTES {
+            self.trees.clear();
+            self.tree_count.store(0, Ordering::Relaxed);
+            self.tree_source_bytes.store(0, Ordering::Relaxed);
+            return Some(tree);
+        }
+
         // Cap check before insert. When exceeded, clear wholesale — simpler than LRU,
         // and the common case is either small repos (never exceeded) or MCP sessions
         // that revisit the same hot files (clear then refill naturally).
-        if self.tree_count.load(Ordering::Relaxed) >= PARSE_CACHE_LIMIT {
+        let source_bytes = self.tree_source_bytes.load(Ordering::Relaxed);
+        if self.tree_count.load(Ordering::Relaxed) >= PARSE_CACHE_LIMIT
+            || source_bytes.saturating_add(content.len()) > PARSE_CACHE_SOURCE_BYTES
+        {
             self.trees.clear();
             self.tree_count.store(0, Ordering::Relaxed);
+            self.tree_source_bytes.store(0, Ordering::Relaxed);
         }
 
         match self.trees.entry(key) {
             Entry::Occupied(e) => Some(e.get().clone()),
             Entry::Vacant(e) => {
                 self.tree_count.fetch_add(1, Ordering::Relaxed);
+                self.tree_source_bytes
+                    .fetch_add(content.len(), Ordering::Relaxed);
                 Some(e.insert(tree).value().clone())
             }
         }

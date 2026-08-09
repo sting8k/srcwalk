@@ -15,6 +15,8 @@ use streaming_iterator::StreamingIterator;
 use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
 use crate::lang::outline::{get_outline_entries, outline_language};
+use crate::lang::tsconfig::ConfigCache;
+use crate::read::js_alias::{self, JsImportDecision};
 use crate::types::{Lang, OutlineEntry};
 
 /// A resolved callee: a function/method called from within an expanded definition.
@@ -84,6 +86,7 @@ pub(crate) fn callee_query_str(lang: Lang) -> Option<&'static str> {
         Lang::JavaScript => Some(concat!(
             "(call_expression function: (identifier) @callee)\n",
             "(call_expression function: (member_expression property: (property_identifier) @callee))\n",
+            "(call_expression function: (member_expression property: (private_property_identifier) @callee))\n",
             // new Foo()
             "(new_expression constructor: (identifier) @callee)\n",
             // class Foo extends Bar
@@ -92,6 +95,7 @@ pub(crate) fn callee_query_str(lang: Lang) -> Option<&'static str> {
         Lang::TypeScript | Lang::Tsx => Some(concat!(
             "(call_expression function: (identifier) @callee)\n",
             "(call_expression function: (member_expression property: (property_identifier) @callee))\n",
+            "(call_expression function: (member_expression property: (private_property_identifier) @callee))\n",
             // new Foo()
             "(new_expression constructor: (identifier) @callee)\n",
             // extends / implements
@@ -717,11 +721,14 @@ pub fn resolve_callees_same_file(
 ///
 /// Strategy: check the source file's own outline first (cheapest), then scan
 /// imported files resolved from the source's import statements.
-pub fn resolve_callees(
+pub(crate) fn resolve_callees_with_stream(
     callee_names: &[String],
     source_path: &Path,
     source_content: &str,
-    _cache: &OutlineCache,
+    logical_sources: &[(String, usize)],
+    decisions: Option<&[JsImportDecision]>,
+    scope: &Path,
+    config_cache: &ConfigCache,
     bloom: &crate::index::bloom::BloomFilterCache,
 ) -> Vec<ResolvedCallee> {
     if callee_names.is_empty() {
@@ -746,8 +753,19 @@ pub fn resolve_callees(
     }
 
     // 2. Check imported files
-    let imported =
-        crate::read::imports::resolve_related_files_with_content(source_path, source_content);
+    let imported = if matches!(lang, Lang::JavaScript | Lang::TypeScript | Lang::Tsx) {
+        let owned_decisions;
+        let decisions = if let Some(decisions) = decisions {
+            decisions
+        } else {
+            owned_decisions =
+                js_alias::classify_js_imports(source_path, logical_sources, scope, config_cache);
+            &owned_decisions
+        };
+        js_alias::ordered_local_paths(decisions, Some(js_alias::MAX_JS_RELATED_FILES))
+    } else {
+        crate::read::imports::resolve_related_files_with_content(source_path, source_content)
+    };
 
     for import_path in imported {
         if remaining.is_empty() {
@@ -797,6 +815,35 @@ pub fn resolve_callees(
     }
 
     resolved
+}
+
+/// Compatibility adapter for standalone callers and existing tests.
+#[allow(dead_code)]
+pub fn resolve_callees(
+    callee_names: &[String],
+    source_path: &Path,
+    source_content: &str,
+    _cache: &OutlineCache,
+    bloom: &crate::index::bloom::BloomFilterCache,
+) -> Vec<ResolvedCallee> {
+    let stream = match crate::lang::detect_file_type(source_path).structural_lang() {
+        Some(lang) if matches!(lang, Lang::JavaScript | Lang::TypeScript | Lang::Tsx) => {
+            crate::lang::js_imports::logical_sources(source_content, lang)
+        }
+        _ => Vec::new(),
+    };
+    let scope = source_path.parent().unwrap_or_else(|| Path::new("."));
+    let config_cache = ConfigCache::new();
+    resolve_callees_with_stream(
+        callee_names,
+        source_path,
+        source_content,
+        &stream,
+        None,
+        scope,
+        &config_cache,
+        bloom,
+    )
 }
 
 /// Go same-package resolution: scan .go files in the same directory.
@@ -860,17 +907,30 @@ fn resolve_same_package(
 ///
 /// `budget` caps the total number of 2nd-hop (child) callees across all parents.
 /// Cycle detection prevents infinite loops via `(file, start_line)` tracking.
-pub fn resolve_callees_transitive(
+pub(crate) fn resolve_callees_transitive_with_stream(
     initial_names: &[String],
     source_path: &Path,
     source_content: &str,
+    logical_sources: &[(String, usize)],
+    decisions: Option<&[JsImportDecision]>,
     cache: &OutlineCache,
     bloom: &crate::index::bloom::BloomFilterCache,
     depth_limit: u32,
     budget: usize,
+    scope: &Path,
+    config_cache: &ConfigCache,
 ) -> Vec<ResolvedCalleeNode> {
     // 1st hop: resolve direct callees (existing logic)
-    let first_hop = resolve_callees(initial_names, source_path, source_content, cache, bloom);
+    let first_hop = resolve_callees_with_stream(
+        initial_names,
+        source_path,
+        source_content,
+        logical_sources,
+        decisions,
+        scope,
+        config_cache,
+        bloom,
+    );
 
     if depth_limit < 2 || first_hop.is_empty() {
         return first_hop
@@ -895,7 +955,15 @@ pub fn resolve_callees_transitive(
 
     for parent in first_hop {
         let children = if budget_remaining > 0 {
-            resolve_second_hop(&parent, cache, bloom, &mut visited, &mut budget_remaining)
+            resolve_second_hop(
+                &parent,
+                cache,
+                bloom,
+                &mut visited,
+                &mut budget_remaining,
+                scope,
+                config_cache,
+            )
         } else {
             Vec::new()
         };
@@ -908,13 +976,49 @@ pub fn resolve_callees_transitive(
     result
 }
 
+/// Compatibility adapter for standalone callers and existing tests.
+#[allow(dead_code)]
+pub fn resolve_callees_transitive(
+    initial_names: &[String],
+    source_path: &Path,
+    source_content: &str,
+    cache: &OutlineCache,
+    bloom: &crate::index::bloom::BloomFilterCache,
+    depth_limit: u32,
+    budget: usize,
+) -> Vec<ResolvedCalleeNode> {
+    let stream = match crate::lang::detect_file_type(source_path).structural_lang() {
+        Some(lang) if matches!(lang, Lang::JavaScript | Lang::TypeScript | Lang::Tsx) => {
+            crate::lang::js_imports::logical_sources(source_content, lang)
+        }
+        _ => Vec::new(),
+    };
+    let scope = source_path.parent().unwrap_or_else(|| Path::new("."));
+    let config_cache = ConfigCache::new();
+    resolve_callees_transitive_with_stream(
+        initial_names,
+        source_path,
+        source_content,
+        &stream,
+        None,
+        cache,
+        bloom,
+        depth_limit,
+        budget,
+        scope,
+        &config_cache,
+    )
+}
+
 /// Resolve 2nd-hop callees for a single parent callee.
 fn resolve_second_hop(
     parent: &ResolvedCallee,
-    cache: &OutlineCache,
+    _cache: &OutlineCache,
     bloom: &crate::index::bloom::BloomFilterCache,
     visited: &mut HashSet<(PathBuf, u32)>,
     budget: &mut usize,
+    scope: &Path,
+    config_cache: &ConfigCache,
 ) -> Vec<ResolvedCallee> {
     let file_type = crate::lang::detect_file_type(&parent.file);
     let crate::types::FileType::Code(lang) = file_type else {
@@ -932,7 +1036,21 @@ fn resolve_second_hop(
         return Vec::new();
     }
 
-    let mut resolved = resolve_callees(&nested_names, &parent.file, &content, cache, bloom);
+    let logical_sources = if matches!(lang, Lang::JavaScript | Lang::TypeScript | Lang::Tsx) {
+        crate::lang::js_imports::logical_sources(&content, lang)
+    } else {
+        Vec::new()
+    };
+    let mut resolved = resolve_callees_with_stream(
+        &nested_names,
+        &parent.file,
+        &content,
+        &logical_sources,
+        None,
+        scope,
+        config_cache,
+        bloom,
+    );
 
     // Filter: skip self-recursive calls and already-visited callees
     resolved.retain(|c| {

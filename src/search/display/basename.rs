@@ -6,7 +6,7 @@ use crate::types::Match;
 
 fn source_priority(path: &Path) -> u8 {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
-        "ts" | "tsx" => 10,
+        "ts" | "tsx" | "mts" | "cts" => 10,
         "rs" | "go" | "py" | "rb" | "java" | "kt" | "scala" | "swift" | "c" | "cpp" | "h"
         | "cs" | "php" => 9,
         "js" | "jsx" | "mjs" | "cjs" => 7,
@@ -33,6 +33,10 @@ fn find_basename_candidate(matches: &[Match], query_lower: &str) -> Option<PathB
                 | "tsx"
                 | "js"
                 | "jsx"
+                | "mjs"
+                | "cjs"
+                | "mts"
+                | "cts"
                 | "go"
                 | "py"
                 | "rb"

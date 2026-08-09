@@ -13,7 +13,9 @@ use dashmap::DashMap;
 
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
-use crate::lang::treesitter::{extract_definition_name, DEFINITION_KINDS};
+use crate::lang::treesitter::{
+    extract_definition_name, is_definition_kind, is_transparent_export_wrapper,
+};
 use crate::types::FileType;
 
 /// Maximum file size to index (500 KB). Matches the limit in symbol search.
@@ -293,8 +295,12 @@ fn collect_provider_outline_symbols(
 ///
 /// Unlike `search::symbol::walk_for_definitions` which searches for a specific name,
 /// this extracts ALL definition names for index building.
-/// Depth-limited to 3 levels (matching search behavior) to avoid descending
-/// into deeply nested anonymous blocks.
+/// Maximum AST depth for symbol extraction. Most languages keep the historical
+/// depth-3 cap; Ruby namespace paths (`module -> class -> method`) reach depth 5
+/// and get an extended cap so nested class methods are indexed.
+const MAX_INDEX_DEPTH: usize = 3;
+const MAX_INDEX_DEPTH_RUBY: usize = 8;
+
 fn walk_definitions(
     node: tree_sitter::Node,
     lines: &[&str],
@@ -302,13 +308,23 @@ fn walk_definitions(
     lang: crate::types::Lang,
     depth: usize,
 ) {
-    if depth > 3 {
+    let max_depth = if lang == crate::types::Lang::Ruby {
+        MAX_INDEX_DEPTH_RUBY
+    } else {
+        MAX_INDEX_DEPTH
+    };
+    if depth > max_depth {
         return;
     }
 
     let kind = node.kind();
 
-    if DEFINITION_KINDS.contains(&kind) {
+    // A transparent `export_statement` wrapper and its inner declaration are one source
+    // declaration; the recursion below reaches the inner node with its correct, higher
+    // `definition_weight`, so the wrapper must not index its own candidate.
+    let transparent_export = is_transparent_export_wrapper(node, Some(lang));
+
+    if is_definition_kind(Some(lang), kind) && !transparent_export {
         if let Some(name) = extract_definition_name(node, lines) {
             let line = node.start_position().row as u32 + 1;
             symbols.push((Arc::from(name.as_str()), line, true));
@@ -368,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_extract_symbols_rust() {
-        let content = r#"
+        let content = r"
 pub struct Foo {
     bar: u32,
 }
@@ -386,7 +402,7 @@ trait MyTrait {
 impl MyTrait for Foo {
     fn do_thing(&self) {}
 }
-"#;
+";
         let dir = std::env::temp_dir().join("srcwalk_test_extract_symbols");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.rs");
@@ -413,6 +429,37 @@ impl MyTrait for Foo {
         let _ = fs::remove_file(&path);
     }
 
+    #[test]
+    fn test_extract_symbols_ruby_nested_namespaces() {
+        let content = r"
+module Billing
+  class Invoice
+    def paid?; end
+
+    def self.find(id); end
+
+    class << self
+      def build = new
+    end
+  end
+end
+";
+        let dir = std::env::temp_dir().join("srcwalk_test_extract_symbols_ruby");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("test.rb");
+        let mut f = fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+
+        let symbols = extract_symbols(&path, content);
+        let names: Vec<&str> = symbols.iter().map(|(n, _, _)| n.as_ref()).collect();
+
+        for expected in ["Billing", "Invoice", "paid?", "find", "build"] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
+        assert!(symbols.iter().all(|(_, _, is_def)| *is_def));
+
+        let _ = fs::remove_file(&path);
+    }
     #[test]
     fn test_index_file() {
         let content = "pub fn hello() {}\npub fn world() {}";
@@ -470,7 +517,7 @@ impl MyTrait for Foo {
 
     #[test]
     fn test_extract_symbols_typescript() {
-        let content = r#"
+        let content = r"
 function greet(name: string): string {
     return `Hello, ${name}!`;
 }
@@ -485,7 +532,7 @@ class Greeter {
 interface Printable {
     print(): void;
 }
-"#;
+";
         let dir = std::env::temp_dir().join("srcwalk_test_extract_ts");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.ts");
@@ -511,15 +558,63 @@ interface Printable {
     }
 
     #[test]
-    fn test_extract_symbols_python() {
+    fn test_extract_symbols_ts_exported_definitions_not_duplicated() {
+        // US-052 Phase 5: a transparent `export_statement` wrapper and its inner
+        // declaration must index as exactly ONE definition candidate (index-backed
+        // lookup agrees with single-symbol search).
         let content = r#"
+export function routeRequest(req: Request): Response {
+  return new Response("ok");
+}
+export class Cache {
+  evict(): void {}
+}
+export const makeHandler = () => 1;
+export default function defaultHandler() {}
+const hidden = 2;
+export { hidden };
+"#;
+        let dir = std::env::temp_dir().join("srcwalk_test_extract_ts_export");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("test.ts");
+        fs::write(&path, content).unwrap();
+
+        let symbols = extract_symbols(&path, content);
+        let names: Vec<&str> = symbols.iter().map(|(n, _, _)| n.as_ref()).collect();
+
+        for expected in [
+            "routeRequest",
+            "Cache",
+            "makeHandler",
+            "defaultHandler",
+            "hidden",
+        ] {
+            let count = names.iter().filter(|n| **n == expected).count();
+            assert_eq!(
+                count, 1,
+                "exported {expected} must index exactly once, got {count}: {names:?}"
+            );
+        }
+        // Nested methods inside the exported class are NOT asserted here: `walk_definitions`
+        // has a pre-existing MAX_INDEX_DEPTH cap (3) that stops before class-body methods;
+        // that depth cap is independent of Phase 5. The search walker (`walk_for_definitions`)
+        // still reaches them and is covered by the CLI integration test
+        // `nested_definition_inside_exported_class_still_found`.
+        assert!(symbols.iter().all(|(_, _, is_def)| *is_def));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_extract_symbols_python() {
+        let content = r"
 def hello():
     pass
 
 class MyClass:
     def method(self):
         pass
-"#;
+";
         let dir = std::env::temp_dir().join("srcwalk_test_extract_py");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test.py");

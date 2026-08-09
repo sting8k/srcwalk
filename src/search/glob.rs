@@ -324,6 +324,8 @@ fn is_textual_path(path: &Path) -> bool {
                 | "jsx"
                 | "mjs"
                 | "cjs"
+                | "mts"
+                | "cts"
                 | "py"
                 | "go"
                 | "java"

@@ -11,6 +11,7 @@ use crate::evidence::{
     confidence_label_for, render_next_actions, Anchor, EvidenceSource, NextAction,
 };
 use crate::lang::decision_flow::{self, TargetSelector};
+use crate::lang::tsconfig::ConfigCache;
 use crate::{format, index, lang, search, types};
 
 const CONTEXT_SOURCE_EXCERPT_LINE_LIMIT: usize = 80;
@@ -44,6 +45,26 @@ pub(crate) fn run_flow(
         append_structural_artifact_header(&mut out, structural_artifact_context);
         out.push_str("\n\n(not a code file)");
         return Ok(out);
+    };
+
+    let config_cache = ConfigCache::new();
+    let logical_sources = if matches!(
+        lang,
+        types::Lang::JavaScript | types::Lang::TypeScript | types::Lang::Tsx
+    ) {
+        lang::js_imports::logical_sources(&content, lang)
+    } else {
+        Vec::new()
+    };
+    let decisions = if logical_sources.is_empty() {
+        None
+    } else {
+        Some(crate::read::js_alias::classify_js_imports(
+            &resolved.path,
+            &logical_sources,
+            scope,
+            &config_cache,
+        ))
     };
 
     let display_path = format::display_path(&resolved.path);
@@ -83,10 +104,15 @@ pub(crate) fn run_flow(
             }
             Err(err) if is_flow_map_fallback_error(&err) => {
                 symbol_level_fallback = matches!(resolved.selector, TargetSelector::Symbol(_));
-                append_context_flow_map_fallback(&mut out, &display_path, &resolved.selector);
+                append_context_flow_map_fallback(
+                    &mut out,
+                    &display_path,
+                    &resolved.selector,
+                    flow_map_fallback_reason(&err),
+                );
                 (
                     selector_range(&resolved.selector),
-                    context_call_target(&resolved.selector),
+                    context_call_target(&resolved),
                 )
             }
             Err(err) => return Err(err),
@@ -129,6 +155,9 @@ pub(crate) fn run_flow(
             scope,
             cache,
             &bloom,
+            &logical_sources,
+            decisions.as_deref(),
+            &config_cache,
             depth,
             filter,
         )?;
@@ -354,6 +383,7 @@ fn append_context_flow_map_fallback(
     out: &mut String,
     display_path: &str,
     selector: &TargetSelector,
+    reason: Option<&str>,
 ) {
     use std::fmt::Write as _;
 
@@ -366,7 +396,9 @@ fn append_context_flow_map_fallback(
     out.push_str(
         "\n\n## Flow Map\nfile-level evidence only; structural function map unavailable for this target",
     );
-    if let TargetSelector::Symbol(_) = selector {
+    if let Some(reason) = reason {
+        let _ = write!(out, "\ncaveat: {reason}");
+    } else if let TargetSelector::Symbol(_) = selector {
         out.push_str(
             "\ncaveat: requested symbol selector was not resolved to a structural function range; packet is file-level only",
         );
@@ -382,10 +414,12 @@ fn selector_range(selector: &TargetSelector) -> Option<(u32, u32)> {
     }
 }
 
-fn context_call_target(selector: &TargetSelector) -> Option<String> {
-    match selector {
+fn context_call_target(target: &decision_flow::FlowTarget) -> Option<String> {
+    match &target.selector {
         TargetSelector::Symbol(name) => Some(name.clone()),
-        TargetSelector::LineRange { .. } | TargetSelector::FocusedLineRange { .. } => None,
+        TargetSelector::LineRange { .. } | TargetSelector::FocusedLineRange { .. } => {
+            target.resolved_symbol.clone()
+        }
     }
 }
 
@@ -396,8 +430,21 @@ fn is_flow_map_fallback_error(err: &SrcwalkError) -> bool {
                 || reason.contains("decision-flow requires a source code file")
                 || reason.contains("symbol target did not provide a definition range")
                 || reason.contains("line/range target must be inside one supported function")
+                || decision_flow::is_abstention_reason(reason)
         }
         _ => false,
+    }
+}
+
+/// Return only the stable Ruby abstention marker as a user-facing caveat. The other fallback errors retain their generic text.
+fn flow_map_fallback_reason(err: &SrcwalkError) -> Option<&str> {
+    match err {
+        SrcwalkError::InvalidQuery { reason, .. }
+            if decision_flow::is_abstention_reason(reason) =>
+        {
+            Some(reason)
+        }
+        _ => None,
     }
 }
 
@@ -418,6 +465,9 @@ fn append_context_neighborhood(
     scope: &Path,
     cache: &OutlineCache,
     bloom: &index::bloom::BloomFilterCache,
+    logical_sources: &[(String, usize)],
+    decisions: Option<&[crate::read::js_alias::JsImportDecision]>,
+    config_cache: &ConfigCache,
     depth: Option<usize>,
     filter: Option<&str>,
 ) -> Result<(), SrcwalkError> {
@@ -471,14 +521,18 @@ fn append_context_neighborhood(
         search::callees::extract_callee_names(content, lang, focus_range)
     };
     let depth_limit = depth.map_or(1, |d| d.min(3) as u32);
-    let nodes = search::callees::resolve_callees_transitive(
+    let nodes = search::callees::resolve_callees_transitive_with_stream(
         &names,
         source_path,
         content,
+        logical_sources,
+        decisions,
         cache,
         bloom,
         depth_limit,
         30,
+        scope,
+        config_cache,
     );
     let flow_nodes = prioritize_flow_resolves(nodes, source_path);
     if !flow_nodes.is_empty() {

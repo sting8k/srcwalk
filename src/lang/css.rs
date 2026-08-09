@@ -882,24 +882,6 @@ fn has_url_scheme(source: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn drive_letter_paths_are_not_external_sources() {
-        assert!(!is_external_source(r"C:\project\styles\theme.scss"));
-        assert!(!is_external_source("D:/project/styles/theme.less"));
-    }
-
-    #[test]
-    fn url_schemes_and_sass_builtins_stay_external_sources() {
-        assert!(is_external_source("https://cdn.example.com/theme.css"));
-        assert!(is_external_source("sass:math"));
-        assert!(is_external_source("@fontsource/inter/400.css"));
-    }
-}
-
 fn selector_matches_query(selector: &str, query: &str) -> bool {
     if selector == query {
         return true;
@@ -968,4 +950,22 @@ fn at_rule_matches_query(name: &str, query: &str) -> bool {
 
 fn is_css_ident_char(c: char) -> bool {
     c == '_' || c == '-' || c.is_ascii_alphanumeric() || !c.is_ascii()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_letter_paths_are_not_external_sources() {
+        assert!(!is_external_source(r"C:\project\styles\theme.scss"));
+        assert!(!is_external_source("D:/project/styles/theme.less"));
+    }
+
+    #[test]
+    fn url_schemes_and_sass_builtins_stay_external_sources() {
+        assert!(is_external_source("https://cdn.example.com/theme.css"));
+        assert!(is_external_source("sass:math"));
+        assert!(is_external_source("@fontsource/inter/400.css"));
+    }
 }

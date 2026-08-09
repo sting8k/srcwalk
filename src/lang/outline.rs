@@ -68,11 +68,13 @@ pub(crate) fn walk_top_level(
 }
 
 fn is_transparent_outline_container(kind: &str, lang: Lang) -> bool {
-    matches!(lang, Lang::C | Lang::Cpp)
+    (matches!(lang, Lang::C | Lang::Cpp)
         && matches!(
             kind,
             "preproc_if" | "preproc_ifdef" | "preproc_ifndef" | "preproc_elif" | "preproc_else"
-        )
+        ))
+        // Ruby `class << self` hoists its methods under the owning class.
+        || (lang == Lang::Ruby && kind == "singleton_class")
 }
 
 fn collect_transparent_outline_entries(
@@ -84,12 +86,26 @@ fn collect_transparent_outline_entries(
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
+        // Skip anonymous tokens (e.g. the `class` keyword inside `class << self`)
+        // so they never become outline entries.
+        if !child.is_named() {
+            continue;
+        }
         if let Some(entry) = node_to_entry(child, lines, lang, depth) {
             entries.push(entry);
-        } else if is_transparent_outline_container(child.kind(), lang) {
+        } else if is_transparent_outline_container(child.kind(), lang)
+            || (lang == Lang::Ruby && is_body_wrapper(child.kind()))
+        {
             collect_transparent_outline_entries(child, lines, lang, depth, entries);
         }
     }
+}
+
+/// Body containers (e.g. Ruby `body_statement`) transparently hold outline
+/// entries; recursing through them keeps `class << self` methods hoisted
+/// without fabricating a container symbol.
+fn is_body_wrapper(kind: &str) -> bool {
+    kind.contains("body") || kind.contains("block") || kind == "declaration_list"
 }
 
 /// Convert a tree-sitter node to an `OutlineEntry` based on its kind.
@@ -146,6 +162,8 @@ fn node_to_entry(
         | "function_definition"
         | "function_item"
         | "method_definition"
+        | "method"
+        | "singleton_method"
         | "method_declaration"
         | "constructor_declaration"
         | "init_declaration"
@@ -167,8 +185,9 @@ fn node_to_entry(
         }
 
         // Classes & structs
-        "class_declaration" | "class_definition" => {
-            let name = find_child_text(node, "name", lines)
+        "class_declaration" | "class_definition" | "class" => {
+            let name = extract_definition_name(node, lines)
+                .or_else(|| find_child_text(node, "name", lines))
                 .or_else(|| find_child_text(node, "identifier", lines))
                 .unwrap_or_else(|| "<anonymous>".into());
             (OutlineKind::Class, name, None)
@@ -284,7 +303,10 @@ fn node_to_entry(
     // Collect children for classes, impls, modules, traits/interfaces
     let is_namespace = matches!(
         kind_str,
-        "namespace_declaration" | "namespace_definition" | "file_scoped_namespace_declaration"
+        "namespace_declaration"
+            | "namespace_definition"
+            | "file_scoped_namespace_declaration"
+            | "module"
     );
     let children = if matches!(
         kind,
@@ -367,6 +389,8 @@ fn collect_children(
     for child in parent.children(&mut cursor2) {
         if let Some(entry) = node_to_entry(child, lines, lang, depth) {
             children.push(entry);
+        } else if is_transparent_outline_container(child.kind(), lang) {
+            collect_transparent_outline_entries(child, lines, lang, depth, &mut children);
         }
     }
 
@@ -1035,7 +1059,7 @@ mod tests {
 
     #[test]
     fn c_declarator_function_names_are_not_anonymous() {
-        let code = r#"
+        let code = r"
 static int normal_func(int x) { return x; }
 char *make_name(void) { return 0; }
 static int rust_demangle_callback(data, len)
@@ -1044,7 +1068,7 @@ static int rust_demangle_callback(data, len)
 {
   return 0;
 }
-"#;
+";
 
         let entries = get_outline_entries(code, Lang::C);
         let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
@@ -1061,13 +1085,13 @@ static int rust_demangle_callback(data, len)
     }
     #[test]
     fn c_named_struct_body_is_not_anonymous() {
-        let code = r#"
+        let code = r"
 typedef struct ngx_http_core_loc_conf_s  ngx_http_core_loc_conf_t;
 
 struct ngx_http_core_loc_conf_s {
     int value;
 };
-"#;
+";
 
         let entries = get_outline_entries(code, Lang::C);
         let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
@@ -1090,3 +1114,7 @@ struct ngx_http_core_loc_conf_s {
         assert_eq!(struct_entry.end_line, 6);
     }
 }
+
+#[cfg(test)]
+#[path = "outline_ruby_tests.rs"]
+mod ruby_outline_tests;

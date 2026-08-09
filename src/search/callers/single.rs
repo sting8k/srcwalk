@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use streaming_iterator::StreamingIterator;
 
 use crate::lang::treesitter::{
-    extract_definition_name, is_js_function_expression_kind, js_function_context_name,
-    DEFINITION_KINDS,
+    extract_definition_name, is_definition_kind, is_js_function_expression_kind,
+    is_type_definition_kind, js_function_context_name,
 };
 
 use crate::cache::OutlineCache;
@@ -165,10 +165,19 @@ pub fn find_callers_with_artifact(
             let file_type = detect_file_type(path);
             let skip_bloom = crate::capabilities::is_private_text_file_type(file_type);
 
-            // Bloom tokenization is tuned for source identifiers; artifact symbols can contain
-            // punctuation, so use the byte prefilter above instead.
-            if !skip_bloom && !is_artifact && !bloom.contains(path, mtime, content, target) {
-                return ignore::WalkState::Continue;
+            // Bloom tokenization is tuned for source identifiers
+            // (`[a-zA-Z_][a-zA-Z0-9_]*`); some symbol formats can contain punctuation, so
+            // the byte prefilter above already proved the literal substring. Raw targets that
+            // are not pure identifiers (JS/TS `#evict`, Ruby `save!`, qualified `foo::bar`) are
+            // not indexed verbatim, so probe the first identifier token to keep the MAYBE
+            // prefilter free of hard false negatives. A loose probe only costs CPU, never a
+            // wrong result.
+            if !skip_bloom && !is_artifact {
+                if let Some(probe) = crate::index::bloom::first_identifier(target) {
+                    if !bloom.contains(path, mtime, content, probe) {
+                        return ignore::WalkState::Continue;
+                    }
+                }
             }
 
             let FileType::Code(lang) = file_type else {
@@ -478,11 +487,14 @@ pub(crate) fn find_callers_batch_with_artifact(
 
             // Bloom tokenization is tuned for source identifiers; artifact symbols can contain
             // dots and tool prefixes (e.g. sym.imp.puts), so use the byte prefilter above instead.
+            // Non-identifier targets probe their first identifier token (`#evict` -> `evict`,
+            // `save!` -> `save`) so the MAYBE prefilter never hard-false-negatives.
             if !skip_bloom
                 && !is_artifact
-                && !targets
-                    .iter()
-                    .any(|t| bloom.contains(path, mtime, content, t))
+                && !targets.iter().any(|target| {
+                    crate::index::bloom::first_identifier(target)
+                        .is_none_or(|probe| bloom.contains(path, mtime, content, probe))
+                })
             {
                 return ignore::WalkState::Continue;
             }
@@ -851,23 +863,6 @@ fn extract_arg_count(call_node: tree_sitter::Node) -> Option<u8> {
 
 /// Walk up the AST from a node to find the enclosing function definition.
 /// Returns (`function_name`, `line_range`).
-/// Type-like node kinds that can enclose a function definition.
-const TYPE_KINDS: &[&str] = &[
-    "class_declaration",
-    "class_definition",
-    "struct_item",
-    "impl_item",
-    "interface_declaration",
-    "trait_item",
-    "trait_declaration",
-    "type_declaration",
-    "enum_item",
-    "enum_declaration",
-    "module",
-    "mod_item",
-    "namespace_definition",
-];
-
 fn find_enclosing_function(
     node: tree_sitter::Node,
     lines: &[&str],
@@ -895,7 +890,7 @@ fn find_enclosing_function(
         };
         let def_name = if let Some(name) = js_function_name() {
             Some(name)
-        } else if DEFINITION_KINDS.contains(&kind)
+        } else if is_definition_kind(Some(lang), kind)
             && !matches!(kind, "lexical_declaration" | "variable_declaration")
         {
             extract_definition_name(n, lines)
@@ -916,7 +911,7 @@ fn find_enclosing_function(
             // Walk further up to find an enclosing type and qualify the name
             let mut parent = n.parent();
             while let Some(p) = parent {
-                if TYPE_KINDS.contains(&p.kind()) {
+                if is_type_definition_kind(lang, p.kind()) {
                     if let Some(type_name) = extract_definition_name(p, lines) {
                         return (format!("{type_name}.{name}"), range);
                     }

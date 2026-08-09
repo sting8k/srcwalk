@@ -709,6 +709,53 @@ fn map_shows_outbound_go_deps_when_scope_is_narrow() {
 }
 
 #[test]
+fn map_shows_outbound_js_ts_deps_when_scope_is_narrow() {
+    let dir = temp_repo("map_js_outbound_deps");
+    fs::create_dir_all(dir.join("app")).unwrap();
+    fs::create_dir_all(dir.join("shared")).unwrap();
+    fs::write(
+        dir.join("app/tsconfig.json"),
+        r#"{"compilerOptions":{"paths":{"@shared/*":["../shared/*"]}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app/main.ts"),
+        "import '../shared/relative';\nimport '@shared/alias';\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("shared/relative.ts"),
+        "export const relative = 1;\n",
+    )
+    .unwrap();
+    fs::write(dir.join("shared/alias.ts"), "export const alias = 1;\n").unwrap();
+
+    let out = srcwalk()
+        .arg("overview")
+        .arg("--scope")
+        .arg(dir.join("app"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "expected overview to succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("[relations] 0 in-scope groups")
+            && stdout.contains("[outbound deps] 1 group (targets outside scope)")
+            && stdout.contains("app deps:2")
+            && stdout.contains("  -> shared deps:2"),
+        "expected JS/TS outbound deps grouped outside scope, got:\n{stdout}"
+    );
+    assert!(
+        stdout
+            .contains("> Outbound: deps point outside --scope. Widen --scope to include targets."),
+        "expected outbound widen-scope hint, got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn map_go_relations_discover_nested_modules_from_repo_root() {
     let dir = temp_repo("map_go_nested_module_relations");
     fs::create_dir_all(dir.join("services/app/cmd")).unwrap();

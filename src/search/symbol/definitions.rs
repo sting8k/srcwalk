@@ -9,7 +9,8 @@ use crate::lang::outline::outline_language;
 use crate::lang::treesitter::{
     definition_weight, elixir_definition_weight, extract_base_list_targets,
     extract_definition_name, extract_elixir_definition_name, extract_impl_trait, extract_impl_type,
-    extract_implemented_interfaces, is_elixir_definition, DEFINITION_KINDS,
+    extract_implemented_interfaces, is_definition_kind, is_elixir_definition,
+    is_transparent_export_wrapper,
 };
 use crate::types::{Lang, Match, OutlineEntry, OutlineKind};
 use crate::ArtifactMode;
@@ -355,7 +356,12 @@ fn walk_for_definitions(
 
     let kind = node.kind();
 
-    if DEFINITION_KINDS.contains(&kind) {
+    // A transparent `export_statement` wrapper and its inner declaration are one source
+    // declaration; the recursion below reaches the inner node with its correct, higher
+    // `definition_weight`, so the wrapper must not push its own candidate.
+    let transparent_export = is_transparent_export_wrapper(node, lang);
+
+    if is_definition_kind(lang, kind) && !transparent_export {
         // Check if this node defines the queried symbol
         if let Some(name) = extract_definition_name(node, lines) {
             if name == query {

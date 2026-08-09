@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use rayon::prelude::*;
 
 use ignore::WalkBuilder;
 
@@ -8,6 +11,7 @@ use crate::cache::OutlineCache;
 use crate::error::SrcwalkError;
 use crate::evidence::{render_next_actions, NextAction};
 use crate::lang::detect_file_type;
+use crate::lang::tsconfig::ConfigCache;
 use crate::read::{imports, outline};
 use crate::types::{estimate_tokens, FileType, Lang};
 use crate::ArtifactMode;
@@ -185,6 +189,7 @@ pub fn generate(
     artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
     let cfg = default_walk_config();
+    let config_cache = ConfigCache::new();
     generate_at_depth(
         scope,
         depth,
@@ -192,6 +197,7 @@ pub fn generate(
         false,
         &cfg,
         cache,
+        &config_cache,
         include_symbols,
         glob,
         artifact,
@@ -207,8 +213,17 @@ pub fn generate_for_cli(
     artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
     let cfg = default_walk_config();
+    let config_cache = ConfigCache::new();
     let Some(depth) = depth else {
-        return generate_auto_depth(scope, &cfg, cache, include_symbols, glob, artifact);
+        return generate_auto_depth(
+            scope,
+            &cfg,
+            cache,
+            &config_cache,
+            include_symbols,
+            glob,
+            artifact,
+        );
     };
 
     generate_at_depth(
@@ -218,6 +233,7 @@ pub fn generate_for_cli(
         false,
         &cfg,
         cache,
+        &config_cache,
         include_symbols,
         glob,
         artifact,
@@ -228,6 +244,7 @@ fn generate_auto_depth(
     scope: &Path,
     cfg: &WalkConfig,
     cache: &OutlineCache,
+    config_cache: &ConfigCache,
     include_symbols: bool,
     glob: Option<&str>,
     artifact: ArtifactMode,
@@ -243,6 +260,7 @@ fn generate_auto_depth(
             depth < initial_depth,
             cfg,
             cache,
+            config_cache,
             include_symbols,
             glob,
             artifact,
@@ -255,7 +273,15 @@ fn generate_auto_depth(
         }
     }
 
-    match orientation::generate(scope, cfg, cache, include_symbols, glob, artifact) {
+    match orientation::generate(
+        scope,
+        cfg,
+        cache,
+        config_cache,
+        include_symbols,
+        glob,
+        artifact,
+    ) {
         Ok(out) => Ok(out),
         Err(err) if is_map_too_large(&err) => largest_fitting_detail.ok_or_else(|| {
             last_err.unwrap_or_else(|| SrcwalkError::InvalidQuery {
@@ -274,6 +300,7 @@ fn generate_at_depth(
     depth_reduced: bool,
     cfg: &WalkConfig,
     cache: &OutlineCache,
+    config_cache: &ConfigCache,
     include_symbols: bool,
     glob: Option<&str>,
     artifact: ArtifactMode,
@@ -381,9 +408,9 @@ fn generate_at_depth(
         return Ok(out);
     }
 
-    let relations = compute_relations(scope, depth, &visible_files);
+    let relations = compute_relations(scope, depth, &visible_files, config_cache);
     let outbound_relations = if relations.is_empty() {
-        compute_outbound_relations(scope, depth, &visible_files)
+        compute_outbound_relations(scope, depth, &visible_files, config_cache)
     } else {
         Vec::new()
     };
@@ -600,7 +627,12 @@ fn normalize_existing_path(path: PathBuf) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
-fn compute_relations(scope: &Path, depth: usize, visible_files: &[PathBuf]) -> Vec<RelationEntry> {
+fn compute_relations(
+    scope: &Path,
+    depth: usize,
+    visible_files: &[PathBuf],
+    config_cache: &ConfigCache,
+) -> Vec<RelationEntry> {
     let scope = normalize_existing_path(scope.to_path_buf());
     let visible_files: Vec<PathBuf> = visible_files
         .iter()
@@ -608,64 +640,98 @@ fn compute_relations(scope: &Path, depth: usize, visible_files: &[PathBuf]) -> V
         .map(normalize_existing_path)
         .collect();
     let visible: HashSet<PathBuf> = visible_files.iter().cloned().collect();
-    let mut go_modules = BTreeMap::<PathBuf, Option<(String, PathBuf)>>::new();
-    let mut php_autoloads = BTreeMap::<PathBuf, Vec<(String, PathBuf)>>::new();
+    let go_modules = Mutex::new(BTreeMap::<PathBuf, Option<(String, PathBuf)>>::new());
+    let php_autoloads = Mutex::new(BTreeMap::<PathBuf, Vec<(String, PathBuf)>>::new());
     let relation_depth = depth.clamp(1, 2);
-    let mut edges = BTreeSet::<(String, String, PathBuf, PathBuf)>::new();
 
-    for source in &visible_files {
-        let Ok(content) = std::fs::read_to_string(source) else {
-            continue;
-        };
+    let per_file_edges: Vec<Vec<(String, String, PathBuf, PathBuf)>> = visible_files
+        .par_iter()
+        .map(|source| {
+            let mut file_edges = BTreeSet::new();
+            let Ok(content) = std::fs::read_to_string(source) else {
+                return file_edges.into_iter().collect::<Vec<_>>();
+            };
 
-        for target in imports::resolve_all_related_files_with_content(source, &content) {
-            let target = normalize_existing_path(target);
-            if target == *source || !visible.contains(&target) {
-                continue;
-            }
-            add_relation_edge(scope.as_path(), relation_depth, source, &target, &mut edges);
-        }
-
-        let source_dir = source.parent().unwrap_or(scope.as_path()).to_path_buf();
-        let go_module = go_modules
-            .entry(source_dir.clone())
-            .or_insert_with(|| find_go_module(&source_dir));
-        if let Some((module_name, module_root)) = go_module.as_ref() {
-            for target_dir in go_import_dirs(source, &content, module_name, module_root) {
-                let target_dir = normalize_existing_path(target_dir);
-                if !target_dir.starts_with(&scope)
-                    || !has_visible_file_under(&target_dir, &visible_files)
-                {
-                    continue;
-                }
-                let relation_base = if module_root.starts_with(&scope) {
-                    module_root.as_path()
-                } else {
-                    scope.as_path()
-                };
-                add_relation_edge_with_base(
-                    scope.as_path(),
-                    relation_base,
-                    relation_depth,
-                    source,
-                    &target_dir,
-                    &mut edges,
-                );
-            }
-        }
-        if matches!(detect_file_type(source), FileType::Code(Lang::Php)) {
-            let source_dir = source.parent().unwrap_or(scope.as_path()).to_path_buf();
-            let php_autoload = php_autoloads
-                .entry(source_dir.clone())
-                .or_insert_with(|| find_php_psr4_autoload(&source_dir));
-            for target in php_import_paths(&content, php_autoload) {
+            for target in imports::resolve_related_files_with_content_and_scope(
+                source,
+                &content,
+                &scope,
+                config_cache,
+                None,
+            ) {
                 let target = normalize_existing_path(target);
                 if target == *source || !visible.contains(&target) {
                     continue;
                 }
-                add_relation_edge(scope.as_path(), relation_depth, source, &target, &mut edges);
+                add_relation_edge(
+                    scope.as_path(),
+                    relation_depth,
+                    source,
+                    &target,
+                    &mut file_edges,
+                );
             }
-        }
+
+            let source_dir = source.parent().unwrap_or(scope.as_path()).to_path_buf();
+            let go_module = {
+                let mut go_modules = go_modules.lock().unwrap();
+                go_modules
+                    .entry(source_dir.clone())
+                    .or_insert_with(|| find_go_module(&source_dir))
+                    .clone()
+            };
+            if let Some((module_name, module_root)) = go_module.as_ref() {
+                for target_dir in go_import_dirs(source, &content, module_name, module_root) {
+                    let target_dir = normalize_existing_path(target_dir);
+                    if !target_dir.starts_with(&scope)
+                        || !has_visible_file_under(&target_dir, &visible_files)
+                    {
+                        continue;
+                    }
+                    let relation_base = if module_root.starts_with(&scope) {
+                        module_root.as_path()
+                    } else {
+                        scope.as_path()
+                    };
+                    add_relation_edge_with_base(
+                        scope.as_path(),
+                        relation_base,
+                        relation_depth,
+                        source,
+                        &target_dir,
+                        &mut file_edges,
+                    );
+                }
+            }
+            if matches!(detect_file_type(source), FileType::Code(Lang::Php)) {
+                let php_autoload = {
+                    let mut php_autoloads = php_autoloads.lock().unwrap();
+                    php_autoloads
+                        .entry(source_dir.clone())
+                        .or_insert_with(|| find_php_psr4_autoload(&source_dir))
+                        .clone()
+                };
+                for target in php_import_paths(&content, &php_autoload) {
+                    let target = normalize_existing_path(target);
+                    if target == *source || !visible.contains(&target) {
+                        continue;
+                    }
+                    add_relation_edge(
+                        scope.as_path(),
+                        relation_depth,
+                        source,
+                        &target,
+                        &mut file_edges,
+                    );
+                }
+            }
+
+            file_edges.into_iter().collect::<Vec<_>>()
+        })
+        .collect();
+    let mut edges = BTreeSet::new();
+    for file_edges in per_file_edges {
+        edges.extend(file_edges);
     }
 
     relation_entries_from_edges(edges)
@@ -675,6 +741,7 @@ fn compute_outbound_relations(
     scope: &Path,
     depth: usize,
     visible_files: &[PathBuf],
+    config_cache: &ConfigCache,
 ) -> Vec<RelationEntry> {
     let scope = normalize_existing_path(scope.to_path_buf());
     let visible_files: Vec<PathBuf> = visible_files
@@ -683,51 +750,70 @@ fn compute_outbound_relations(
         .map(normalize_existing_path)
         .collect();
     let visible: HashSet<PathBuf> = visible_files.iter().cloned().collect();
-    let mut go_modules = BTreeMap::<PathBuf, Option<(String, PathBuf)>>::new();
+    let go_modules = Mutex::new(BTreeMap::<PathBuf, Option<(String, PathBuf)>>::new());
     let outbound_depth = depth.clamp(1, 2);
-    let mut edges = BTreeSet::<(String, String, PathBuf, PathBuf)>::new();
 
-    for source in &visible_files {
-        let Ok(content) = std::fs::read_to_string(source) else {
-            continue;
-        };
+    let per_file_edges: Vec<Vec<(String, String, PathBuf, PathBuf)>> = visible_files
+        .par_iter()
+        .map(|source| {
+            let mut file_edges = BTreeSet::new();
+            let Ok(content) = std::fs::read_to_string(source) else {
+                return file_edges.into_iter().collect::<Vec<_>>();
+            };
 
-        for target in imports::resolve_all_related_files_with_content(source, &content) {
-            let target = normalize_existing_path(target);
-            if target == *source || visible.contains(&target) || target.starts_with(&scope) {
-                continue;
-            }
-            let relation_base = outbound_relation_base(scope.as_path(), source, &target);
-            add_relation_edge_with_base(
-                scope.as_path(),
-                &relation_base,
-                outbound_depth,
+            for target in imports::resolve_related_files_with_content_and_scope_unbounded(
                 source,
-                &target,
-                &mut edges,
-            );
-        }
-
-        let source_dir = source.parent().unwrap_or(scope.as_path()).to_path_buf();
-        let go_module = go_modules
-            .entry(source_dir.clone())
-            .or_insert_with(|| find_go_module(&source_dir));
-        if let Some((module_name, module_root)) = go_module.as_ref() {
-            for target_dir in go_import_dirs(source, &content, module_name, module_root) {
-                let target_dir = normalize_existing_path(target_dir);
-                if target_dir.starts_with(&scope) {
+                &content,
+                &scope,
+                config_cache,
+                None,
+            ) {
+                let target = normalize_existing_path(target);
+                if target == *source || visible.contains(&target) || target.starts_with(&scope) {
                     continue;
                 }
+                let relation_base = outbound_relation_base(scope.as_path(), source, &target);
                 add_relation_edge_with_base(
                     scope.as_path(),
-                    module_root,
+                    &relation_base,
                     outbound_depth,
                     source,
-                    &target_dir,
-                    &mut edges,
+                    &target,
+                    &mut file_edges,
                 );
             }
-        }
+
+            let source_dir = source.parent().unwrap_or(scope.as_path()).to_path_buf();
+            let go_module = {
+                let mut go_modules = go_modules.lock().unwrap();
+                go_modules
+                    .entry(source_dir.clone())
+                    .or_insert_with(|| find_go_module(&source_dir))
+                    .clone()
+            };
+            if let Some((module_name, module_root)) = go_module.as_ref() {
+                for target_dir in go_import_dirs(source, &content, module_name, module_root) {
+                    let target_dir = normalize_existing_path(target_dir);
+                    if target_dir.starts_with(&scope) {
+                        continue;
+                    }
+                    add_relation_edge_with_base(
+                        scope.as_path(),
+                        module_root,
+                        outbound_depth,
+                        source,
+                        &target_dir,
+                        &mut file_edges,
+                    );
+                }
+            }
+
+            file_edges.into_iter().collect::<Vec<_>>()
+        })
+        .collect();
+    let mut edges = BTreeSet::new();
+    for file_edges in per_file_edges {
+        edges.extend(file_edges);
     }
 
     relation_entries_from_edges(edges)

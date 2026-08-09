@@ -313,7 +313,7 @@ fn compact_artifact_text(text: &str, max_chars: usize) -> (String, bool) {
 
 fn artifact_code_fence(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
-        Some("ts" | "tsx") => "ts",
+        Some("ts" | "tsx" | "mts" | "cts") => "ts",
         _ => "js",
     }
 }

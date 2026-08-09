@@ -1,7 +1,10 @@
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::types::{estimate_tokens, SearchEvidenceCounts, ViewMode};
+
+static CANONICAL_CWD: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// Build the standard header line:
 /// `# path/to/file.ts (N lines, ~X.Xk tokens) [mode]`
@@ -104,9 +107,12 @@ pub(crate) fn rel(path: &Path, scope: &Path) -> String {
 }
 
 fn cwd_relative(path: &Path) -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-    let cwd = cwd.canonicalize().unwrap_or(cwd);
-    let rel = path.strip_prefix(&cwd).ok()?;
+    let cwd = CANONICAL_CWD.get_or_init(|| {
+        let cwd = std::env::current_dir().ok()?;
+        Some(cwd.canonicalize().unwrap_or(cwd))
+    });
+    let cwd = cwd.as_deref()?;
+    let rel = path.strip_prefix(cwd).ok()?;
     if rel.as_os_str().is_empty() {
         Some(".".to_string())
     } else {

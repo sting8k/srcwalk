@@ -1,5 +1,6 @@
 use super::*;
 use crate::search::callees::extract_call_sites;
+use std::fmt::Write as _;
 
 fn build(
     path: &Path,
@@ -13,12 +14,12 @@ fn build(
 
 #[test]
 fn maps_same_file_rust_and_javascript_positional_arguments() {
-    let rust = r#"
+    let rust = r"
 fn helper(user: User, path: &str) {}
 fn caller(user: User, path: &str) {
     helper(user, path);
 }
-"#;
+";
     let rust_index = build(Path::new("src/lib.rs"), rust, Lang::Rust, (3, 5));
     assert_eq!(rust_index.edges().len(), 1);
     let rust_edge = &rust_index.edges()[0];
@@ -42,12 +43,12 @@ fn caller(user: User, path: &str) {
         DirectCallResolutionConfidence::SameFileStructural
     );
 
-    let javascript = r#"
+    let javascript = r"
 function helper(user, path) {}
 function caller(user, path) {
   helper(user, path);
 }
-"#;
+";
     let js_index = build(
         Path::new("src/lib.js"),
         javascript,
@@ -60,12 +61,12 @@ function caller(user, path) {
 
 #[test]
 fn retains_edge_but_labels_unreliable_mapping_inputs() {
-    let arity = r#"
+    let arity = r"
 fn helper(user: User, path: &str) {}
 fn caller(user: User) {
     helper(user);
 }
-"#;
+";
     let arity_index = build(Path::new("src/lib.rs"), arity, Lang::Rust, (3, 5));
     assert_eq!(arity_index.edges().len(), 1);
     assert_eq!(
@@ -74,12 +75,12 @@ fn caller(user: User) {
     );
     assert_eq!(arity_index.edges()[0].omitted_arg_param_mappings(), 0);
 
-    let spread = r#"
+    let spread = r"
 function helper(value) {}
 function caller(values) {
   helper(...values);
 }
-"#;
+";
     let spread_index = build(Path::new("src/lib.js"), spread, Lang::JavaScript, (3, 5));
     assert_eq!(spread_index.edges().len(), 1);
     assert_eq!(
@@ -148,13 +149,13 @@ func caller(count int) {
 
 #[test]
 fn ambiguous_and_self_recursive_targets_abstain_from_edges() {
-    let ambiguous = r#"
+    let ambiguous = r"
 fn helper(value: i32) {}
 fn helper(value: i64) {}
 fn caller(value: i32) {
     helper(value);
 }
-"#;
+";
     let ambiguous_index = build(Path::new("src/lib.rs"), ambiguous, Lang::Rust, (4, 6));
     assert!(ambiguous_index.edges().is_empty());
     assert_eq!(ambiguous_index.unknowns().len(), 1);
@@ -164,11 +165,11 @@ fn caller(value: i32) {
     );
     assert_eq!(ambiguous_index.unknowns()[0].candidates().len(), 2);
 
-    let recursive = r#"
+    let recursive = r"
 fn caller(value: i32) {
     caller(value);
 }
-"#;
+";
     let recursive_index = build(Path::new("src/lib.rs"), recursive, Lang::Rust, (2, 4));
     assert!(recursive_index.edges().is_empty());
     assert_eq!(
@@ -190,13 +191,13 @@ fn maps_explicit_related_file_target() {
     std::fs::create_dir_all(&root).unwrap();
     let caller_path = root.join("lib.rs");
     let related_path = root.join("service.rs");
-    let caller = r#"
+    let caller = r"
 mod service;
 use self::service::apply_update;
 fn caller(record_id: i32) {
     apply_update(record_id);
 }
-"#;
+";
     std::fs::write(&caller_path, caller).unwrap();
     std::fs::write(&related_path, "pub fn apply_update(record_id: i32) {}\n").unwrap();
 
@@ -230,14 +231,14 @@ fn duplicate_same_and_related_file_targets_abstain() {
     std::fs::create_dir_all(&root).unwrap();
     let caller_path = root.join("lib.rs");
     let related_path = root.join("service.rs");
-    let caller = r#"
+    let caller = r"
 mod service;
 use self::service::apply_update;
 fn apply_update(record_id: i32) {}
 fn caller(record_id: i32) {
     apply_update(record_id);
 }
-"#;
+";
     std::fs::write(&caller_path, caller).unwrap();
     std::fs::write(&related_path, "pub fn apply_update(record_id: i32) {}\n").unwrap();
 
@@ -255,12 +256,12 @@ fn caller(record_id: i32) {
 
 #[test]
 fn qualified_calls_and_unresolved_calls_abstain_without_hiding_actionable_unknowns() {
-    let qualified = r#"
+    let qualified = r"
 fn save(value: i32) {}
 fn caller(client: Client, value: i32) {
     client.save(value);
 }
-"#;
+";
     let qualified_index = build(Path::new("src/lib.rs"), qualified, Lang::Rust, (3, 5));
     assert!(qualified_index.edges().is_empty());
     assert!(qualified_index.unknowns().is_empty());
@@ -269,7 +270,7 @@ fn caller(client: Client, value: i32) {
         "fn helper(value: i32) {}\nfn helper(value: i64) {}\nfn caller(value: i32) {\n",
     );
     for index in 0..(MAX_DIRECT_CALL_UNKNOWNS + 4) {
-        crowded.push_str(&format!("    external{index}(value);\n"));
+        writeln!(crowded, "    external{index}(value);").unwrap();
     }
     crowded.push_str("    helper(value);\n}\n");
     let end_line = crowded.lines().count() as u32;

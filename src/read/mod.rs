@@ -1,5 +1,10 @@
+pub(crate) mod c_include;
+pub(crate) mod go_imports;
 pub mod imports;
+pub(crate) mod js_alias;
 pub mod outline;
+pub(crate) mod php_imports;
+pub(crate) mod python_resolve;
 
 pub(crate) mod completion;
 mod directory;

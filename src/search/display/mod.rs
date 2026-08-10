@@ -1261,7 +1261,7 @@ mod us062_paths_equivalent_tests {
     use super::paths_equivalent;
 
     #[test]
-    fn relative_and_absolute_spellings_of_same_dir_are_equivalent() {
+    fn different_spellings_of_same_dir_are_equivalent() {
         let dir = std::env::temp_dir().join(format!(
             "us062_pathseq_{}_{}",
             std::process::id(),
@@ -1269,18 +1269,19 @@ mod us062_paths_equivalent_tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
         ));
-        std::fs::create_dir_all(&dir).unwrap();
-        // `dir` is absolute; make a relative spelling via a child cwd.
+        // Two spellings of the same directory: plain vs `..` round-trip.
+        // Canonicalization resolves the dot-dot; raw equality would not.
+        // (No cwd mutation: tests run in parallel in one process.)
         let child = dir.join("a/b");
         std::fs::create_dir_all(&child).unwrap();
-        let absolute = std::path::PathBuf::from(&child);
-        let relative = std::path::Path::new("a/b");
-        // Set the process cwd to `dir` so `a/b` resolves to `dir/a/b`.
-        let saved = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
-        let result = paths_equivalent(&absolute, relative);
-        std::env::set_current_dir(saved).unwrap();
-        assert!(result, "{} vs {}", absolute.display(), relative.display());
+        let dotted = dir.join("a/b/../b");
+        assert_ne!(child, dotted, "raw paths must differ for a meaningful test");
+        assert!(
+            paths_equivalent(&child, &dotted),
+            "{} vs {}",
+            child.display(),
+            dotted.display()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

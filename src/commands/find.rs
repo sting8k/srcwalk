@@ -1467,6 +1467,17 @@ fn run_regex_text(
 
     // `models\.json` → bare filename → glob branch (≡ `discover models.json`).
     if matches!(q.kind, RegexTextKind::BareFilename) {
+        // Regex-escaped filenames are file/glob reads under the hood; reject
+        // --filter with the same message the plain file/glob route uses,
+        // instead of silently ignoring it.
+        if filter.is_some() {
+            return Err(SrcwalkError::InvalidQuery {
+                query: q.original.clone(),
+                reason:
+                    "--filter applies to discover results and direct trace callers, not file/glob reads"
+                        .to_string(),
+            });
+        }
         let pattern = format!("**/{}", q.literal);
         let out = search::search_files_glob(&pattern, scope, limit, offset)?;
         return Ok(format!(

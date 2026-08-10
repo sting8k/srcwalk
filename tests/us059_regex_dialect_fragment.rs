@@ -297,3 +297,74 @@ fn explicit_relative_missing_path_still_fails() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn bare_filename_with_filter_rejects_like_plain_file_glob() {
+    // US-059 review P1-3: `models\.json --filter ...` is a file/glob read and
+    // must reject --filter with the same message as `discover models.json`,
+    // not silently ignore it.
+    let dir = fixture_repo("bare_filename_filter");
+    let escaped = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            r"models\.json",
+            "--scope",
+            ".",
+            "--filter",
+            "path:whatever",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !escaped.status.success(),
+        "bare-filename + --filter must fail (exit {}):\nstdout={}\nstderr={}",
+        escaped.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&escaped.stdout),
+        String::from_utf8_lossy(&escaped.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&escaped.stderr);
+    assert!(
+        stderr.contains("invalid query"),
+        "expected invalid query diagnostic, got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "--filter applies to discover results and direct trace callers, not file/glob reads"
+        ),
+        "expected the shared file/glob reject message, got stderr:\n{stderr}"
+    );
+
+    // The plain filename route must reject with the identical message
+    // (consistency contract).
+    let plain = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "models.json",
+            "--scope",
+            ".",
+            "--filter",
+            "path:whatever",
+        ])
+        .output()
+        .unwrap();
+    assert!(!plain.status.success(), "plain file/glob must also reject");
+    let plain_stderr = String::from_utf8_lossy(&plain.stderr);
+    let reason =
+        "--filter applies to discover results and direct trace callers, not file/glob reads";
+    assert!(
+        plain_stderr.contains(reason),
+        "plain file/glob must reject with the shared reason, got:
+{plain_stderr}"
+    );
+    assert!(
+        stderr.contains(reason) && plain_stderr.contains(reason),
+        "both routes must share the same reject reason"
+    );
+    assert!(
+        stderr.contains(r"models\.json") && plain_stderr.contains("models.json"),
+        "each error quotes its own typed query (escaped vs bare)"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

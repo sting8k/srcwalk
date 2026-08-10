@@ -341,13 +341,18 @@ pub fn search_symbol_expanded(
         budget_tokens,
     )?;
     let did_suggest = append_did_you_mean(&mut out, &result, scope, glob, filter);
-    let dotted_recovery = dotted_qualified_recovery(
-        &result.query,
-        scope,
-        cache,
-        glob,
-        super::ArtifactMode::Source,
-    );
+    // US-064: recovery search only on the miss path (see search_symbol_with_artifact).
+    let dotted_recovery = if result.matches.is_empty() && !did_suggest {
+        dotted_qualified_recovery(
+            &result.query,
+            scope,
+            cache,
+            glob,
+            super::ArtifactMode::Source,
+        )
+    } else {
+        None
+    };
     append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest, dotted_recovery);
     Ok(out)
 }

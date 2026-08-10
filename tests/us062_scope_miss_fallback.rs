@@ -206,3 +206,28 @@ fn symbol_routes_never_widen() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn zero_match_at_repo_root_with_relative_scope_does_not_repass() {
+    // `--scope .` relative + repo root == scope: git returns an absolute root,
+    // the raw PathBuf compare would misfire and run a redundant widened pass.
+    // Output must not carry the outside-scope hint at all.
+    let dir = fixture("rootzero");
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "ghost.zzz", "--as", "file", "--scope", "."])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        outside_scope_line(&stdout).is_none(),
+        "zero-match at repo root must not widen (raw scope==root compare fails on rel vs abs):\n{stdout}"
+    );
+    assert!(stdout.contains("0 of 0 files"), "{stdout}");
+    let _ = fs::remove_dir_all(&dir);
+}

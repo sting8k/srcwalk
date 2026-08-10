@@ -233,7 +233,11 @@ fn file_search_with_scope_miss(
         return glob_result::format_glob_result(&in_scope, scope, label);
     }
     let root = repo_root(scope);
-    if root == scope {
+    // US-062: `git rev-parse --show-toplevel` returns an absolute path while
+    // the user may pass a relative `--scope .`; canonicalize both sides so a
+    // zero-match at the repo root does not run a redundant widened pass. When
+    // canonicalization fails (e.g. a deleted dir), fall back to raw equality.
+    if paths_equivalent(&root, scope) {
         return glob_result::format_glob_result(&in_scope, scope, label);
     }
     let expanded = run(&root)?;
@@ -250,6 +254,15 @@ fn file_search_with_scope_miss(
 /// miss (no second pass) rather than widening to a broad filesystem walk.
 fn repo_root(scope: &Path) -> PathBuf {
     git_toplevel(scope).unwrap_or_else(|| scope.to_path_buf())
+}
+
+/// True when two paths point at the same directory, tolerating relative vs
+/// absolute spellings (canonical first; raw equality as fallback).
+fn paths_equivalent(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
 }
 
 fn git_toplevel(scope: &Path) -> Option<PathBuf> {
@@ -653,17 +666,7 @@ fn go_receiver_from_line(line: &str) -> Option<String> {
     if ty.is_empty() {
         return None;
     }
-    Some(normalize_go_receiver_type(ty))
-}
-
-fn normalize_go_receiver_type(receiver: &str) -> String {
-    let stripped = receiver.trim().trim_start_matches('*').trim();
-    stripped
-        .chars()
-        .take_while(|&c| c != '[')
-        .collect::<String>()
-        .trim()
-        .to_string()
+    Some(crate::search::symbol::normalize_receiver_type(ty))
 }
 
 /// Format a symbol/content search result.
@@ -1250,5 +1253,49 @@ mod us064_receiver_line_tests {
         assert_eq!(go_receiver_from_line("func (Batch) Method() {}"), None);
         assert_eq!(go_receiver_from_line("var x = 1"), None);
         assert_eq!(go_receiver_from_line(""), None);
+    }
+}
+
+#[cfg(test)]
+mod us062_paths_equivalent_tests {
+    use super::paths_equivalent;
+
+    #[test]
+    fn relative_and_absolute_spellings_of_same_dir_are_equivalent() {
+        let dir = std::env::temp_dir().join(format!(
+            "us062_pathseq_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // `dir` is absolute; make a relative spelling via a child cwd.
+        let child = dir.join("a/b");
+        std::fs::create_dir_all(&child).unwrap();
+        let absolute = std::path::PathBuf::from(&child);
+        let relative = std::path::Path::new("a/b");
+        // Set the process cwd to `dir` so `a/b` resolves to `dir/a/b`.
+        let saved = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let result = paths_equivalent(&absolute, relative);
+        std::env::set_current_dir(saved).unwrap();
+        assert!(result, "{} vs {}", absolute.display(), relative.display());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn distinct_dirs_are_not_equivalent() {
+        let base = std::env::temp_dir().join(format!(
+            "us062_pathseq_diff_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(base.join("one")).unwrap();
+        std::fs::create_dir_all(base.join("two")).unwrap();
+        assert!(!paths_equivalent(&base.join("one"), &base.join("two")));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

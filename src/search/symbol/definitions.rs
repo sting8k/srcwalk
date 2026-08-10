@@ -344,8 +344,9 @@ fn go_receiver_type_from_node(node: tree_sitter::Node, lines: &[&str]) -> Option
 }
 
 /// US-064: normalize a Go receiver type — strip leading `*` and generic
-/// params: `*Batch` → `Batch`, `syncQueue[T]` → `syncQueue`.
-fn normalize_receiver_type(receiver: &str) -> String {
+/// params: `*Batch` → `Batch`, `syncQueue[T]` → `syncQueue`. Shared with the
+/// display layer's ambiguity assist (single source of truth).
+pub(crate) fn normalize_receiver_type(receiver: &str) -> String {
     let stripped = receiver.trim().trim_start_matches('*').trim();
     stripped
         .chars()

@@ -8,6 +8,7 @@ use crate::evidence::{
     NEXT_ACTION_LINE_CAP,
 };
 use crate::format;
+use crate::precision;
 use crate::types::SearchResult;
 
 use super::semantic;
@@ -115,50 +116,89 @@ fn show_actions_for_targets(targets: &[StructuralTarget], scope: &Path) -> Vec<N
         .map(|index| &targets[index])
         .collect::<Vec<_>>();
 
-    if kept_targets.len() == 1 {
-        let target = kept_targets[0];
-        return vec![NextAction::from_evidence(
+    if kept_targets.is_empty() {
+        return Vec::new();
+    }
+
+    // US-060b: split wide (>W-line) targets out of every offer path so each
+    // anchors to `path:line (label)` + an `expand: srcwalk show path:A-B`
+    // command instead of being offered bare. The expand command preserves the
+    // exact range (section form for comma paths), so the full range is always
+    // exactly one printed command away.
+    let (wide, narrow): (Vec<_>, Vec<_>) = kept_targets.into_iter().partition(|target| {
+        precision::should_anchor_range((target.end_line - target.start_line + 1) as usize)
+    });
+
+    let mut actions = Vec::new();
+    for target in &wide {
+        actions.push(NextAction::guidance(
+            anchored_offer(target, scope, "read confirmed structural source target"),
+            "read confirmed structural source target",
+            10,
+        ));
+    }
+
+    if narrow.len() == 1 {
+        let target = narrow[0];
+        actions.push(NextAction::from_evidence(
             show_command_for_target(target, scope),
             "read confirmed structural source target",
             10,
             EvidenceSource::Ast,
             target.anchor(),
-        )];
-    }
-
-    if kept_targets
-        .iter()
-        .any(|target| target.requires_section_form(scope))
-    {
-        return kept_targets
+        ));
+    } else if !narrow.is_empty()
+        && narrow
             .iter()
-            .enumerate()
-            .map(|(index, target)| {
-                NextAction::from_evidence(
-                    show_command_for_target(target, scope),
-                    "read confirmed structural source target",
-                    10 + index as u16,
-                    EvidenceSource::Ast,
-                    target.anchor(),
-                )
-            })
-            .collect();
+            .any(|target| target.requires_section_form(scope))
+    {
+        for (index, target) in narrow.iter().enumerate() {
+            actions.push(NextAction::from_evidence(
+                show_command_for_target(target, scope),
+                "read confirmed structural source target",
+                10 + index as u16,
+                EvidenceSource::Ast,
+                target.anchor(),
+            ));
+        }
+    } else if !narrow.is_empty() {
+        let joined = narrow
+            .iter()
+            .map(|target| target.location_arg_relative_to(scope))
+            .collect::<Vec<_>>()
+            .join(",");
+        actions.push(NextAction::guidance(
+            format!("srcwalk show {}", quote_or_placeholder(&joined)),
+            "read confirmed structural source targets",
+            10,
+        ));
     }
+    actions
+}
 
-    if kept_targets.is_empty() {
-        return Vec::new();
+/// US-060b: build the anchored offer for a wide target — a single-line
+/// `path:start (label)` anchor plus an `> expand:` command that retrieves the
+/// full range in exactly one printed command (preserving section form for comma
+/// paths). Rendered as two `> `-prefixed lines by `render_next_actions`.
+fn anchored_offer(target: &StructuralTarget, scope: &Path, reason: &str) -> String {
+    let label = truncate_label(reason);
+    let path = format::rel_nonempty(&target.path, scope);
+    format!(
+        "{}:{} ({label})\n> expand: {}",
+        path,
+        target.start_line,
+        show_command_for_target(target, scope)
+    )
+}
+
+/// Keep the anchor label short enough for a single-line `path:line (label)`.
+fn truncate_label(reason: &str) -> &str {
+    let trimmed = reason.trim();
+    if trimmed.len() <= 40 {
+        trimmed
+    } else {
+        &trimmed[..trimmed.floor_char_boundary(40)]
     }
-
-    let joined = kept_targets
-        .iter()
-        .map(|target| target.location_arg_relative_to(scope))
-        .collect::<Vec<_>>()
-        .join(",");
-    vec![NextAction::guidance(
-        format!("srcwalk show {}", quote_or_placeholder(&joined)),
-        "read confirmed structural source targets",
-        10,
-    )]
 }
 
 fn show_command_for_target(target: &StructuralTarget, scope: &Path) -> String {
@@ -251,16 +291,48 @@ mod tests {
             scope,
         );
 
+        // The 201-line `b` range is dropped by the line cap; the surviving `a`
+        // (150) and `c` (50) are both >W so they anchor to path:line + expand.
         assert_eq!(actions.len(), 2);
         assert_eq!(
             actions[0].command(),
-            "srcwalk show 'a,file.rs' --section 1-150"
+            "a,file.rs:1 (read confirmed structural source target)\n> expand: srcwalk show 'a,file.rs' --section 1-150"
         );
         assert_eq!(actions[0].rank(), 10);
         assert_eq!(
             actions[1].command(),
-            "srcwalk show 'c,file.rs' --section 1-50"
+            "c,file.rs:1 (read confirmed structural source target)\n> expand: srcwalk show 'c,file.rs' --section 1-50"
         );
-        assert_eq!(actions[1].rank(), 11);
+        assert_eq!(actions[1].rank(), 10);
+    }
+
+    #[test]
+    fn wide_range_offered_anchors_but_w_boundary_does_not() {
+        let scope = Path::new("");
+        // Width W (40) is the boundary: exactly 40 lines stays a plain offer.
+        let boundary = show_actions_for_targets(&[target("p.rs", 1, 40)], scope);
+        assert_eq!(boundary.len(), 1);
+        assert!(
+            !boundary[0].command().contains("expand:"),
+            "width-40 target must not anchor: {:?}",
+            boundary[0].command()
+        );
+        assert_eq!(boundary[0].command(), "srcwalk show p.rs:1-40");
+
+        // Width W+1 (41) must anchor to `path:line (label)` + `> expand:`.
+        let wide = show_actions_for_targets(&[target("p.rs", 1, 41)], scope);
+        assert_eq!(wide.len(), 1);
+        assert!(
+            wide[0]
+                .command()
+                .contains("> expand: srcwalk show p.rs:1-41"),
+            "width-41 target must anchor with an expand command: {:?}",
+            wide[0].command()
+        );
+        assert!(
+            wide[0].command().starts_with("p.rs:1 ("),
+            "{:?}",
+            wide[0].command()
+        );
     }
 }

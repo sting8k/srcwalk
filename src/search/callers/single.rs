@@ -18,6 +18,8 @@ use crate::format::rel_nonempty;
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
 use crate::path_match_contains;
+use crate::precision;
+
 use crate::session::Session;
 use crate::types::FileType;
 use crate::ArtifactMode;
@@ -1060,7 +1062,12 @@ pub fn search_callers_expanded_with_artifact(
     if js_ts_artifact_callers {
         append_artifact_callers_grouped(&mut output, &sorted_callers, scope, expand);
     } else {
-        for (i, caller) in sorted_callers.iter().enumerate() {
+        // US-060: collapse same-relation lists > K to top-K + a single pointer.
+        // Collapse only applies at the head of the list; an explicit --offset
+        // (as the pointer command uses) lists the full remaining page.
+        let list_collapse = effective_offset == 0 && precision::should_collapse_list(shown);
+        let render_count = if list_collapse { precision::K } else { shown };
+        for (i, caller) in sorted_callers.iter().take(render_count).enumerate() {
             let caller_kind = detect_file_type(&caller.path)
                 .structural_lang()
                 .and_then(crate::capabilities::caller_context_kind)
@@ -1113,6 +1120,22 @@ pub fn search_callers_expanded_with_artifact(
                 }
             }
         }
+        // US-060: every collapsed item stays reachable via one pointer command.
+        if list_collapse {
+            let omitted = shown - precision::K;
+            let _ = writeln!(
+                output,
+                "\n+{omitted} more → {}",
+                precision::list_pointer("trace callers", target, scope, Some(precision::K)),
+            );
+        }
+
+        // US-060 Phase A: debug-gated per-packet offer accounting.
+        let mut stats = precision::PacketStats::default();
+        for _ in sorted_callers.iter().take(render_count) {
+            stats.record("caller", 1);
+        }
+        stats.maybe_emit(&format!("callers:{target}"));
     }
 
     let mut footer = String::new();

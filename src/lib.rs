@@ -24,7 +24,9 @@ pub mod format;
 pub mod index;
 pub(crate) mod lang;
 pub mod map;
+pub(crate) mod precision;
 pub(crate) mod read;
+
 pub(crate) mod search;
 pub(crate) mod session;
 pub mod threading;

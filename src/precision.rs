@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::format::display_path;
+use crate::format::{display_path, shell_quote_arg};
 
 /// Same-relation list collapse threshold: show this many full items, then a
 /// `+N more → <command>` pointer.
@@ -21,8 +21,27 @@ pub const W: usize = 40;
 pub const CAP: usize = 400;
 
 /// A pointer command for a same-relation list, using existing path-display rules.
-pub fn list_pointer(action: &str, target: &str, scope: &Path, offset: Option<usize>) -> String {
+pub fn list_pointer(
+    action: &str,
+    target: &str,
+    scope: &Path,
+    filter: Option<&str>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> String {
     let mut cmd = format!("srcwalk {action} {target} --scope {}", display_path(scope));
+    // Preserve the caller's query constraints in the pointer command so the
+    // rerun reproduces the same result set (filter first, then limit/offset in
+    // the CLI's stable flag order).
+    if let Some(f) = filter {
+        // Paste-safe quoting, matching the pointers callees.rs emits: a
+        // multi-qualifier filter carries spaces that need shell quoting.
+        let quoted = shell_quote_arg(f).unwrap_or_else(|| "<filter>".to_string());
+        let _ = std::fmt::Write::write_fmt(&mut cmd, format_args!(" --filter {quoted}"));
+    }
+    if let Some(l) = limit {
+        let _ = std::fmt::Write::write_fmt(&mut cmd, format_args!(" --limit {l}"));
+    }
     if let Some(o) = offset {
         let _ = std::fmt::Write::write_fmt(&mut cmd, format_args!(" --offset {o}"));
     }
@@ -112,12 +131,42 @@ mod tests {
     #[test]
     fn list_pointer_uses_display_path() {
         let scope = Path::new("src");
-        let p = list_pointer("callers", "parseGitUrl", scope, None);
+        let p = list_pointer("callers", "parseGitUrl", scope, None, None, None);
         assert!(
             p.starts_with("srcwalk callers parseGitUrl --scope src"),
             "{p}"
         );
-        let page = list_pointer("callers", "parseGitUrl", scope, Some(3));
+        let page = list_pointer("callers", "parseGitUrl", scope, None, None, Some(3));
         assert!(page.contains("--offset 3"), "{page}");
+        // Constraint preservation keeps the pointer rerun's result set stable.
+        let constrained = list_pointer(
+            "callers",
+            "parseGitUrl",
+            scope,
+            Some("caller:foo"),
+            Some(5),
+            Some(3),
+        );
+        assert!(constrained.contains("--filter caller:foo"), "{constrained}");
+        assert!(constrained.contains("--limit 5"), "{constrained}");
+        assert!(constrained.contains("--offset 3"), "{constrained}");
+        let scope_i = constrained.find("--scope").unwrap();
+        let filter_i = constrained.find("--filter").unwrap();
+        let limit_i = constrained.find("--limit").unwrap();
+        let offset_i = constrained.find("--offset").unwrap();
+        assert!(scope_i < filter_i && filter_i < limit_i && limit_i < offset_i);
+        // Multi-qualifier filter (spaces) must be shell-quoted, paste-safe.
+        let spaced = list_pointer(
+            "callers",
+            "parseGitUrl",
+            scope,
+            Some("args:1 caller:foo"),
+            None,
+            None,
+        );
+        assert!(
+            spaced.contains("--filter 'args:1 caller:foo'"),
+            "multi-qualifier filter must be quoted, got: {spaced}"
+        );
     }
 }

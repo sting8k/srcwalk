@@ -132,3 +132,53 @@ fn phase_a_counters_emitted_only_under_debug_env() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn collapsed_pointer_preserves_filter_and_limit() {
+    // US-060 review P1-2: the `+N more →` pointer must carry the caller's
+    // --filter/--limit so a rerun reproduces the same result set.
+    let dir = callers_fixture("callers_flags", 5);
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "trace",
+            "callers",
+            "target",
+            "--scope",
+            ".",
+            "--filter",
+            "path:caller",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "trace callers with filter/limit failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("+2 more → srcwalk trace callers target --scope . --filter path:caller --limit 5 --offset 3"),
+        "pointer must preserve --filter and --limit, got:\n{stdout}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn collapsed_pointer_without_constraints_stays_byte_identical() {
+    // Unconstrained query: pointer format unchanged from the pre-fix output.
+    let dir = callers_fixture("callers_plain", 5);
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["trace", "callers", "target", "--scope", "."])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("+2 more → srcwalk trace callers target --scope . --offset 3"),
+        "unconstrained pointer must stay byte-identical, got:\n{stdout}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

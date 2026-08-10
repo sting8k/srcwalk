@@ -1126,7 +1126,14 @@ pub fn search_callers_expanded_with_artifact(
             let _ = writeln!(
                 output,
                 "\n+{omitted} more → {}",
-                precision::list_pointer("trace callers", target, scope, Some(precision::K)),
+                precision::list_pointer(
+                    "trace callers",
+                    target,
+                    scope,
+                    filter,
+                    limit,
+                    Some(precision::K),
+                ),
             );
         }
 

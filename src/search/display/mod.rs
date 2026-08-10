@@ -171,8 +171,9 @@ pub fn search_files_fragment(
     limit: Option<usize>,
     offset: usize,
 ) -> Result<String, SrcwalkError> {
-    let result = super::glob::search_path_fragment(fragment, scope, limit, offset)?;
-    glob_result::format_glob_result(&result, scope, "Path fragments")
+    file_search_with_scope_miss(scope, "Path fragments", |root| {
+        super::glob::search_path_fragment(fragment, root, limit, offset)
+    })
 }
 
 pub fn search_files_glob_with_exclude(
@@ -182,8 +183,9 @@ pub fn search_files_glob_with_exclude(
     offset: usize,
     exclude: Option<&str>,
 ) -> Result<String, SrcwalkError> {
-    let result = glob::search_with_exclude(pattern, scope, limit, offset, exclude)?;
-    glob_result::format_glob_result(&result, scope, "Files")
+    file_search_with_scope_miss(scope, "Files", |root| {
+        glob::search_with_exclude(pattern, root, limit, offset, exclude)
+    })
 }
 
 pub fn search_files_glob_with_scope_filter(
@@ -194,8 +196,86 @@ pub fn search_files_glob_with_scope_filter(
     offset: usize,
     exclude: Option<&str>,
 ) -> Result<String, SrcwalkError> {
-    let result = glob::search_with_scope_glob(pattern, scope, scope_glob, limit, offset, exclude)?;
-    glob_result::format_glob_result(&result, scope, "Files")
+    file_search_with_scope_miss(scope, "Files", |root| {
+        glob::search_with_scope_glob(pattern, root, scope_glob, limit, offset, exclude)
+    })
+}
+
+/// US-062: discover file-target queries widen to the repo root only on a zero
+/// in-scope match. When the in-scope search finds nothing and `scope` is below
+/// the repo root, rerun the same file search over the repo root and, on
+/// success, append an outside-scope hint + a corrected `> Try:` scope. Any
+/// in-scope match, no match anywhere, or scope == repo root returns the normal
+/// (byte-identical) result.
+fn file_search_with_scope_miss(
+    scope: &Path,
+    label: &str,
+    run: impl Fn(&Path) -> Result<glob::GlobResult, SrcwalkError>,
+) -> Result<String, SrcwalkError> {
+    let in_scope = run(scope)?;
+    if in_scope.total_found > 0 {
+        return glob_result::format_glob_result(&in_scope, scope, label);
+    }
+    let root = repo_root(scope);
+    if root == scope {
+        return glob_result::format_glob_result(&in_scope, scope, label);
+    }
+    let expanded = run(&root)?;
+    if expanded.total_found == 0 {
+        return glob_result::format_glob_result(&in_scope, scope, label);
+    }
+    let mut out = glob_result::format_glob_result(&in_scope, scope, label)?;
+    out.push_str(&format_scope_miss(&expanded, &root, &in_scope.pattern));
+    Ok(out)
+}
+
+/// Git top-level ancestor of `scope`, or `scope` itself when not in a git
+/// repo. Without git there is no reliable repo root, so a gitless miss stays a
+/// miss (no second pass) rather than widening to a broad filesystem walk.
+fn repo_root(scope: &Path) -> PathBuf {
+    git_toplevel(scope).unwrap_or_else(|| scope.to_path_buf())
+}
+
+fn git_toplevel(scope: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(scope)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+/// `> Found outside scope (N): p1, p2` (cap 5, shortest-first, deterministic)
+/// + a `> Try:` command whose scope finds all listed files.
+fn format_scope_miss(expanded: &glob::GlobResult, root: &Path, pattern: &str) -> String {
+    let mut paths: Vec<String> = expanded
+        .files
+        .iter()
+        .map(|f| rel_nonempty(&f.path, root))
+        .collect();
+    paths.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    paths.truncate(5);
+    let mut out = format!(
+        "\n> Found outside scope ({}): {}",
+        expanded.total_found,
+        paths.join(", ")
+    );
+    let _ = write!(
+        out,
+        "\n> Try: `srcwalk discover '{}' --scope {}`",
+        pattern,
+        format::display_path(root)
+    );
+    out
 }
 
 /// Format match entries with optional expansion.
@@ -889,5 +969,109 @@ fn extract_line_range(line: &str) -> Option<(u32, u32)> {
     } else {
         let n: u32 = range_str.trim().parse().ok()?;
         Some((n, n))
+    }
+}
+
+#[cfg(test)]
+mod scope_miss_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "us062_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ))
+    }
+
+    #[test]
+    fn repo_root_prefers_git_toplevel() {
+        let dir = temp_dir("root_git");
+        let scope = dir.join("packages/coding-agent/src");
+        fs::create_dir_all(&scope).unwrap();
+        // A real repo requires `git init`; skip if git is unavailable.
+        let init = std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .current_dir(&dir)
+            .output();
+        match init {
+            Ok(out) if out.status.success() => {
+                let expected = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+                let actual =
+                    fs::canonicalize(repo_root(&scope)).unwrap_or_else(|_| repo_root(&scope));
+                assert_eq!(actual, expected);
+            }
+            _ => {
+                // No git in this environment: the safe fallback is the scope.
+                assert_eq!(repo_root(&scope), scope);
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn repo_root_returns_scope_without_git() {
+        let dir = temp_dir("root_nogit");
+        let scope = dir.join("packages/coding-agent/src");
+        fs::create_dir_all(&scope).unwrap();
+        // No .git anywhere: the safe fallback is the scope itself (no widening).
+        assert_eq!(repo_root(&scope), scope);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scope_miss_hint_caps_at_five_and_sorts_shortest_first() {
+        let root = temp_dir("hint");
+        fs::create_dir_all(&root).unwrap();
+        let mut files = Vec::new();
+        for (i, name) in [
+            "zzz/quite_long_name.json",
+            "a.json",
+            "bb.json",
+            "ccc.json",
+            "dddd.json",
+            "eeeee.json",
+            "ffffff.json",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let p = root.join(name);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"{}").unwrap();
+            files.push(glob::GlobFileEntry {
+                path: p,
+                preview: None,
+            });
+            let _ = i;
+        }
+        let result = glob::GlobResult {
+            pattern: "*.json".to_string(),
+            total_found: files.len(),
+            files,
+            available_extensions: Vec::new(),
+            offset: 0,
+            limit: 20,
+            path_symbol_target: None,
+            oversized: false,
+        };
+        let hint = format_scope_miss(&result, &root, "*.json");
+        // Shortest-first and capped: only 5 of the 7 paths.
+        let listed = hint
+            .split("): ")
+            .nth(1)
+            .and_then(|s| s.lines().next())
+            .unwrap_or("");
+        let paths: Vec<&str> = listed.split(", ").collect();
+        assert_eq!(paths.len(), 5, "{hint}");
+        assert_eq!(paths[0], "a.json");
+        assert_eq!(paths[1], "bb.json");
+        assert!(hint.contains("(7)"), "{hint}");
+        assert!(hint.contains("> Try: `srcwalk discover '*.json'"), "{hint}");
+        let _ = fs::remove_dir_all(&root);
     }
 }

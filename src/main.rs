@@ -344,6 +344,12 @@ fn main() {
     configure_thread_pools();
     let cli = parse_cli_or_exit();
 
+    // `--version` / `-V` (clap's auto version is disabled so provenance shows).
+    if cli.version {
+        version::run_version(false);
+        return;
+    }
+
     // Shell completions
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "srcwalk", &mut io::stdout());

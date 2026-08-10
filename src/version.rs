@@ -2,7 +2,7 @@ use std::process;
 
 pub(crate) fn run_version(check: bool) {
     let current = env!("CARGO_PKG_VERSION");
-    println!("srcwalk {current}");
+    println!("{}", version_line());
 
     if !check {
         return;
@@ -46,6 +46,20 @@ pub(crate) fn run_version(check: bool) {
             eprintln!("  cargo install srcwalk --locked --force");
             process::exit(1);
         }
+    }
+}
+
+/// The `srcwalk X.Y.Z (provenance)` line. Provenance is the git short-SHA
+/// (with `-dirty` when the working tree changed at build) plus the UTC build
+/// date, or `unknown` when git was unavailable at build time (US-061).
+pub(crate) fn version_line() -> String {
+    let current = env!("CARGO_PKG_VERSION");
+    let label = env!("SRCWALK_GIT_LABEL");
+    if label == "unknown" {
+        format!("srcwalk {current} (unknown)")
+    } else {
+        let date = env!("SRCWALK_BUILD_DATE");
+        format!("srcwalk {current} ({label}, {date})")
     }
 }
 

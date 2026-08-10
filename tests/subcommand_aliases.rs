@@ -131,9 +131,14 @@ fn version_subcommand_is_canonical_version_surface() {
         "version failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        format!("srcwalk {}\n", env!("CARGO_PKG_VERSION"))
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with(&format!("srcwalk {} (", env!("CARGO_PKG_VERSION"))),
+        "version should carry provenance suffix:\n{stdout}"
+    );
+    assert!(
+        stdout.trim_end().ends_with(')'),
+        "provenance suffix:\n{stdout}"
     );
 }
 
@@ -147,9 +152,14 @@ fn root_version_flags_match_version_subcommand() {
             "{flag} failed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            format!("srcwalk {}\n", env!("CARGO_PKG_VERSION"))
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.starts_with(&format!("srcwalk {} (", env!("CARGO_PKG_VERSION"))),
+            "version should carry provenance suffix:\n{stdout}"
+        );
+        assert!(
+            stdout.trim_end().ends_with(')'),
+            "provenance suffix:\n{stdout}"
         );
     }
 }

@@ -28,7 +28,7 @@ Turn the request's explicit evidence questions into a short coverage list. In ea
 - Multi-root symbol discovery may repeat the flag: `srcwalk discover 'foo,bar' --as symbol --scope src --scope tests`.
 - Other routes and `discover --as text|file|access` accept one scope; use a common ancestor or run independent commands in the same model/tool round.
 - Keep scope as small as the evidence question allows; narrow scopes can hide definitions.
-- Symbol batches accept 2-5 comma-separated symbols: `srcwalk discover 'foo,bar,baz' --as symbol --scope src`. Split larger symbol sets.
+- Symbol batches accept 2-5 comma-separated symbols: `srcwalk discover 'foo,bar,baz' --as symbol --scope src`. Split larger symbol sets. One dot qualifies a method by receiver/container: `'Batch.Set'`.
 - Text OR is separate: `srcwalk discover 'alloc,copy' --match any --as text --scope src` is literal text evidence, not a symbol batch.
 - Do not infer definitions, usages, callers, deps, or code paths from shell path lists, broad grep, or converted identifier paths.
 

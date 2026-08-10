@@ -11,7 +11,7 @@ use crate::commands::multi_scope::{
 };
 use crate::commands::section_disambiguation::disambiguate_glob_for_section;
 use crate::evidence::{render_next_actions, NextAction};
-use crate::types::{Match, QueryType};
+use crate::types::{Match, QueryType, RegexCoOccurrenceQuery, RegexTextKind, RegexTextQuery};
 use crate::OutlineCache;
 use crate::SrcwalkError;
 use crate::{artifact, budget, format, index, read, search, session};
@@ -977,7 +977,6 @@ fn run_inner(
     let config_cache = crate::lang::tsconfig::ConfigCache::new();
 
     let query_type = classify(query, scope);
-
     // P1.2 — disambiguate bare-filename + --section.
     // Glob classification swallows `--section` silently for bare filenames like
     // `Cart.php`. When section is set, resolve the glob now: pick the prod
@@ -1171,6 +1170,12 @@ fn run_inner(
             };
             Ok(with_artifact_read_label(out, artifact))
         }
+        QueryType::RegexText(q) => run_regex_text(
+            &q, scope, cache, limit, offset, glob, filter, artifact,
+        ),
+        QueryType::RegexCoOccurrence(q) => run_regex_cooccurrence(
+            &q, scope, cache, limit, offset, glob, filter,
+        ),
         QueryType::Glob(_) if classify::has_glob_chars(query) => Err(use_files_error(query)),
         QueryType::Glob(pattern) => search::search_files_glob(&pattern, scope, limit, offset),
         _ if use_expanded => {
@@ -1293,7 +1298,9 @@ fn run_query_expanded(
             ctx.budget_tokens,
         ),
         // FilePath/Glob/Glob never reach here (gated by use_expanded)
-        QueryType::FilePath(_)
+        QueryType::RegexText(_)
+        | QueryType::RegexCoOccurrence(_)
+        | QueryType::FilePath(_)
         | QueryType::FilePathLine(_, _)
         | QueryType::FilePathSection(_, _)
         | QueryType::Glob(_) => {
@@ -1333,7 +1340,9 @@ fn run_query_basic(
         QueryType::Fallthrough(text) => single_query_search(
             text, scope, cache, false, limit, offset, glob, filter, artifact,
         ),
-        QueryType::FilePath(_)
+        QueryType::RegexText(_)
+        | QueryType::RegexCoOccurrence(_)
+        | QueryType::FilePath(_)
         | QueryType::FilePathLine(_, _)
         | QueryType::FilePathSection(_, _)
         | QueryType::Glob(_) => {
@@ -1414,6 +1423,15 @@ fn single_query_search(
     }
 
     if !artifact.enabled() && should_error_missing_path_like_query(text) {
+        // US-059: an unresolvable path-like query becomes a path-fragment match
+        // (relative paths containing the fragment) instead of a dead-end error.
+        // Explicit `./` / `../` paths are unambiguous and still fail loudly.
+        if !text.starts_with("./") && !text.starts_with("../") {
+            let fragment_out = search::search_files_fragment(text, scope, limit, offset)?;
+            return Ok(format!(
+                "> interpreted as path fragment `{text}` (no exact file resolved).\n\n{fragment_out}",
+            ));
+        }
         return Err(SrcwalkError::PathLikeNotFound {
             path: scope.join(text),
             scope: scope.to_path_buf(),
@@ -1431,6 +1449,107 @@ fn single_query_search(
             .then(|| filter_zero_guidance(filter))
             .flatten(),
     })
+}
+
+/// Render a regex-escaped `discover` query (US-059).
+fn run_regex_text(
+    q: &RegexTextQuery,
+    scope: &Path,
+    cache: &OutlineCache,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+    artifact: ArtifactMode,
+) -> Result<String, SrcwalkError> {
+    use std::fmt::Write as _;
+    let scope_path = format::display_path(scope);
+
+    // `models\.json` → bare filename → glob branch (≡ `discover models.json`).
+    if matches!(q.kind, RegexTextKind::BareFilename) {
+        let pattern = format!("**/{}", q.literal);
+        let out = search::search_files_glob(&pattern, scope, limit, offset)?;
+        return Ok(format!(
+            "> interpreted as filename `{}` for regex-escaped `{}`\n\n{}",
+            q.literal, q.original, out
+        ));
+    }
+
+    // Symbol + text dual sections.
+    let mut sym = search::search_symbol_raw_with_artifact(&q.symbol_core, scope, glob, artifact)?;
+    search::apply_general_filter(&mut sym, scope, cache, filter)?;
+    let mut text = search::search_content_raw_with_artifact(&q.literal, scope, glob, artifact)?;
+    search::apply_general_filter(&mut text, scope, cache, filter)?;
+
+    let mut out = format!(
+        "# Regex-dialect: \"{}\" in {} — interpreted as `{}`\n> Caveat: regex escapes de-escaped for literal + symbol search; not a regex engine.",
+        q.original, scope_path, q.literal
+    );
+    if sym.total_found > 0 {
+        search::pagination::paginate(&mut sym, limit, offset);
+        search::compact_artifact_snippets(&mut sym, artifact);
+        let rendered = search::format_raw_result(&sym, cache)?;
+        let _ = write!(out, "\n\n## Symbol: {}\n{}", q.symbol_core, rendered);
+    }
+    if text.total_found > 0 {
+        search::pagination::paginate(&mut text, limit, offset);
+        search::compact_artifact_snippets(&mut text, artifact);
+        let rendered = search::format_raw_result(&text, cache)?;
+        let _ = write!(out, "\n\n## Text: {}\n{}", q.literal, rendered);
+    }
+    if sym.total_found == 0 && text.total_found == 0 {
+        let _ = write!(
+            out,
+            "\n> Try: `srcwalk discover '{}*' --scope {}` for prefix symbols, or `rg '{}'` for raw regex.",
+            q.symbol_core, scope_path, q.original
+        );
+    }
+    Ok(out)
+}
+
+/// Render a `.*`/`.+` two-term same-line co-occurrence query (US-059).
+fn run_regex_cooccurrence(
+    q: &RegexCoOccurrenceQuery,
+    scope: &Path,
+    cache: &OutlineCache,
+    limit: Option<usize>,
+    offset: usize,
+    glob: Option<&str>,
+    filter: Option<&str>,
+) -> Result<String, SrcwalkError> {
+    use std::fmt::Write as _;
+    let mut result = search::cooccurrence::search_same_line_ordered(
+        &q.term1,
+        &q.term2,
+        scope,
+        glob,
+        crate::ArtifactMode::Source,
+    )?;
+    search::apply_general_filter(&mut result, scope, cache, filter)?;
+
+    let mut header = format!(
+        "# Regex co-occurrence: \"{}\" in {} — interpreted as same-line `{}` ⇒ `{}`",
+        q.original,
+        format::display_path(scope),
+        q.term1,
+        q.term2
+    );
+    if q.simplified {
+        header.push_str("\n> Note: pattern had 3+ terms; only the first two were used.");
+    }
+    header.push_str("\n> Caveat: same-line ordered co-occurrence; not semantic relation proof.");
+
+    if result.total_found == 0 {
+        let _ = write!(
+            header,
+            "\n> Try: `srcwalk discover '{}' --scope {}` for literal text, or `rg '{}'` for real regex.",
+            q.term1, format::display_path(scope), q.original
+        );
+        return Ok(header);
+    }
+
+    search::pagination::paginate(&mut result, limit, offset);
+    search::format_raw_result_with_header(&result, cache, header)
 }
 
 /// Multi-word concept search: exact phrase first, then relaxed word proximity.

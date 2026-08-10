@@ -3,6 +3,7 @@ mod artifact_snippet;
 pub mod callees;
 pub mod callers;
 pub mod content;
+pub mod cooccurrence;
 pub mod deps;
 mod display;
 pub mod facets;
@@ -33,7 +34,7 @@ use crate::ArtifactMode;
 
 pub use self::artifact_snippet::compact_artifact_snippets;
 pub use self::display::{
-    format_raw_result, format_raw_result_with_header, search_files_glob,
+    format_raw_result, format_raw_result_with_header, search_files_fragment, search_files_glob,
     search_files_glob_with_exclude, search_files_glob_with_scope_filter,
 };
 pub use self::filter::apply_general_filter;

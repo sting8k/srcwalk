@@ -112,6 +112,21 @@ pub(super) fn format_glob_result(
             "\n\nNo matches. Available extensions in scope: {}",
             result.available_extensions.join(", ")
         );
+        let _ = write!(
+            out,
+            "\n> Try: `srcwalk discover '{}' --scope {}` for a content search, or `rg '{}'` for raw regex/file globs.",
+            result.pattern,
+            crate::format::display_path(scope),
+            result.pattern,
+        );
+    } else if result.files.is_empty() {
+        let _ = write!(
+            out,
+            "\n> Try: `srcwalk discover '{}' --scope {}` for a content search, or `rg '{}'` for raw regex/file globs.",
+            result.pattern,
+            crate::format::display_path(scope),
+            result.pattern,
+        );
     }
 
     Ok(out)

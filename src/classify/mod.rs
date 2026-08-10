@@ -1,10 +1,21 @@
+pub mod regex_dialect;
+
 use std::path::Path;
 
 use crate::types::QueryType;
 
 /// Classify a query string into a `QueryType` by byte-pattern matching.
 /// No regex engine — `matches!` compiles to a jump table.
+///
+/// Stage 0: regex-dialect detection runs *before* the cascade so `rg`-dialect
+/// queries (`parseGitUrl\(`, `a.*b`, `models\.json`) are labeled and never hit
+/// a silent dead end. Windows drive prefixes and resolvable paths still win.
 pub fn classify(query: &str, scope: &Path) -> QueryType {
+    // Stage 0 — regex-dialect detector (US-059).
+    if let Some(query_type) = regex_dialect::detect(query, scope) {
+        return query_type;
+    }
+
     // 1. Path with section suffix — e.g. src/lib.rs:123 or src/lib.rs:45-89.
     // Parse from the last colon so POSIX filenames containing ':' still work when the
     // prefix resolves to a file.

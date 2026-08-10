@@ -54,6 +54,42 @@ pub enum QueryType {
     Concept(String),
     /// Path-like or unclassified query — try symbol, then content as fallback.
     Fallthrough(String),
+    /// Regex-dialect query (escapes, `\`+punctuation) normalized to literal +
+    /// symbol cores. Stage-0 detector routes here before the cascade.
+    RegexText(RegexTextQuery),
+    /// `.*`/`.+` two-term same-line co-occurrence derived from an rg-style pattern.
+    RegexCoOccurrence(RegexCoOccurrenceQuery),
+}
+
+/// A regex-escaped `discover` query normalized by the Stage-0 detector.
+#[derive(Debug)]
+pub struct RegexTextQuery {
+    /// Original query exactly as typed (`parseGitUrl\(`).
+    pub original: String,
+    /// De-escaped literal (`parseGitUrl\(` → `parseGitUrl(`).
+    pub literal: String,
+    /// Identifier-core for symbol search (`parseGitUrl`).
+    pub symbol_core: String,
+    pub kind: RegexTextKind,
+}
+
+#[derive(Debug)]
+pub enum RegexTextKind {
+    /// De-escaped literal looks like a bare filename → route to the glob branch
+    /// (`models\.json` ≡ `models.json`).
+    BareFilename,
+    /// Standard de-escape → symbol + text dual sections (`parseGitUrl\(`).
+    SymbolText,
+}
+
+/// A `.*`/`.+` co-occurrence pattern split into its first two terms.
+#[derive(Debug)]
+pub struct RegexCoOccurrenceQuery {
+    pub original: String,
+    pub term1: String,
+    pub term2: String,
+    /// True when the pattern had 3+ terms and only the first two were used.
+    pub simplified: bool,
 }
 
 /// Provider-owned language identity for removable capability modules.

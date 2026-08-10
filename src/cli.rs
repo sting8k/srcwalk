@@ -410,6 +410,12 @@ fn looks_like_file_discovery_query(query: &str) -> bool {
         return false;
     }
 
+    // US-059: an rg-style `a.*b` / `a.+b` co-occurrence pattern must not be
+    // inferred as a file glob — it goes to discover search (stage-0 detector).
+    if srcwalk::query_is_cooccurrence_pattern(query) {
+        return false;
+    }
+
     query.contains('/') || query.contains('\\') || PathBuf::from(query).extension().is_some()
 }
 

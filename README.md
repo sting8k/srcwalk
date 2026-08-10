@@ -119,6 +119,13 @@ srcwalk overview --scope src/
 
 Discovery commands respect ignore files; explicit file reads can still inspect ignored paths.
 
+Regex-dialect and path-fragment `discover` queries are translated instead of dead-ending (no regex engine runs):
+- `srcwalk discover 'parseGitUrl\(' --scope src/` de-escapes to literal + symbol search, labeled `interpreted as`.
+- `srcwalk discover 'a.*b' --scope src/` runs bounded same-line ordered co-occurrence of `a` then `b`.
+- `srcwalk discover 'models\.json' --scope .` ≡ `discover models.json` (bare-filename glob).
+- `srcwalk discover 'packages/ai' --scope .` (no exact file) matches relative paths containing the fragment (≤20 rows); existing directories return a listing.
+Zero-match branches print a `> Try:` recovery line. Windows drive paths (`C:\\bin\\x.exe`) and explicit `./`/`../` paths are never treated as regex.
+
 ## Output examples
 
 Examples below use this repository. Timings may vary between machines; snippets are abbreviated only where `...` is shown.

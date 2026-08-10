@@ -164,6 +164,17 @@ pub fn search_files_glob(
     search_files_glob_with_exclude(pattern, scope, limit, offset, None)
 }
 
+/// Path-fragment search (US-059): relative paths containing the fragment, ≤20 rows.
+pub fn search_files_fragment(
+    fragment: &str,
+    scope: &Path,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<String, SrcwalkError> {
+    let result = super::glob::search_path_fragment(fragment, scope, limit, offset)?;
+    glob_result::format_glob_result(&result, scope, "Path fragments")
+}
+
 pub fn search_files_glob_with_exclude(
     pattern: &str,
     scope: &Path,

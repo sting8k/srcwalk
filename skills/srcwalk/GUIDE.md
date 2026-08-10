@@ -66,9 +66,9 @@ Use auto overview depth first; explicit `--depth N` is strict. Narrow `overview 
 
 Intent inference: path-like globs infer file discovery; punctuation/path comma lists infer literal Text OR; symbol globs stay symbol search. Add `--as symbol|file|text|access` when ambiguous. After a first pass, use `--expand=3`, `--filter kind:fn`, or `--exclude 'tests/**'` only when output is too broad.
 
-If `discover` prints `## Confirmed structural targets`, run the matching `srcwalk show <path>:<range>` first. Use `srcwalk context <target>` only when you need a Flow Map, scoped occurrences, or call neighborhood; do not run `context` for each hop just to read source.
+Regex-dialect & path-fragment queries translate instead of dead-ending (no regex engine): `parseGitUrl\(` → literal+symbol (`interpreted as`); `a.*b` → same-line ordered co-occurrence; `models\.json` ≡ `models.json`; `packages/ai` (no exact file) → relative-path rows (≤20). Zero-match branches print `> Try:`; Windows drive (`C:\\bin\\x.exe`) and `./`/`../` paths are never treated as regex.
 
-Symbol discovery separates parser-backed definitions from text-matched name occurrences. Repeated same-name definitions receive an ambiguity caveat. Text discovery remains literal evidence; `--match all` is same-file co-occurrence, not semantic relation proof.
+If `discover` prints `## Confirmed structural targets`, run the matching `srcwalk show <path>:<range>` first; use `context` only when you need a Flow Map, scoped occurrences, or call neighborhood. Symbol discovery separates parser-backed definitions from text-matched name occurrences; repeated same-name definitions get an ambiguity caveat, and `--match all` is same-file co-occurrence, not semantic relation proof.
 
 ### Understand one target or read exact evidence
 
@@ -139,7 +139,7 @@ Use `rg` for raw regex and regex flags; srcwalk text discovery is literal eviden
 rg '<regex>' <dir>
 ```
 
-Do not infer definitions, usages, callers, deps, or code paths from shell path lists. Do not convert identifiers into paths without evidence.
+Do not convert identifiers into paths without evidence.
 
 ## Artifact and language support
 

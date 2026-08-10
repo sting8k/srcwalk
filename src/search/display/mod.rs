@@ -44,6 +44,22 @@ impl RenderedSourceLines {
     fn contains(&self, path: &Path, line: u32) -> bool {
         self.lines.contains(&(path.to_path_buf(), line))
     }
+
+    /// True when every line `start..=end` of `path` was rendered verbatim in
+    /// this packet (US-063: an offer for a fully-rendered range is redundant).
+    pub(super) fn contains_range(&self, path: &Path, start: u32, end: u32) -> bool {
+        (start..=end).all(|line| self.contains(path, line))
+    }
+
+    /// True when every part of a multi-range selector (`--section A-B,C-D`)
+    /// is fully rendered (US-063): a selector is suppressed only when ALL its
+    /// parts are covered; a single uncovered part keeps the whole offer.
+    /// Currently exercised by unit tests; trace/context selector wiring is
+    /// deferred, so this shared-seam primitive stays available for that path.
+    #[allow(dead_code)]
+    pub(super) fn contains_all_ranges(&self, path: &Path, ranges: &[(u32, u32)]) -> bool {
+        !ranges.is_empty() && ranges.iter().all(|&(s, e)| self.contains_range(path, s, e))
+    }
 }
 
 fn rendered_code_line_number(segment: &str) -> Option<u32> {
@@ -800,8 +816,12 @@ pub(super) fn format_search_result_with_header(
         );
     }
 
-    let has_structural_next_targets =
-        structural_targets::append_structural_next_targets(&mut out, result, cache);
+    let has_structural_next_targets = structural_targets::append_structural_next_targets(
+        &mut out,
+        result,
+        cache,
+        &rendered_source_lines,
+    );
 
     let mut footer = String::new();
     if result.has_more {
@@ -1073,5 +1093,34 @@ mod scope_miss_tests {
         assert!(hint.contains("(7)"), "{hint}");
         assert!(hint.contains("> Try: `srcwalk discover '*.json'"), "{hint}");
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod rendered_lines_tests {
+    use super::*;
+
+    #[test]
+    fn only_all_parts_covered_suppresses_a_multirange_selector() {
+        let mut rendered = RenderedSourceLines::default();
+        rendered.record_code_block(
+            Path::new("p.rs"),
+            "1 │ a\n2 │ b\n3 │ c\n4 │ d\n5 │ e\n6 │ f\n7 │ g\n",
+        );
+        // All parts (1-2 and 5-7) covered -> true (selector suppressed).
+        assert!(rendered.contains_all_ranges(Path::new("p.rs"), &[(1, 2), (5, 7)]));
+        // One part (8-9) uncovered -> false (selector kept).
+        assert!(!rendered.contains_all_ranges(Path::new("p.rs"), &[(1, 2), (8, 9)]));
+        // Empty selector -> never suppressed.
+        assert!(!rendered.contains_all_ranges(Path::new("p.rs"), &[]));
+    }
+
+    #[test]
+    fn partial_overlap_keeps_the_offer() {
+        let mut rendered = RenderedSourceLines::default();
+        rendered.record_code_block(Path::new("p.rs"), "1 │ a\n2 │ b\n3 │ c\n");
+        assert!(rendered.contains_range(Path::new("p.rs"), 1, 3));
+        assert!(!rendered.contains_range(Path::new("p.rs"), 1, 6)); // 4-6 missing
+        assert!(!rendered.contains_range(Path::new("p.rs"), 4, 6)); // no overlap
     }
 }

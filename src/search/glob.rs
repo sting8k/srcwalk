@@ -31,6 +31,102 @@ pub struct GlobResult {
     pub oversized: bool,
 }
 
+/// Path-fragment search (US-059): match relative paths that contain the
+/// fragment, capped at 20 rows, shortest paths first. Renders through the
+/// shared glob formatter via a `GlobResult`.
+pub fn search_path_fragment(
+    fragment: &str,
+    scope: &Path,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<GlobResult, SrcwalkError> {
+    use std::sync::Mutex;
+
+    // Strip a leading slash so `/share` matches `share/…` and `pkg/share/…`.
+    let needle = fragment.trim_start_matches(['/', '\\']);
+    if needle.is_empty() {
+        return Ok(GlobResult {
+            pattern: fragment.to_string(),
+            files: Vec::new(),
+            total_found: 0,
+            available_extensions: Vec::new(),
+            offset: 0,
+            limit: limit.unwrap_or(DEFAULT_LIMIT),
+            path_symbol_target: None,
+            oversized: false,
+        });
+    }
+
+    let collected: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    let total_found = std::sync::atomic::AtomicUsize::new(0);
+    let walker = super::walker(scope, None)?;
+
+    walker.run(|| {
+        let collected = &collected;
+        let total_found = &total_found;
+        let needle = &needle;
+
+        Box::new(move |entry| {
+            let Ok(entry) = entry else {
+                return ignore::WalkState::Continue;
+            };
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                return ignore::WalkState::Continue;
+            }
+            let path = entry.path();
+            let rel = path.strip_prefix(scope).unwrap_or(path);
+            // Compare on '/' so both slash and backslash input forms match.
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if rel_str.contains(needle) {
+                total_found.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                collected
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(path.to_path_buf());
+            }
+            ignore::WalkState::Continue
+        })
+    });
+
+    let total = total_found.load(std::sync::atomic::Ordering::Relaxed);
+    let mut paths = collected
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    // Shortest paths first, then lexicographic (deterministic, matches glob).
+    paths.sort_by(|a, b| {
+        let da = a.components().count();
+        let db = b.components().count();
+        da.cmp(&db).then_with(|| a.cmp(b))
+    });
+
+    let effective_limit = limit.unwrap_or(DEFAULT_LIMIT);
+    let effective_offset = offset.min(paths.len());
+    let page: Vec<PathBuf> = paths
+        .into_iter()
+        .skip(effective_offset)
+        .take(effective_limit)
+        .collect();
+    let files: Vec<GlobFileEntry> = page
+        .into_iter()
+        .map(|p| GlobFileEntry {
+            preview: file_preview(&p),
+            path: p,
+        })
+        .collect();
+
+    Ok(GlobResult {
+        pattern: fragment.to_string(),
+        files,
+        total_found: total,
+        available_extensions: Vec::new(),
+        offset: effective_offset,
+        limit: effective_limit,
+        path_symbol_target: None,
+        oversized: false,
+    })
+}
+
 /// Glob search using `ignore::WalkBuilder` (parallel, .gitignore-aware).
 /// Pagination: `limit` caps the returned slice (default 20); `offset` skips
 /// entries from the start. `total_found` reflects the total match count

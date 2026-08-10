@@ -10,6 +10,8 @@ use crate::evidence::{render_next_actions, NextAction};
 use crate::format;
 use crate::lang::detect_file_type;
 use crate::lang::outline::get_outline_entries as lang_get_outline_entries;
+use crate::precision;
+
 use crate::types::{estimate_tokens, FileType, OutlineEntry, ViewMode};
 
 use super::{edit_distance, RAW_TOKEN_CAP};
@@ -637,6 +639,7 @@ fn read_multi_section(
         };
         rendered_blocks.push((*start, *end, label.clone(), formatted));
         compact_parts.push(format_compact_section(
+            path,
             &selected,
             *start,
             *end,
@@ -677,7 +680,7 @@ fn read_multi_section(
                 "[section, outline (over limit)]",
                 &format!("[{section_count} {plural}, compact (over limit)]"),
             );
-        let body = compact_parts.join("\n\n---\n\n");
+        let body = join_compact_parts(&compact_parts, path);
         let selector = merged_section_selector(&merged_blocks);
         let next = render_next_actions(&[NextAction::guidance(
             section_budget_next_step(&selector, tok_est),
@@ -796,7 +799,34 @@ fn compact_section_line_cap(limit: u64, section_count: usize) -> usize {
     ((per_section / 12) as usize).clamp(3, 12)
 }
 
+/// Join compact sections, capping total offered lines at `precision::CAP`.
+/// (US-060) Every collapsed section stays reachable via its own `show` command.
+fn join_compact_parts(parts: &[String], path: &Path) -> String {
+    let mut body = String::new();
+    let mut offered = 0usize;
+
+    for (i, part) in parts.iter().enumerate() {
+        if precision::exceeded_line_cap(offered) {
+            let _ = writeln!(
+                body,
+                "> ... {} sections collapsed ({} lines offered); run `srcwalk show {}:<range>` per section.",
+                parts.len() - i,
+                offered,
+                crate::format::display_path(path),
+            );
+            break;
+        }
+        if i > 0 {
+            body.push_str("\n\n---\n\n");
+        }
+        offered += part.lines().count();
+        body.push_str(part);
+    }
+    body
+}
+
 fn format_compact_section(
+    path: &Path,
     selected: &str,
     start: usize,
     end: usize,
@@ -832,10 +862,16 @@ fn format_compact_section(
         );
     }
 
-    format!(
-        "## section: {label} [{start}-{end}] (compact)\n\n{}",
-        formatted.trim_end()
-    )
+    let mut header = format!("## section: {label} [{start}-{end}] (compact)");
+    // US-060: a >W-line range is anchored to an `expand:` command, never printed in full.
+    if precision::should_anchor_range(start.abs_diff(end)) {
+        let _ = write!(
+            header,
+            "\n> {}\n>",
+            precision::anchor_range(path, start, end, label)
+        );
+    }
+    format!("{header}\n\n{}", formatted.trim_end())
 }
 
 fn first_range_start_in_label(label: &str, start: usize, end: usize) -> Option<usize> {
@@ -1074,4 +1110,53 @@ fn find_symbol_in_entries(entries: &[OutlineEntry], symbol: &str) -> Option<(usi
         }
     }
     None
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn wide_compact_section_anchors_with_expand_command() {
+        let selected = (0..80)
+            .map(|i| format!("line {i} padding"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // 81-letter string, wide range [1-81], focus at 40.
+        let out = format_compact_section(
+            Path::new("src/wide.txt"),
+            &selected,
+            1,
+            81,
+            Some(40),
+            "1-81",
+            12,
+        );
+        assert!(
+            out.contains("expand: srcwalk show src/wide.txt:1-81"),
+            "wide range should anchor with an expand command:\n{out}"
+        );
+    }
+
+    #[test]
+    fn narrow_compact_section_has_no_expand_anchor() {
+        let selected = (0..10)
+            .map(|i| format!("line {i} padding"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = format_compact_section(
+            Path::new("src/narrow.txt"),
+            &selected,
+            1,
+            10,
+            None,
+            "1-10",
+            12,
+        );
+        assert!(
+            !out.contains("expand:"),
+            "ranges ≤ W must not anchor:\n{out}"
+        );
+    }
 }

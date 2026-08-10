@@ -4,6 +4,19 @@ All notable changes to srcwalk are documented here.
 
 ## Unreleased
 
+## [1.5.0] - 2026-08-10
+
+### Added
+- Regex-dialect and path-fragment query handling in `discover`: regex-escape queries (`parseGitUrl\(`, `models\.json`) are detected and routed as symbol/text lookups, `.*`/`.+` patterns run bounded same-line co-occurrence, and unresolvable path fragments (`packages/ai`) return bounded path-fragment rows instead of dead-ending (US-059).
+- Positional-read recovery: when `show path:line` cannot locate the target, the packet points back to `discover` instead of ending at a dead read (US-059b).
+- Scope-miss fallback: file-target queries that return zero in-scope but exist outside scope now report the outside-scope matches with a `--scope .` retry hint (bounded to 5, file-target route only; does not widen symbol/text search) (US-062).
+- Receiver/container-qualified symbol queries: dotted forms like `Batch.Set`, `Manager.ApplyConfig`, `Config.load` resolve to the correct method definition (Go receivers incl. pointer/value/generic; container-language outlines by parent), with a qualify hint when a bare name has multiple definitions. Definition-only; usages remain name-based (US-064).
+- Version provenance in `--version`: embeds short git SHA, dirty flag, and UTC build date via `build.rs`; builds without `.git` report `(unknown)` and do not fail (US-061).
+
+### Changed
+- Next-action offer precision guardrails: large caller lists collapse to top 3 + `N more`, total offered range is capped, and wide ranges anchor at the correct structural-target seam to keep worst-case packets out of context (US-060, US-060b).
+- In-packet offer dedupe: offers whose target range is fully contained in already-rendered packet content are dropped (wired for `discover`; trace/context deferred pending rendered-line tracking) (US-063).
+
 ## [1.4.0] - 2026-08-09
 
 ### Added

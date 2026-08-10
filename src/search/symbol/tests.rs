@@ -545,3 +545,25 @@ fn beta() {}
         batch[1]
     );
 }
+
+#[test]
+fn split_dot_symbol_query_accepts_single_dot_pairs() {
+    assert_eq!(split_dot_symbol_query("Batch.Set"), Some(("Batch", "Set")));
+    assert_eq!(
+        split_dot_symbol_query("Config.load"),
+        Some(("Config", "load"))
+    );
+    assert_eq!(
+        split_dot_symbol_query("syncQueue.pop"),
+        Some(("syncQueue", "pop"))
+    );
+}
+
+#[test]
+fn split_dot_symbol_query_rejects_multi_dot_and_empty_sides() {
+    assert_eq!(split_dot_symbol_query("a.b.c"), None);
+    assert_eq!(split_dot_symbol_query(".Set"), None);
+    assert_eq!(split_dot_symbol_query("Batch."), None);
+    assert_eq!(split_dot_symbol_query(""), None);
+    assert_eq!(split_dot_symbol_query("Set"), None);
+}

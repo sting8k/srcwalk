@@ -9,10 +9,14 @@ pub(crate) const DEFAULT_OUTPUT_BUDGET: u64 = 6_000;
 /// srcwalk — Tree-sitter indexed lookups, smart code reading for AI agents.
 /// Run `srcwalk guide` for the embedded, version-matched agent guide.
 #[derive(Parser)]
-#[command(name = "srcwalk", about, version, after_help = ROOT_HELP)]
+#[command(name = "srcwalk", about, after_help = ROOT_HELP)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
+
+    /// Show version with provenance (git SHA / build date / dirty flag).
+    #[arg(short = 'V', long)]
+    pub(crate) version: bool,
 
     /// Exact file path, path:line, or path:start-end to read. Use `discover` for search.
     pub(crate) query: Option<String>,
@@ -407,6 +411,12 @@ fn looks_like_file_discovery_query(query: &str) -> bool {
         .bytes()
         .any(|b| matches!(b, b'*' | b'?' | b'[' | b'{'));
     if !has_glob {
+        return false;
+    }
+
+    // US-059: an rg-style `a.*b` / `a.+b` co-occurrence pattern must not be
+    // inferred as a file glob — it goes to discover search (stage-0 detector).
+    if srcwalk::query_is_cooccurrence_pattern(query) {
         return false;
     }
 

@@ -44,6 +44,22 @@ impl RenderedSourceLines {
     fn contains(&self, path: &Path, line: u32) -> bool {
         self.lines.contains(&(path.to_path_buf(), line))
     }
+
+    /// True when every line `start..=end` of `path` was rendered verbatim in
+    /// this packet (US-063: an offer for a fully-rendered range is redundant).
+    pub(super) fn contains_range(&self, path: &Path, start: u32, end: u32) -> bool {
+        (start..=end).all(|line| self.contains(path, line))
+    }
+
+    /// True when every part of a multi-range selector (`--section A-B,C-D`)
+    /// is fully rendered (US-063): a selector is suppressed only when ALL its
+    /// parts are covered; a single uncovered part keeps the whole offer.
+    /// Currently exercised by unit tests; trace/context selector wiring is
+    /// deferred, so this shared-seam primitive stays available for that path.
+    #[allow(dead_code)]
+    pub(super) fn contains_all_ranges(&self, path: &Path, ranges: &[(u32, u32)]) -> bool {
+        !ranges.is_empty() && ranges.iter().all(|&(s, e)| self.contains_range(path, s, e))
+    }
 }
 
 fn rendered_code_line_number(segment: &str) -> Option<u32> {
@@ -164,6 +180,18 @@ pub fn search_files_glob(
     search_files_glob_with_exclude(pattern, scope, limit, offset, None)
 }
 
+/// Path-fragment search (US-059): relative paths containing the fragment, ≤20 rows.
+pub fn search_files_fragment(
+    fragment: &str,
+    scope: &Path,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<String, SrcwalkError> {
+    file_search_with_scope_miss(scope, "Path fragments", |root| {
+        super::glob::search_path_fragment(fragment, root, limit, offset)
+    })
+}
+
 pub fn search_files_glob_with_exclude(
     pattern: &str,
     scope: &Path,
@@ -171,8 +199,9 @@ pub fn search_files_glob_with_exclude(
     offset: usize,
     exclude: Option<&str>,
 ) -> Result<String, SrcwalkError> {
-    let result = glob::search_with_exclude(pattern, scope, limit, offset, exclude)?;
-    glob_result::format_glob_result(&result, scope, "Files")
+    file_search_with_scope_miss(scope, "Files", |root| {
+        glob::search_with_exclude(pattern, root, limit, offset, exclude)
+    })
 }
 
 pub fn search_files_glob_with_scope_filter(
@@ -183,8 +212,99 @@ pub fn search_files_glob_with_scope_filter(
     offset: usize,
     exclude: Option<&str>,
 ) -> Result<String, SrcwalkError> {
-    let result = glob::search_with_scope_glob(pattern, scope, scope_glob, limit, offset, exclude)?;
-    glob_result::format_glob_result(&result, scope, "Files")
+    file_search_with_scope_miss(scope, "Files", |root| {
+        glob::search_with_scope_glob(pattern, root, scope_glob, limit, offset, exclude)
+    })
+}
+
+/// US-062: discover file-target queries widen to the repo root only on a zero
+/// in-scope match. When the in-scope search finds nothing and `scope` is below
+/// the repo root, rerun the same file search over the repo root and, on
+/// success, append an outside-scope hint + a corrected `> Try:` scope. Any
+/// in-scope match, no match anywhere, or scope == repo root returns the normal
+/// (byte-identical) result.
+fn file_search_with_scope_miss(
+    scope: &Path,
+    label: &str,
+    run: impl Fn(&Path) -> Result<glob::GlobResult, SrcwalkError>,
+) -> Result<String, SrcwalkError> {
+    let in_scope = run(scope)?;
+    if in_scope.total_found > 0 {
+        return glob_result::format_glob_result(&in_scope, scope, label);
+    }
+    let root = repo_root(scope);
+    // US-062: `git rev-parse --show-toplevel` returns an absolute path while
+    // the user may pass a relative `--scope .`; canonicalize both sides so a
+    // zero-match at the repo root does not run a redundant widened pass. When
+    // canonicalization fails (e.g. a deleted dir), fall back to raw equality.
+    if paths_equivalent(&root, scope) {
+        return glob_result::format_glob_result(&in_scope, scope, label);
+    }
+    let expanded = run(&root)?;
+    if expanded.total_found == 0 {
+        return glob_result::format_glob_result(&in_scope, scope, label);
+    }
+    let mut out = glob_result::format_glob_result(&in_scope, scope, label)?;
+    out.push_str(&format_scope_miss(&expanded, &root, &in_scope.pattern));
+    Ok(out)
+}
+
+/// Git top-level ancestor of `scope`, or `scope` itself when not in a git
+/// repo. Without git there is no reliable repo root, so a gitless miss stays a
+/// miss (no second pass) rather than widening to a broad filesystem walk.
+fn repo_root(scope: &Path) -> PathBuf {
+    git_toplevel(scope).unwrap_or_else(|| scope.to_path_buf())
+}
+
+/// True when two paths point at the same directory, tolerating relative vs
+/// absolute spellings (canonical first; raw equality as fallback).
+fn paths_equivalent(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
+}
+
+fn git_toplevel(scope: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(scope)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+/// `> Found outside scope (N): p1, p2` (cap 5, shortest-first, deterministic)
+/// + a `> Try:` command whose scope finds all listed files.
+fn format_scope_miss(expanded: &glob::GlobResult, root: &Path, pattern: &str) -> String {
+    let mut paths: Vec<String> = expanded
+        .files
+        .iter()
+        .map(|f| rel_nonempty(&f.path, root))
+        .collect();
+    paths.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    paths.truncate(5);
+    let mut out = format!(
+        "\n> Found outside scope ({}): {}",
+        expanded.total_found,
+        paths.join(", ")
+    );
+    let _ = write!(
+        out,
+        "\n> Try: `srcwalk discover '{}' --scope {}`",
+        pattern,
+        format::display_path(root)
+    );
+    out
 }
 
 /// Format match entries with optional expansion.
@@ -457,14 +577,96 @@ fn append_next_action(footer: &mut String, action: NextAction) {
     footer.push_str(&render_next_actions(&[action]));
 }
 
-pub(super) fn append_symbol_ambiguity_caveat(out: &mut String, result: &SearchResult) {
+pub(super) fn append_symbol_ambiguity_caveat(
+    out: &mut String,
+    result: &SearchResult,
+    cache: &OutlineCache,
+) {
     if result.definition_candidates > 1 && result.name_occurrence_candidates > 0 {
         let _ = write!(
             out,
             "\n> Caveat: {} definition candidates share this name; text-matched name occurrences are not binding-resolved and may belong to different scopes.",
             result.definition_candidates
         );
+        // US-064 rule 6: known distinct qualifiers give the retry forms.
+        let mut qualified_forms = definition_qualifier_forms(result, cache);
+        if qualified_forms.len() >= 2 {
+            qualified_forms.truncate(4);
+            let _ = write!(
+                out,
+                "\n> Qualify: '{}' | '{}'",
+                qualified_forms[0], qualified_forms[1]
+            );
+            if qualified_forms.len() > 2 {
+                let rest: Vec<&str> = qualified_forms[2..].iter().map(String::as_str).collect();
+                let _ = write!(out, " | '{}'", rest.join("' | '"));
+            }
+        }
     }
+}
+
+/// US-064 rule 6: deterministic, capped set of `Q.N` retry forms for a plain
+/// symbol query with multiple definition candidates. Only qualifiers that are
+/// structurally KNOWN (Go receiver or outline container parent) are emitted;
+/// nothing is invented.
+fn definition_qualifier_forms(result: &SearchResult, cache: &OutlineCache) -> Vec<String> {
+    let mut forms = Vec::new();
+    for m in result.matches.iter().filter(|m| m.is_definition) {
+        if let Some(qualifier) = definition_qualifier_for(m, cache) {
+            if let Some(name) = m.def_name.as_deref() {
+                let plain = crate::search::symbol::split_dot_symbol_query(name)
+                    .map_or(name, |(_, plain)| plain);
+                let form = format!("{qualifier}.{plain}");
+                if !forms.contains(&form) {
+                    forms.push(form);
+                }
+            }
+        }
+    }
+    forms.sort();
+    forms
+}
+
+/// US-064: known qualifier for one definition match — Go receiver (parsed from
+/// the declaration line) or the outline container chain for other languages.
+fn definition_qualifier_for(m: &Match, cache: &OutlineCache) -> Option<String> {
+    if matches!(
+        crate::lang::detect_file_type(&m.path),
+        crate::types::FileType::Code(crate::types::Lang::Go)
+    ) {
+        if let Some(q) = go_receiver_from_line(&m.text) {
+            return Some(q);
+        }
+    }
+    crate::search::display::semantic::semantic_candidate_for_match(m, cache)
+        .filter(|c| !c.parents.is_empty())
+        .map(|c| c.parents.join("."))
+}
+
+/// US-064: parse the receiver type out of a Go declaration line like
+/// `func (b *Batch) Set(...)` → `Batch`. Only method form (receiver before the
+/// name) is accepted; a bare `func Set(...)` yields None.
+fn go_receiver_from_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("func")?.trim_start();
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let rest = &rest[1..];
+    let close = rest.find(')')?;
+    let receiver = &rest[..close];
+    let inner = receiver.trim();
+    if inner.is_empty() {
+        return None;
+    }
+    // `b *Batch` / `q syncQueue[T]` — the type is the part after the receiver
+    // variable name. No whitespace means no receiver variable (anonymous).
+    let space = inner.find(char::is_whitespace)?;
+    let ty = inner[space..].trim();
+    if ty.is_empty() {
+        return None;
+    }
+    Some(crate::search::symbol::normalize_receiver_type(ty))
 }
 
 /// Format a symbol/content search result.
@@ -509,7 +711,7 @@ pub(super) fn format_search_result_with_header(
     header: String,
 ) -> Result<String, SrcwalkError> {
     let mut out = header;
-    append_symbol_ambiguity_caveat(&mut out, result);
+    append_symbol_ambiguity_caveat(&mut out, result, cache);
     let mut expand_remaining = expand;
     let mut expand_budget = ExpandBudget::new(expand, budget_tokens);
     let mut expanded_files = HashSet::new();
@@ -709,8 +911,12 @@ pub(super) fn format_search_result_with_header(
         );
     }
 
-    let has_structural_next_targets =
-        structural_targets::append_structural_next_targets(&mut out, result, cache);
+    let has_structural_next_targets = structural_targets::append_structural_next_targets(
+        &mut out,
+        result,
+        cache,
+        &rendered_source_lines,
+    );
 
     let mut footer = String::new();
     if result.has_more {
@@ -878,5 +1084,219 @@ fn extract_line_range(line: &str) -> Option<(u32, u32)> {
     } else {
         let n: u32 = range_str.trim().parse().ok()?;
         Some((n, n))
+    }
+}
+
+#[cfg(test)]
+mod scope_miss_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "us062_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ))
+    }
+
+    #[test]
+    fn repo_root_prefers_git_toplevel() {
+        let dir = temp_dir("root_git");
+        let scope = dir.join("packages/coding-agent/src");
+        fs::create_dir_all(&scope).unwrap();
+        // A real repo requires `git init`; skip if git is unavailable.
+        let init = std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .current_dir(&dir)
+            .output();
+        match init {
+            Ok(out) if out.status.success() => {
+                let expected = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+                let actual =
+                    fs::canonicalize(repo_root(&scope)).unwrap_or_else(|_| repo_root(&scope));
+                assert_eq!(actual, expected);
+            }
+            _ => {
+                // No git in this environment: the safe fallback is the scope.
+                assert_eq!(repo_root(&scope), scope);
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn repo_root_returns_scope_without_git() {
+        let dir = temp_dir("root_nogit");
+        let scope = dir.join("packages/coding-agent/src");
+        fs::create_dir_all(&scope).unwrap();
+        // No .git anywhere: the safe fallback is the scope itself (no widening).
+        assert_eq!(repo_root(&scope), scope);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scope_miss_hint_caps_at_five_and_sorts_shortest_first() {
+        let root = temp_dir("hint");
+        fs::create_dir_all(&root).unwrap();
+        let mut files = Vec::new();
+        for (i, name) in [
+            "zzz/quite_long_name.json",
+            "a.json",
+            "bb.json",
+            "ccc.json",
+            "dddd.json",
+            "eeeee.json",
+            "ffffff.json",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let p = root.join(name);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"{}").unwrap();
+            files.push(glob::GlobFileEntry {
+                path: p,
+                preview: None,
+            });
+            let _ = i;
+        }
+        let result = glob::GlobResult {
+            pattern: "*.json".to_string(),
+            total_found: files.len(),
+            files,
+            available_extensions: Vec::new(),
+            offset: 0,
+            limit: 20,
+            path_symbol_target: None,
+            oversized: false,
+        };
+        let hint = format_scope_miss(&result, &root, "*.json");
+        // Shortest-first and capped: only 5 of the 7 paths.
+        let listed = hint
+            .split("): ")
+            .nth(1)
+            .and_then(|s| s.lines().next())
+            .unwrap_or("");
+        let paths: Vec<&str> = listed.split(", ").collect();
+        assert_eq!(paths.len(), 5, "{hint}");
+        assert_eq!(paths[0], "a.json");
+        assert_eq!(paths[1], "bb.json");
+        assert!(hint.contains("(7)"), "{hint}");
+        assert!(hint.contains("> Try: `srcwalk discover '*.json'"), "{hint}");
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod rendered_lines_tests {
+    use super::*;
+
+    #[test]
+    fn only_all_parts_covered_suppresses_a_multirange_selector() {
+        let mut rendered = RenderedSourceLines::default();
+        rendered.record_code_block(
+            Path::new("p.rs"),
+            "1 │ a\n2 │ b\n3 │ c\n4 │ d\n5 │ e\n6 │ f\n7 │ g\n",
+        );
+        // All parts (1-2 and 5-7) covered -> true (selector suppressed).
+        assert!(rendered.contains_all_ranges(Path::new("p.rs"), &[(1, 2), (5, 7)]));
+        // One part (8-9) uncovered -> false (selector kept).
+        assert!(!rendered.contains_all_ranges(Path::new("p.rs"), &[(1, 2), (8, 9)]));
+        // Empty selector -> never suppressed.
+        assert!(!rendered.contains_all_ranges(Path::new("p.rs"), &[]));
+    }
+
+    #[test]
+    fn partial_overlap_keeps_the_offer() {
+        let mut rendered = RenderedSourceLines::default();
+        rendered.record_code_block(Path::new("p.rs"), "1 │ a\n2 │ b\n3 │ c\n");
+        assert!(rendered.contains_range(Path::new("p.rs"), 1, 3));
+        assert!(!rendered.contains_range(Path::new("p.rs"), 1, 6)); // 4-6 missing
+        assert!(!rendered.contains_range(Path::new("p.rs"), 4, 6)); // no overlap
+    }
+}
+
+#[cfg(test)]
+mod us064_receiver_line_tests {
+    use super::go_receiver_from_line;
+
+    #[test]
+    fn pointer_value_and_generic_receivers() {
+        assert_eq!(
+            go_receiver_from_line("func (b *Batch) Set(key, value []byte) error { return nil }"),
+            Some("Batch".to_string())
+        );
+        assert_eq!(
+            go_receiver_from_line("func (q *syncQueue[T]) Set(v T) {}"),
+            Some("syncQueue".to_string())
+        );
+        assert_eq!(
+            go_receiver_from_line("func (q syncQueue[T]) pop() T { var z T; return z }"),
+            Some("syncQueue".to_string())
+        );
+        assert_eq!(
+            go_receiver_from_line("func (c Config) Load() {}"),
+            Some("Config".to_string())
+        );
+    }
+
+    #[test]
+    fn plain_functions_and_anonymous_receivers_rejected() {
+        assert_eq!(
+            go_receiver_from_line("func Set(x int) int { return x }"),
+            None
+        );
+        assert_eq!(go_receiver_from_line("func (Batch) Method() {}"), None);
+        assert_eq!(go_receiver_from_line("var x = 1"), None);
+        assert_eq!(go_receiver_from_line(""), None);
+    }
+}
+
+#[cfg(test)]
+mod us062_paths_equivalent_tests {
+    use super::paths_equivalent;
+
+    #[test]
+    fn different_spellings_of_same_dir_are_equivalent() {
+        let dir = std::env::temp_dir().join(format!(
+            "us062_pathseq_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        // Two spellings of the same directory: plain vs `..` round-trip.
+        // Canonicalization resolves the dot-dot; raw equality would not.
+        // (No cwd mutation: tests run in parallel in one process.)
+        let child = dir.join("a/b");
+        std::fs::create_dir_all(&child).unwrap();
+        let dotted = dir.join("a/b/../b");
+        assert_ne!(child, dotted, "raw paths must differ for a meaningful test");
+        assert!(
+            paths_equivalent(&child, &dotted),
+            "{} vs {}",
+            child.display(),
+            dotted.display()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn distinct_dirs_are_not_equivalent() {
+        let base = std::env::temp_dir().join(format!(
+            "us062_pathseq_diff_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(base.join("one")).unwrap();
+        std::fs::create_dir_all(base.join("two")).unwrap();
+        assert!(!paths_equivalent(&base.join("one"), &base.join("two")));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

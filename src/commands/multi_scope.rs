@@ -244,6 +244,37 @@ fn multi_scope_search_result(
                     .collect::<Result<Vec<_>, _>>()?,
             )
         }
+        QueryType::RegexText(q) => {
+            let sym = scopes
+                .iter()
+                .map(|scope| search_result_symbol(&q.symbol_core, scope, cache, glob, filter))
+                .collect::<Result<Vec<_>, _>>()?;
+            let text = scopes
+                .iter()
+                .map(|scope| search_result_content(&q.literal, scope, cache, glob, filter))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut merged = merge_scope_results(query, scopes, sym)?;
+            let text_merged = merge_scope_results(query, scopes, text)?;
+            merged.matches.extend(text_merged.matches);
+            Ok(merged)
+        }
+        QueryType::RegexCoOccurrence(q) => {
+            let results = scopes
+                .iter()
+                .map(|scope| {
+                    let mut r = search::cooccurrence::search_same_line_ordered(
+                        &q.term1,
+                        &q.term2,
+                        scope,
+                        glob,
+                        crate::ArtifactMode::Source,
+                    )?;
+                    search::apply_general_filter(&mut r, scope, cache, filter)?;
+                    Ok(r)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            merge_scope_results(query, scopes, results)
+        }
         QueryType::FilePath(_)
         | QueryType::FilePathLine(_, _)
         | QueryType::FilePathSection(_, _)

@@ -71,8 +71,20 @@ fn resolve_exact_path(query: &str, scope: &Path) -> Result<std::path::PathBuf, S
             .cloned()
             .unwrap_or_else(|| scope.join(query)),
         suggestion: None,
-        guidance: None,
+        guidance: Some(positional_read_recovery_hint(query, scope)),
     })
+}
+
+/// Recovery hint for the positional-read not-found branch (US-059b).
+/// A bare-symbol or missing-path QUERY is a silent dead-end for agents used to
+/// search-first workflows; point them at `discover` while keeping the exact-path
+/// read contract explicit. Single-line, quotes the query, carries the scope.
+fn positional_read_recovery_hint(query: &str, scope: &Path) -> String {
+    let q = query.replace('\'', "'\\''");
+    format!(
+        "Try: srcwalk discover '{q}' --scope {}   (positional QUERY reads exact paths; `discover` searches)",
+        crate::format::display_path(scope)
+    )
 }
 
 pub(crate) fn run_path_exact(

@@ -10,7 +10,7 @@ use crate::lang::treesitter::{
     definition_weight, elixir_definition_weight, extract_base_list_targets,
     extract_definition_name, extract_elixir_definition_name, extract_impl_trait, extract_impl_type,
     extract_implemented_interfaces, is_definition_kind, is_elixir_definition,
-    is_transparent_export_wrapper,
+    is_transparent_export_wrapper, node_text_simple,
 };
 use crate::types::{Lang, Match, OutlineEntry, OutlineKind};
 use crate::ArtifactMode;
@@ -55,7 +55,11 @@ pub(super) fn find_definitions_with_artifact(
     // Relaxed is correct: walker.run() joins all threads before we read the final value.
     // Early-quit checks are approximate by design — one extra iteration is harmless.
     let found_count = AtomicUsize::new(0);
-    let needle = query.as_bytes();
+    // US-064: for a `Q.N` query the file may contain `Q` and `N` separately
+    // (Go receiver + method name), so the byte pre-scan uses the plain name.
+    let needle = split_dot_symbol_query(query)
+        .map_or(query, |(_, plain)| plain)
+        .as_bytes();
 
     let walker = if artifact.enabled() {
         super::super::io::walker_with_artifact_dirs(scope, glob)?
@@ -267,7 +271,7 @@ fn find_defs_treesitter_with_depth(
     let mut defs = Vec::new();
 
     walk_for_definitions(
-        root, query, path, &lines, file_lines, mtime, &mut defs, lang, 0, max_depth,
+        root, query, path, &lines, file_lines, mtime, &mut defs, lang, 0, max_depth, None,
     );
 
     defs
@@ -291,6 +295,7 @@ pub(super) fn find_defs_from_outline(
         file_lines,
         mtime,
         &mut defs,
+        None,
     );
     defs
 }
@@ -302,6 +307,118 @@ fn outline_entry_matches_query(entry: &OutlineEntry, query: &str) -> bool {
         || crate::lang::document::outline_name_matches(entry.kind, &entry.name, query)
 }
 
+/// US-064: split a `Q.N` symbol query — exactly one dot, both sides non-empty.
+/// Multi-dot queries (`a.b.c`) and trailing/leading dots return `None`.
+pub(crate) fn split_dot_symbol_query(query: &str) -> Option<(&str, &str)> {
+    let mut parts = query.split('.');
+    let qualifier = parts.next()?;
+    let plain = parts.next()?;
+    if parts.next().is_some() || qualifier.is_empty() || plain.is_empty() {
+        return None;
+    }
+    Some((qualifier, plain))
+}
+
+/// US-064: extract a Go receiver type from a `method_declaration` node.
+/// The receiver is the first `parameter_list` child; its type is the last
+/// named child of the receiver's `parameter_declaration`.
+fn go_receiver_type_from_node(node: tree_sitter::Node, lines: &[&str]) -> Option<String> {
+    if node.kind() != "method_declaration" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let receiver = node
+        .children(&mut cursor)
+        .find(|child| child.kind() == "parameter_list")?;
+    let mut c2 = receiver.walk();
+    let decl = receiver
+        .children(&mut c2)
+        .find(|child| child.kind() == "parameter_declaration")?;
+    let mut c3 = decl.walk();
+    let type_node = decl
+        .children(&mut c3)
+        .filter(tree_sitter::Node::is_named)
+        .last()?;
+    let text = node_text_simple(type_node, lines);
+    Some(normalize_receiver_type(&text))
+}
+
+/// US-064: normalize a Go receiver type — strip leading `*` and generic
+/// params: `*Batch` → `Batch`, `syncQueue[T]` → `syncQueue`. Shared with the
+/// display layer's ambiguity assist (single source of truth).
+pub(crate) fn normalize_receiver_type(receiver: &str) -> String {
+    let stripped = receiver.trim().trim_start_matches('*').trim();
+    stripped
+        .chars()
+        .take_while(|&c| c != '[')
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// US-064: container name if `node` is a container (class/struct/object/
+/// impl/module/enum). Rust `impl X` / `impl T for X` counts as `X`
+/// (`extract_impl_type` returns the implemented type).
+fn node_container_name(node: tree_sitter::Node, lines: &[&str]) -> Option<String> {
+    match node.kind() {
+        "impl_item" => extract_impl_type(node, lines),
+        "class_declaration"
+        | "class_definition"
+        | "class"
+        | "struct_item"
+        | "struct_declaration"
+        | "object_declaration"
+        | "object_definition"
+        | "trait_item"
+        | "trait_declaration"
+        | "interface_declaration"
+        | "enum_declaration"
+        | "enum_item"
+        | "module"
+        | "namespace_declaration"
+        | "namespace_definition"
+        | "file_scoped_namespace_declaration" => extract_definition_name(node, lines),
+        _ => None,
+    }
+}
+
+/// US-064: does this definition node satisfy the `Q` qualifier of a `Q.N`
+/// query? Either its structural container equals `Q`, or (Go) its receiver
+/// type equals `Q`.
+fn qualified_def_matches(
+    node: tree_sitter::Node,
+    lang: Option<crate::types::Lang>,
+    qualifier: &str,
+    container: Option<&str>,
+    lines: &[&str],
+) -> bool {
+    if container == Some(qualifier) {
+        return true;
+    }
+    lang == Some(crate::types::Lang::Go)
+        && go_receiver_type_from_node(node, lines).as_deref() == Some(qualifier)
+}
+
+/// US-064: is this outline kind a container that qualifies its members?
+fn outline_container_kind(kind: OutlineKind) -> bool {
+    matches!(
+        kind,
+        OutlineKind::Class
+            | OutlineKind::Struct
+            | OutlineKind::Module
+            | OutlineKind::Interface
+            | OutlineKind::Enum
+    )
+}
+
+/// US-064: normalize an outline container name — `impl X` entries count as `X`.
+fn normalize_outline_container(name: &str) -> String {
+    name.strip_prefix("impl ")
+        .unwrap_or(name)
+        .trim()
+        .to_string()
+}
+
 fn collect_outline_defs(
     entries: &[OutlineEntry],
     query: &str,
@@ -310,6 +427,7 @@ fn collect_outline_defs(
     file_lines: u32,
     mtime: SystemTime,
     defs: &mut Vec<Match>,
+    container: Option<&str>,
 ) {
     for entry in entries {
         if outline_entry_matches_query(entry, query) {
@@ -332,8 +450,46 @@ fn collect_outline_defs(
                 base_target: None,
                 in_comment: false,
             });
+        } else if let Some((qualifier, plain)) = split_dot_symbol_query(query) {
+            // US-064: qualified containment match — bare name under container `Q`.
+            if entry.name == plain && container == Some(qualifier) {
+                let line_num = entry.start_line;
+                defs.push(Match {
+                    path: path.to_path_buf(),
+                    line: line_num,
+                    text: lines
+                        .get(line_num.saturating_sub(1) as usize)
+                        .unwrap_or(&"")
+                        .trim_end()
+                        .to_string(),
+                    is_definition: true,
+                    exact: true,
+                    file_lines,
+                    mtime,
+                    def_range: Some((entry.start_line, entry.end_line)),
+                    def_name: Some(format!("{qualifier}.{plain}")),
+                    def_weight: outline_def_weight(entry.kind),
+                    impl_target: None,
+                    base_target: None,
+                    in_comment: false,
+                });
+            }
         }
-        collect_outline_defs(&entry.children, query, path, lines, file_lines, mtime, defs);
+        let child_container = if outline_container_kind(entry.kind) {
+            Some(normalize_outline_container(&entry.name))
+        } else {
+            container.map(str::to_string)
+        };
+        collect_outline_defs(
+            &entry.children,
+            query,
+            path,
+            lines,
+            file_lines,
+            mtime,
+            defs,
+            child_container.as_deref(),
+        );
     }
 }
 
@@ -349,6 +505,7 @@ fn walk_for_definitions(
     lang: Option<crate::types::Lang>,
     depth: usize,
     max_depth: usize,
+    container: Option<&str>,
 ) {
     if depth > max_depth {
         return;
@@ -388,6 +545,36 @@ fn walk_for_definitions(
                     base_target: None,
                     in_comment: false,
                 });
+            }
+            // US-064: qualified match — receiver/container refines a `Q.N` query.
+            // Additive after the exact-name check, so dotted outline names
+            // (Elixir `defmodule Foo.Bar`, CSS/doc names) keep winning.
+            if let Some((qualifier, plain)) = split_dot_symbol_query(query) {
+                if name == plain && qualified_def_matches(node, lang, qualifier, container, lines) {
+                    let line_num = node.start_position().row as u32 + 1;
+                    let line_text = lines
+                        .get(node.start_position().row)
+                        .unwrap_or(&"")
+                        .trim_end();
+                    defs.push(Match {
+                        path: path.to_path_buf(),
+                        line: line_num,
+                        text: line_text.to_string(),
+                        is_definition: true,
+                        exact: true,
+                        file_lines,
+                        mtime,
+                        def_range: Some((
+                            node.start_position().row as u32 + 1,
+                            node.end_position().row as u32 + 1,
+                        )),
+                        def_name: Some(format!("{qualifier}.{plain}")),
+                        def_weight: definition_weight(node.kind()),
+                        impl_target: None,
+                        base_target: None,
+                        in_comment: false,
+                    });
+                }
             }
         }
 
@@ -508,6 +695,10 @@ fn walk_for_definitions(
     }
 
     // Recurse into children (for nested definitions, class bodies, impl blocks, etc.)
+    // US-064: descend with the innermost container name threaded down so a
+    // method named `N` inside `class Q` matches a `Q.N` query.
+    let child_container =
+        node_container_name(node, lines).or_else(|| container.map(str::to_string));
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         walk_for_definitions(
@@ -521,6 +712,7 @@ fn walk_for_definitions(
             lang,
             depth + 1,
             max_depth,
+            child_container.as_deref(),
         );
     }
 }
@@ -621,4 +813,41 @@ fn is_definition_line(line: &str) -> bool {
         || trimmed.starts_with("def ")
         || trimmed.starts_with("async def ")
         || trimmed.starts_with("func ")
+}
+
+#[cfg(test)]
+mod us064_tests {
+    use super::*;
+
+    #[test]
+    fn receiver_normalization_handles_pointer_value_and_generic() {
+        assert_eq!(normalize_receiver_type("*Batch"), "Batch");
+        assert_eq!(normalize_receiver_type("*syncQueue[T]"), "syncQueue");
+        assert_eq!(normalize_receiver_type("syncQueue[T]"), "syncQueue");
+        assert_eq!(normalize_receiver_type("Queue"), "Queue");
+        assert_eq!(normalize_receiver_type("*pkg[K,V]"), "pkg");
+        assert_eq!(normalize_receiver_type("  *Batch  "), "Batch");
+    }
+
+    #[test]
+    fn split_dot_symbol_query_accepts_single_dot_pairs() {
+        assert_eq!(split_dot_symbol_query("Batch.Set"), Some(("Batch", "Set")));
+        assert_eq!(
+            split_dot_symbol_query("Config.load"),
+            Some(("Config", "load"))
+        );
+        assert_eq!(
+            split_dot_symbol_query("syncQueue.pop"),
+            Some(("syncQueue", "pop"))
+        );
+    }
+
+    #[test]
+    fn split_dot_symbol_query_rejects_multi_dot_and_empty_sides() {
+        assert_eq!(split_dot_symbol_query("a.b.c"), None);
+        assert_eq!(split_dot_symbol_query(".Set"), None);
+        assert_eq!(split_dot_symbol_query("Batch."), None);
+        assert_eq!(split_dot_symbol_query(""), None);
+        assert_eq!(split_dot_symbol_query("Set"), None);
+    }
 }

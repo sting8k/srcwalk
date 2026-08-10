@@ -140,11 +140,23 @@ fn format_definition_semantic_match_with_path(
         return;
     }
     if let Some(candidate) = semantic_candidate_for_match(m, cache) {
-        let qualified_name = if candidate.parents.is_empty() {
-            candidate.name.clone()
-        } else {
-            format!("{}.{}", candidate.parents.join("."), candidate.name)
-        };
+        // US-064: a qualified `Q.N` match renders its own dotted form so the
+        // receiver/container choice is visible even when the outline parent
+        // chain is empty (Go methods are top-level declarations).
+        let qualified_name = m
+            .def_name
+            .as_deref()
+            .and_then(crate::search::symbol::split_dot_symbol_query)
+            .map_or_else(
+                || {
+                    if candidate.parents.is_empty() {
+                        candidate.name.clone()
+                    } else {
+                        format!("{}.{}", candidate.parents.join("."), candidate.name)
+                    }
+                },
+                |(qualifier, plain)| format!("{qualifier}.{plain}"),
+            );
         let _ = write!(
             out,
             "\n{indent}[{}] {} {}",
@@ -306,7 +318,15 @@ pub(in crate::search) fn best_semantic_candidate(
     entries: &[OutlineEntry],
     m: &Match,
 ) -> Option<SemanticCandidate> {
-    let wanted = m.def_name.as_deref();
+    // US-064: a qualified `Q.N` def_name is matched semantically via its plain
+    // name (`N`) so the outline candidate (kind/parents) is still found; the
+    // display layer re-renders the qualifier from the dotted def_name.
+    let wanted = m
+        .def_name
+        .as_deref()
+        .and_then(crate::search::symbol::split_dot_symbol_query)
+        .map(|(_, plain)| plain)
+        .or(m.def_name.as_deref());
     let range = m.def_range.unwrap_or((m.line, m.line));
     let mut candidates = Vec::new();
     collect_semantic_candidates(entries, &mut Vec::new(), range, wanted, &mut candidates);

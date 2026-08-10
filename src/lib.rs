@@ -24,7 +24,9 @@ pub mod format;
 pub mod index;
 pub(crate) mod lang;
 pub mod map;
+pub(crate) mod precision;
 pub(crate) mod read;
+
 pub(crate) mod search;
 pub(crate) mod session;
 pub mod threading;
@@ -39,6 +41,14 @@ use std::path::{Path, PathBuf};
 #[must_use]
 pub fn should_auto_artifact_file(path: &Path) -> bool {
     artifact::should_auto_artifact_file(path)
+}
+
+/// Query-side classifier helper exposed to the CLI mode-inference layer.
+/// True when the query is an rg-style `a.*b` / `a.+b` co-occurrence pattern
+/// that must route to `discover` search instead of the file-glob mode.
+#[must_use]
+pub fn query_is_cooccurrence_pattern(query: &str) -> bool {
+    classify::regex_dialect::split_cooccurrence(query).is_some()
 }
 
 use cache::OutlineCache;

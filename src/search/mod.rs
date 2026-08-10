@@ -3,6 +3,7 @@ mod artifact_snippet;
 pub mod callees;
 pub mod callers;
 pub mod content;
+pub mod cooccurrence;
 pub mod deps;
 mod display;
 pub mod facets;
@@ -33,7 +34,7 @@ use crate::ArtifactMode;
 
 pub use self::artifact_snippet::compact_artifact_snippets;
 pub use self::display::{
-    format_raw_result, format_raw_result_with_header, search_files_glob,
+    format_raw_result, format_raw_result_with_header, search_files_fragment, search_files_glob,
     search_files_glob_with_exclude, search_files_glob_with_scope_filter,
 };
 pub use self::filter::apply_general_filter;
@@ -106,8 +107,14 @@ fn append_exact_symbol_miss_guidance(
     result: &SearchResult,
     scope: &Path,
     did_suggest: bool,
+    dotted_recovery: Option<String>,
 ) {
     if !result.matches.is_empty() || did_suggest {
+        return;
+    }
+
+    if let Some(recovery) = dotted_recovery {
+        let _ = write!(out, "\n\n{recovery}");
         return;
     }
 
@@ -117,6 +124,33 @@ fn append_exact_symbol_miss_guidance(
         out,
         "\n\n> No exact symbol named `{query}`.\n> Try: `srcwalk discover '{query}*' --scope {scope}` for prefix symbols; `srcwalk discover '*{query}*' --as file --scope {scope}` for file names; or `srcwalk discover '{query}' --as text --scope {scope}` for content."
     );
+}
+
+/// US-064 rule 5: when a `Q.N` symbol query finds nothing but plain `N` has
+/// definitions in scope, recover with the exact qualified form. The packet is
+/// kept (0-match) and this line replaces the generic miss guidance.
+fn dotted_qualified_recovery(
+    query: &str,
+    scope: &Path,
+    cache: &OutlineCache,
+    glob: Option<&str>,
+    artifact: super::ArtifactMode,
+) -> Option<String> {
+    let (qualifier, plain) = crate::search::symbol::split_dot_symbol_query(query)?;
+    let plain_result =
+        symbol::search_with_artifact(plain, scope, Some(cache), None, glob, artifact).ok()?;
+    let def_count = plain_result
+        .matches
+        .iter()
+        .filter(|m| m.is_definition)
+        .count();
+    if def_count == 0 {
+        return None;
+    }
+    let scope = format::display_path(scope);
+    Some(format!(
+        "No definition of '{plain}' under '{qualifier}'. {def_count} definitions named '{plain}' exist — Try: srcwalk discover '{plain}' --as symbol --scope {scope}"
+    ))
 }
 
 fn has_kind_filter(filter: Option<&str>) -> bool {
@@ -166,7 +200,8 @@ pub fn search_symbol_with_artifact(
     let config_cache = ConfigCache::new();
     let mut out = format_search_result(&result, cache, None, &bloom, &config_cache, 0, None)?;
     let did_suggest = append_did_you_mean(&mut out, &result, scope, glob, filter);
-    append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest);
+    let dotted_recovery = dotted_qualified_recovery(&result.query, scope, cache, glob, artifact);
+    append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest, dotted_recovery);
     let has_structural_target = has_confirmed_structural_targets(&result, cache);
     // Contextual hints
     let mut actions = Vec::new();
@@ -306,7 +341,19 @@ pub fn search_symbol_expanded(
         budget_tokens,
     )?;
     let did_suggest = append_did_you_mean(&mut out, &result, scope, glob, filter);
-    append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest);
+    // US-064: recovery search only on the miss path (see search_symbol_with_artifact).
+    let dotted_recovery = if result.matches.is_empty() && !did_suggest {
+        dotted_qualified_recovery(
+            &result.query,
+            scope,
+            cache,
+            glob,
+            super::ArtifactMode::Source,
+        )
+    } else {
+        None
+    };
+    append_exact_symbol_miss_guidance(&mut out, &result, scope, did_suggest, dotted_recovery);
     Ok(out)
 }
 
@@ -362,7 +409,7 @@ pub fn search_multi_symbol_expanded(
             result.matches.len(),
             result.page_evidence_counts(),
         );
-        append_symbol_ambiguity_caveat(&mut out, &result);
+        append_symbol_ambiguity_caveat(&mut out, &result, cache);
         let mut budget = expand_per_query;
         format_matches(
             &result.matches,

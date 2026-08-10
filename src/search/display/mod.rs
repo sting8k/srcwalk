@@ -564,14 +564,106 @@ fn append_next_action(footer: &mut String, action: NextAction) {
     footer.push_str(&render_next_actions(&[action]));
 }
 
-pub(super) fn append_symbol_ambiguity_caveat(out: &mut String, result: &SearchResult) {
+pub(super) fn append_symbol_ambiguity_caveat(
+    out: &mut String,
+    result: &SearchResult,
+    cache: &OutlineCache,
+) {
     if result.definition_candidates > 1 && result.name_occurrence_candidates > 0 {
         let _ = write!(
             out,
             "\n> Caveat: {} definition candidates share this name; text-matched name occurrences are not binding-resolved and may belong to different scopes.",
             result.definition_candidates
         );
+        // US-064 rule 6: known distinct qualifiers give the retry forms.
+        let mut qualified_forms = definition_qualifier_forms(result, cache);
+        if qualified_forms.len() >= 2 {
+            qualified_forms.truncate(4);
+            let _ = write!(
+                out,
+                "\n> Qualify: '{}' | '{}'",
+                qualified_forms[0], qualified_forms[1]
+            );
+            if qualified_forms.len() > 2 {
+                let rest: Vec<&str> = qualified_forms[2..].iter().map(String::as_str).collect();
+                let _ = write!(out, " | '{}'", rest.join("' | '"));
+            }
+        }
     }
+}
+
+/// US-064 rule 6: deterministic, capped set of `Q.N` retry forms for a plain
+/// symbol query with multiple definition candidates. Only qualifiers that are
+/// structurally KNOWN (Go receiver or outline container parent) are emitted;
+/// nothing is invented.
+fn definition_qualifier_forms(result: &SearchResult, cache: &OutlineCache) -> Vec<String> {
+    let mut forms = Vec::new();
+    for m in result.matches.iter().filter(|m| m.is_definition) {
+        if let Some(qualifier) = definition_qualifier_for(m, cache) {
+            if let Some(name) = m.def_name.as_deref() {
+                let plain = crate::search::symbol::split_dot_symbol_query(name)
+                    .map_or(name, |(_, plain)| plain);
+                let form = format!("{qualifier}.{plain}");
+                if !forms.contains(&form) {
+                    forms.push(form);
+                }
+            }
+        }
+    }
+    forms.sort();
+    forms
+}
+
+/// US-064: known qualifier for one definition match — Go receiver (parsed from
+/// the declaration line) or the outline container chain for other languages.
+fn definition_qualifier_for(m: &Match, cache: &OutlineCache) -> Option<String> {
+    if matches!(
+        crate::lang::detect_file_type(&m.path),
+        crate::types::FileType::Code(crate::types::Lang::Go)
+    ) {
+        if let Some(q) = go_receiver_from_line(&m.text) {
+            return Some(q);
+        }
+    }
+    crate::search::display::semantic::semantic_candidate_for_match(m, cache)
+        .filter(|c| !c.parents.is_empty())
+        .map(|c| c.parents.join("."))
+}
+
+/// US-064: parse the receiver type out of a Go declaration line like
+/// `func (b *Batch) Set(...)` → `Batch`. Only method form (receiver before the
+/// name) is accepted; a bare `func Set(...)` yields None.
+fn go_receiver_from_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("func")?.trim_start();
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let rest = &rest[1..];
+    let close = rest.find(')')?;
+    let receiver = &rest[..close];
+    let inner = receiver.trim();
+    if inner.is_empty() {
+        return None;
+    }
+    // `b *Batch` / `q syncQueue[T]` — the type is the part after the receiver
+    // variable name. No whitespace means no receiver variable (anonymous).
+    let space = inner.find(char::is_whitespace)?;
+    let ty = inner[space..].trim();
+    if ty.is_empty() {
+        return None;
+    }
+    Some(normalize_go_receiver_type(ty))
+}
+
+fn normalize_go_receiver_type(receiver: &str) -> String {
+    let stripped = receiver.trim().trim_start_matches('*').trim();
+    stripped
+        .chars()
+        .take_while(|&c| c != '[')
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Format a symbol/content search result.
@@ -616,7 +708,7 @@ pub(super) fn format_search_result_with_header(
     header: String,
 ) -> Result<String, SrcwalkError> {
     let mut out = header;
-    append_symbol_ambiguity_caveat(&mut out, result);
+    append_symbol_ambiguity_caveat(&mut out, result, cache);
     let mut expand_remaining = expand;
     let mut expand_budget = ExpandBudget::new(expand, budget_tokens);
     let mut expanded_files = HashSet::new();
@@ -1122,5 +1214,41 @@ mod rendered_lines_tests {
         assert!(rendered.contains_range(Path::new("p.rs"), 1, 3));
         assert!(!rendered.contains_range(Path::new("p.rs"), 1, 6)); // 4-6 missing
         assert!(!rendered.contains_range(Path::new("p.rs"), 4, 6)); // no overlap
+    }
+}
+
+#[cfg(test)]
+mod us064_receiver_line_tests {
+    use super::go_receiver_from_line;
+
+    #[test]
+    fn pointer_value_and_generic_receivers() {
+        assert_eq!(
+            go_receiver_from_line("func (b *Batch) Set(key, value []byte) error { return nil }"),
+            Some("Batch".to_string())
+        );
+        assert_eq!(
+            go_receiver_from_line("func (q *syncQueue[T]) Set(v T) {}"),
+            Some("syncQueue".to_string())
+        );
+        assert_eq!(
+            go_receiver_from_line("func (q syncQueue[T]) pop() T { var z T; return z }"),
+            Some("syncQueue".to_string())
+        );
+        assert_eq!(
+            go_receiver_from_line("func (c Config) Load() {}"),
+            Some("Config".to_string())
+        );
+    }
+
+    #[test]
+    fn plain_functions_and_anonymous_receivers_rejected() {
+        assert_eq!(
+            go_receiver_from_line("func Set(x int) int { return x }"),
+            None
+        );
+        assert_eq!(go_receiver_from_line("func (Batch) Method() {}"), None);
+        assert_eq!(go_receiver_from_line("var x = 1"), None);
+        assert_eq!(go_receiver_from_line(""), None);
     }
 }

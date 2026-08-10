@@ -64,9 +64,7 @@ srcwalk discover 'foo,bar,baz' --match any --as text --scope <dir>  # literal te
 
 Use auto overview depth first; explicit `--depth N` is strict. Narrow `overview --symbols` shows inline `kind name@line-range` anchors when budget allows; broad auto overview may summarize areas/candidates and emit narrow-scope drilldowns.
 
-Intent inference: path-like globs infer file discovery; punctuation/path comma lists infer literal Text OR; symbol globs stay symbol search. Add `--as symbol|file|text|access` when ambiguous. After a first pass, use `--expand=3`, `--filter kind:fn`, or `--exclude 'tests/**'` only when output is too broad.
-
-Regex-style queries are translated, not executed as regex: `foo\(` de-escapes to literal + symbol search, `a.*b` runs same-line ordered co-occurrence, `models\.json` behaves like `models.json`, and an unresolved path fragment like `packages/ai` lists matching relative paths (≤20). Each translation is labeled `interpreted as`; zero-match branches print a `> Try:` recovery line. Windows drive paths and `./`/`../` paths are never treated as regex.
+Intent inference: path-like globs infer file discovery; punctuation/path comma lists infer literal Text OR; symbol globs stay symbol search. Add `--as symbol|file|text|access` when ambiguous. After a first pass, use `--expand=3`, `--filter kind:fn`, or `--exclude 'tests/**'` only when output is too broad. Regex-style queries are translated, not executed as regex: `foo\(` de-escapes to literal + symbol search, `a.*b` runs same-line ordered co-occurrence, `models\.json` behaves like `models.json`, and an unresolved path fragment like `packages/ai` lists matching relative paths (≤20). Each translation is labeled `interpreted as`; zero-match branches print a `> Try:` recovery line. Windows drive paths and `./`/`../` paths are never treated as regex.
 
 If `discover` prints `## Confirmed structural targets`, run the matching `srcwalk show <path>:<range>` first. Use `srcwalk context <target>` only when you need a Flow Map, scoped occurrences, or call neighborhood; do not run `context` for each hop just to read source.
 
@@ -91,9 +89,7 @@ Do not pass a bare file to `context`; use `show` or root reads. `context` accept
 
 ### Trace calls
 
-Use `trace callers` for upstream call sites and `trace callees` for downstream calls. Do not grep `foo(` for relation claims.
-
-Long result lists collapse to the top entries plus a `+N more → <command>` pointer, and wide evidence ranges may appear as an anchor plus an `expand: <command>` line. These pointer lines are exact commands: run them verbatim when you need the remaining items or the full range. Nothing is dropped — collapsed items are always one command away.
+Use `trace callers` for upstream call sites and `trace callees` for downstream calls. Do not grep `foo(` for relation claims. Long result lists collapse to the top entries plus a `+N more → <command>` pointer, and wide evidence ranges may appear as an anchor plus an `expand: <command>` line. These pointer lines are exact commands: run them verbatim when you need the remaining items or the full range. Nothing is dropped — collapsed items are always one command away.
 
 ```bash
 srcwalk trace callers <symbol> --scope <dir>

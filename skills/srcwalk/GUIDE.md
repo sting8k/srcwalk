@@ -66,9 +66,11 @@ Use auto overview depth first; explicit `--depth N` is strict. Narrow `overview 
 
 Intent inference: path-like globs infer file discovery; punctuation/path comma lists infer literal Text OR; symbol globs stay symbol search. Add `--as symbol|file|text|access` when ambiguous. After a first pass, use `--expand=3`, `--filter kind:fn`, or `--exclude 'tests/**'` only when output is too broad.
 
-Regex-dialect & path-fragment queries translate instead of dead-ending (no regex engine): `parseGitUrl\(` → literal+symbol (`interpreted as`); `a.*b` → same-line ordered co-occurrence; `models\.json` ≡ `models.json`; `packages/ai` (no exact file) → relative-path rows (≤20). Zero-match branches print `> Try:`; Windows drive (`C:\\bin\\x.exe`) and `./`/`../` paths are never treated as regex.
+Regex-style queries are translated, not executed as regex: `foo\(` de-escapes to literal + symbol search, `a.*b` runs same-line ordered co-occurrence, `models\.json` behaves like `models.json`, and an unresolved path fragment like `packages/ai` lists matching relative paths (≤20). Each translation is labeled `interpreted as`; zero-match branches print a `> Try:` recovery line. Windows drive paths and `./`/`../` paths are never treated as regex.
 
-If `discover` prints `## Confirmed structural targets`, run the matching `srcwalk show <path>:<range>` first; use `context` only when you need a Flow Map, scoped occurrences, or call neighborhood. Symbol discovery separates parser-backed definitions from text-matched name occurrences; repeated same-name definitions get an ambiguity caveat, and `--match all` is same-file co-occurrence, not semantic relation proof.
+If `discover` prints `## Confirmed structural targets`, run the matching `srcwalk show <path>:<range>` first. Use `srcwalk context <target>` only when you need a Flow Map, scoped occurrences, or call neighborhood; do not run `context` for each hop just to read source.
+
+Symbol discovery separates parser-backed definitions from text-matched name occurrences. Repeated same-name definitions receive an ambiguity caveat. Text discovery remains literal evidence; `--match all` is same-file co-occurrence, not semantic relation proof.
 
 ### Understand one target or read exact evidence
 
@@ -90,6 +92,8 @@ Do not pass a bare file to `context`; use `show` or root reads. `context` accept
 ### Trace calls
 
 Use `trace callers` for upstream call sites and `trace callees` for downstream calls. Do not grep `foo(` for relation claims.
+
+Long result lists collapse to the top entries plus a `+N more → <command>` pointer, and wide evidence ranges may appear as an anchor plus an `expand: <command>` line. These pointer lines are exact commands: run them verbatim when you need the remaining items or the full range. Nothing is dropped — collapsed items are always one command away.
 
 ```bash
 srcwalk trace callers <symbol> --scope <dir>
@@ -133,13 +137,13 @@ srcwalk compare <symbol-a> <symbol-b> --scope <dir>
 
 ### Confirm raw text or filesystem metadata
 
-Use `rg` for raw regex and regex flags; srcwalk text discovery is literal evidence plus navigation context. Use shell `find`/`fd` only for filesystem metadata: permissions, mtimes, empty dirs, symlinks, binary assets, generated outputs, cleanup lists.
+Use `rg` for raw regex and regex flags; srcwalk translates common regex-style queries into literal/co-occurrence searches but never runs a regex engine. srcwalk text discovery is literal evidence plus navigation context. Use shell `find`/`fd` only for filesystem metadata: permissions, mtimes, empty dirs, symlinks, binary assets, generated outputs, cleanup lists.
 
 ```bash
 rg '<regex>' <dir>
 ```
 
-Do not convert identifiers into paths without evidence.
+Do not infer definitions, usages, callers, deps, or code paths from shell path lists. Do not convert identifiers into paths without evidence.
 
 ## Artifact and language support
 

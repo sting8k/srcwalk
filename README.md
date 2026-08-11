@@ -409,6 +409,39 @@ source: text · kind: name occurrence · confidence: text evidence
 </details>
 
 <details>
+<summary><b>Discover — Go owner rollup and mechanical call evidence</b></summary>
+
+For compact Go `discover --as text --match any` output, matching file rows may include a narrowest-owner rollup and a bounded mechanical call appendix. Owner ranges are candidate exact reads (dereference them with `srcwalk show`), not runtime binding proof.
+
+```
+$ srcwalk discover "apply body,set body,connect body" --match any --as text --scope .
+# Text OR: "apply body,set body,connect body" in . — 3 terms, 3 matches, 1 file
+> Caveat: literal OR text evidence only; not semantic relation proof.
+
+## Files ranked by term coverage
+db.go — 3 terms, 3 shown matches
+  terms: apply body(1), connect body(1), set body(1)
+  hits: :4, :5, :6
+  owners (#N=Nth query term; *K=hits): DB.Apply:4-4[#1]; DB.Set:5-5[#2]; connect:6-6[#3]
+  windows: :4-6 terms=apply body(1), connect body(1), set body(1)
+  > Next: srcwalk show db.go --section 4-6 -C 10
+> Caveat: hit-window proximity is literal navigation evidence, not semantic relation proof.
+
+## Terms
+apply body — 1/1 matches, 1 file
+set body — 1/1 matches, 1 file
+connect body — 1/1 matches, 1 file
+
+## Mechanical Go calls [recv=same package-qualified receiver type; local=single-assignment constructor; calls NAME=call-expression name, not candidate binding; bare=same-package invocation]
+- [recv] DB.Set calls Apply@db.go:5; candidate DB.Apply@:4-4
+
+> Caveat: structural owner and mechanically filtered direct-call evidence only; not runtime order, dynamic dispatch, or an inferred chain.
+```
+
+`owners (#N...` attributes each matched line to its narrowest structural owner by original query-term position; `#N*K` means owner hit K times for query term N. `[recv]` marks a same package-qualified receiver type, `[local]` a single-assignment constructor local, and `[bare]` a same-package invocation. `calls NAME` names the call expression, not the candidate binding; `candidate ...@:` means the definition is in the same file as the call (cross-file candidates keep the repo-relative path). Owner ranges are navigation candidates, not relation or runtime proof.
+</details>
+
+<details>
 <summary><b>Multi-hop caller BFS</b></summary>
 
 Trace callers transitively in one call:

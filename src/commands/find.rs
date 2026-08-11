@@ -1944,10 +1944,17 @@ mod tests {
             candidate: anchor("pkg/b.go", "cleanup", "", 2, 4),
             mechanism: OwnerCallMechanism::SamePackageBareInvocation,
         };
+        let local = OwnerCallEvidence {
+            caller: anchor("pkg/c.go", "Setup", "", 1, 9),
+            call_line: 5,
+            callee_name: "Connect".into(),
+            candidate: anchor("pkg/c.go", "Connect", "Pool", 2, 6),
+            mechanism: OwnerCallMechanism::SingleAssignmentLocalConstructor,
+        };
 
-        let out = render(&[same_file, cross_file, bare]);
+        let out = render(&[same_file, cross_file, bare, local]);
         let bullets: Vec<&str> = out.lines().filter(|l| l.starts_with("- ")).collect();
-        assert_eq!(bullets.len(), 3, "{out}");
+        assert_eq!(bullets.len(), 4, "{out}");
 
         let e0 = parse_edge(bullets[0]).unwrap();
         assert_eq!(
@@ -1980,6 +1987,17 @@ mod tests {
         assert_eq!(e2.call_line, 3);
         assert_eq!(e2.cand_file, "pkg/b.go");
         assert_eq!(e2.def_range, "2-4");
+
+        // `[local]` = single-assignment constructor local.
+        let e3 = parse_edge(bullets[3]).unwrap();
+        assert_eq!(
+            (e3.tag.as_str(), e3.caller.as_str(), e3.callee.as_str()),
+            ("local", "Setup", "Connect")
+        );
+        assert_eq!(e3.call_file, "pkg/c.go");
+        assert_eq!(e3.call_line, 5);
+        assert_eq!(e3.cand_file, "pkg/c.go");
+        assert_eq!(e3.def_range, "2-6");
 
         // Legend must be present exactly once.
         assert_eq!(

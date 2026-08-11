@@ -1265,6 +1265,98 @@ fn discover_text_or_owner_caveat_survives_budget_truncation() {
 }
 
 #[test]
+fn discover_text_or_non_go_abstains_from_owner_evidence() {
+    // Owner evidence is Go-only. A non-Go Text OR must not emit owner rollup
+    // or mechanical-call markers, even though its output uses `- [` bullet
+    // shapes elsewhere. Assert absence of the exact owner markers, not `- [`.
+    let dir = temp_repo("discover_text_or_non_go_owner");
+    fs::write(
+        dir.join("app.py"),
+        "def apply():\n    pass\ndef set():\n    apply()\ndef flush():\n    set()\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "apply,set,flush",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("owners (#N=Nth query term"), "{stdout}");
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        !stdout.contains("[recv=same package-qualified receiver type"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_text_or_go_compact_rollup_has_owner_line_by_default() {
+    // Default-on owner attribution: a compact Go Text OR (>=3 terms) yields the
+    // `owners (#N=...` rollup line with NO opt-in flag.
+    let dir = temp_repo("discover_text_or_go_owner_default");
+    fs::write(
+        dir.join("db.go"),
+        "package db\ntype DB struct{}\nfunc (d *DB) Apply() { /* apply body */ }\nfunc (d *DB) Set() { /* set body */ d.Apply() }\nfunc (d *DB) Flush() { /* flush body */ d.Set(); d.Apply() }\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "apply body,set body,flush body",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("owners (#N=Nth query term; *K=hits)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("[recv] DB.Set calls Apply@db.go:4; candidate DB.Apply@:3-3"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn discover_match_any_text_or_large_output_rolls_up_by_file() {
     let dir = temp_repo("discover_text_or_file_rollup");
     fs::write(

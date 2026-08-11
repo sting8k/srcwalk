@@ -2,7 +2,18 @@
 
 All notable changes to srcwalk are documented here.
 
-## Unreleased
+## [1.6.0] - 2026-08-11
+
+### Added
+- Default-on Go structural owner attribution and bounded mechanical call evidence for `discover --match any --as text`: compact file rollups include a narrowest-owner rollup (`owners (#N=Nth query term; *K=hits)`) and a `## Mechanical Go calls` appendix with capped (≤10), deterministically ordered, same-file `@:`-elided direct-call edges.
+
+### Changed
+- Go owner evidence is now emitted by default (no opt-in flag). It is navigation evidence only, not runtime order, dynamic dispatch, or an inferred chain; zero-edge owners abstain with an explicit caveat. Owner ranges are candidate exact reads, not relation or binding proof.
+
+### Docs
+- `skills/srcwalk/GUIDE.md` documents the owner rollup, the `[recv]`/`[local]`/`[bare]` edge labels, the `calls NAME` = call-expression-name honesty note, `@:` same-file elision, and the mechanical-filter/dynamic-dispatch caveat.
+
+Known behavior: on very large monorepos, initial scope-narrowing may add extra navigation turns (srcwalk-general behavior, unrelated to owner evidence; observed in one eval3 run; tokens remained neutral-to-better).
 
 ## [1.5.0] - 2026-08-10
 

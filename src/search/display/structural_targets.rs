@@ -18,6 +18,12 @@ struct StructuralTarget {
     path: PathBuf,
     start_line: u32,
     end_line: u32,
+    /// Parser-backed symbol selector (bare name or `Type.method`) that resolves
+    /// back to this target's range when `symbol_backed` is true.
+    selector: String,
+    /// True when the footer may emit `show path --section <selector>` safely
+    /// (the selector round-trips to exactly this range in this file).
+    symbol_backed: bool,
 }
 
 impl StructuralTarget {
@@ -110,6 +116,8 @@ fn collect_structural_targets(
             path: m.path.clone(),
             start_line: target.start_line,
             end_line: target.end_line,
+            selector: target.selector,
+            symbol_backed: target.symbol_backed,
         });
         if targets.len() == 3 {
             break;
@@ -158,39 +166,17 @@ fn show_actions_for_targets(
         ));
     }
 
-    if narrow.len() == 1 {
-        let target = narrow[0];
+    // Each narrow target is offered as its own symbol-addressed read command
+    // (`show <path> --section <selector>`). Different targets carry different
+    // selectors, so they can no longer be merged into one numeric batched
+    // `path:A-B,path:C-D` command.
+    for (index, target) in narrow.iter().enumerate() {
         actions.push(NextAction::from_evidence(
             show_command_for_target(target, scope),
             "read confirmed structural source target",
-            10,
+            10 + index as u16,
             EvidenceSource::Ast,
             target.anchor(),
-        ));
-    } else if !narrow.is_empty()
-        && narrow
-            .iter()
-            .any(|target| target.requires_section_form(scope))
-    {
-        for (index, target) in narrow.iter().enumerate() {
-            actions.push(NextAction::from_evidence(
-                show_command_for_target(target, scope),
-                "read confirmed structural source target",
-                10 + index as u16,
-                EvidenceSource::Ast,
-                target.anchor(),
-            ));
-        }
-    } else if !narrow.is_empty() {
-        let joined = narrow
-            .iter()
-            .map(|target| target.location_arg_relative_to(scope))
-            .collect::<Vec<_>>()
-            .join(",");
-        actions.push(NextAction::guidance(
-            format!("srcwalk show {}", quote_or_placeholder(&joined)),
-            "read confirmed structural source targets",
-            10,
         ));
     }
     actions
@@ -222,6 +208,18 @@ fn truncate_label(reason: &str) -> &str {
 }
 
 fn show_command_for_target(target: &StructuralTarget, scope: &Path) -> String {
+    // Symbol form: `show <path> --section <selector>` for a round-tripping
+    // parser-backed selector. The path is quoted separately so a comma inside
+    // a quoted path never becomes a multi-target command.
+    if target.symbol_backed {
+        return format!(
+            "srcwalk show {} --section {}",
+            quote_or_placeholder(&target.path_arg_relative_to(scope)),
+            quote_or_placeholder(&target.selector)
+        );
+    }
+
+    // Numeric fallback for exceptional targets with no stable symbol selector.
     if target.requires_section_form(scope) {
         return format!(
             "srcwalk show {} --section {}",
@@ -249,6 +247,23 @@ mod tests {
             path: PathBuf::from(path),
             start_line,
             end_line,
+            selector: String::new(),
+            symbol_backed: false,
+        }
+    }
+
+    fn symbol_target(
+        path: &str,
+        start_line: u32,
+        end_line: u32,
+        selector: &str,
+    ) -> StructuralTarget {
+        StructuralTarget {
+            path: PathBuf::from(path),
+            start_line,
+            end_line,
+            selector: selector.to_string(),
+            symbol_backed: true,
         }
     }
 
@@ -274,11 +289,39 @@ mod tests {
             scope,
             &RenderedSourceLines::default(),
         );
-        assert_eq!(actions.len(), 1);
-        assert_eq!(
-            actions[0].command(),
-            "srcwalk show 'a file.rs:1-1,b file.rs:2-2'"
-        );
+        // Distinct targets are no longer merged into one numeric command;
+        // each is offered on its own line.
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].command(), "srcwalk show 'a file.rs:1-1'");
+        assert_eq!(actions[1].command(), "srcwalk show 'b file.rs:2-2'");
+    }
+
+    #[test]
+    fn symbol_target_renders_symbol_section_command() {
+        let scope = Path::new("");
+        let command = show_command_for_target(&symbol_target("lib.rs", 1, 3, "target"), scope);
+        assert_eq!(command, "srcwalk show lib.rs --section target");
+    }
+
+    #[test]
+    fn symbol_target_preserves_qualified_selector() {
+        let scope = Path::new("");
+        let command = show_command_for_target(&symbol_target("batch.go", 3, 3, "Batch.Set"), scope);
+        assert_eq!(command, "srcwalk show batch.go --section Batch.Set");
+    }
+
+    #[test]
+    fn symbol_target_quotes_space_path_and_selector() {
+        let scope = Path::new("");
+        let command = show_command_for_target(&symbol_target("a file.rs", 1, 3, "my fn"), scope);
+        assert_eq!(command, "srcwalk show 'a file.rs' --section 'my fn'");
+    }
+
+    #[test]
+    fn symbol_target_keeps_comma_path_quoted() {
+        let scope = Path::new("");
+        let command = show_command_for_target(&symbol_target("a,file.rs", 1, 3, "target"), scope);
+        assert_eq!(command, "srcwalk show 'a,file.rs' --section target");
     }
 
     #[test]

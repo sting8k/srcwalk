@@ -82,10 +82,11 @@ fn discover_offers_no_bare_range_wider_than_forty() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // The wide definition range is anchored, not offered bare.
+    // The wide definition range is anchored to a symbol-addressed expand
+    // command, not offered bare.
     assert!(
-        stdout.contains("> expand: srcwalk show target.js:"),
-        "wide range should be anchored with an expand command, got:\n{stdout}"
+        stdout.contains("> expand: srcwalk show target.js --section target"),
+        "wide range should be anchored with a symbol expand command, got:\n{stdout}"
     );
     // No bare offer exposes a >40-line range.
     let widths = bare_offered_widths(&stdout);

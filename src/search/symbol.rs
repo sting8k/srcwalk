@@ -7,10 +7,9 @@ mod glob_search;
 mod suggest;
 mod usages;
 
+pub(crate) use crate::lang::qualified::{normalize_receiver_type, split_dot_symbol_query};
 use comments::tag_comment_matches;
 use definitions::find_definitions_with_artifact;
-pub(crate) use definitions::normalize_receiver_type;
-pub(crate) use definitions::split_dot_symbol_query;
 #[cfg(test)]
 use definitions::{find_artifact_anchor_defs, find_defs_treesitter};
 use usages::find_usages_with_artifact;

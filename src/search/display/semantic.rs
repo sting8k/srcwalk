@@ -47,6 +47,14 @@ pub(in crate::search) struct SemanticChild {
 pub(super) struct ContextTarget {
     pub(super) start_line: u32,
     pub(super) end_line: u32,
+    /// Parser-backed symbol selector (bare name or `Type.method`) that resolves
+    /// back to this target's range, or the closest stable selector when
+    /// `symbol_backed` is false.
+    pub(super) selector: String,
+    /// True when `selector` round-trips to exactly `(start_line, end_line)` in
+    /// this file, so the `show path --section <selector>` footer is safe to
+    /// emit. False targets fall back to a numeric range command.
+    pub(super) symbol_backed: bool,
 }
 
 pub(super) fn context_target_for_match(m: &Match, cache: &OutlineCache) -> Option<ContextTarget> {
@@ -60,20 +68,32 @@ pub(super) fn context_target_for_match(m: &Match, cache: &OutlineCache) -> Optio
         return None;
     }
 
+    let entries = structured_outline_entries(&m.path, cache)?;
+
     if m.is_definition {
-        if let Some(candidate) = semantic_candidate_for_match(m, cache) {
+        let range = m.def_range.unwrap_or((m.line, m.line));
+        if let Some(candidate) = best_semantic_candidate(&entries, m) {
             if candidate.kind == OutlineKind::Function {
-                return Some(ContextTarget {
-                    start_line: candidate.start_line,
-                    end_line: candidate.end_line,
-                });
+                // US-064: `m.def_name` retains the parser-backed `Q.N` form for
+                // qualified matches, so the footer carries the same selector
+                // the discover query used instead of reconstructing it.
+                let selector = m.def_name.clone().unwrap_or_else(|| candidate.name.clone());
+                return Some(build_target(
+                    &m.path,
+                    &entries,
+                    candidate.start_line,
+                    candidate.end_line,
+                    selector,
+                ));
             }
         }
-        if let Some((start_line, end_line)) = function_definition_range_from_outline(m, cache) {
-            return Some(ContextTarget {
-                start_line,
-                end_line,
-            });
+        if let Some((start_line, end_line)) =
+            find_function_definition_range(&entries, range, m.def_name.as_deref())
+        {
+            let selector = m.def_name.clone().unwrap_or_else(|| start_line.to_string());
+            return Some(build_target(
+                &m.path, &entries, start_line, end_line, selector,
+            ));
         }
         return None;
     }
@@ -82,12 +102,37 @@ pub(super) fn context_target_for_match(m: &Match, cache: &OutlineCache) -> Optio
         return None;
     }
 
-    let entries = structured_outline_entries(&m.path, cache)?;
     let candidate = best_enclosing_function(&entries, m.line)?;
-    Some(ContextTarget {
-        start_line: candidate.start_line,
-        end_line: candidate.end_line,
-    })
+    let selector = candidate.name.clone();
+    Some(build_target(
+        &m.path,
+        &entries,
+        candidate.start_line,
+        candidate.end_line,
+        selector,
+    ))
+}
+
+/// Build a `ContextTarget` from a candidate range and parser-backed selector.
+/// `symbol_backed` is true only when the selector resolves back to exactly this
+/// range (round-trip check), so the footer never emits a symbol command that
+/// would read a different body.
+fn build_target(
+    path: &Path,
+    entries: &[OutlineEntry],
+    start_line: u32,
+    end_line: u32,
+    selector: String,
+) -> ContextTarget {
+    let lang = crate::lang::detect_file_type(path).structural_lang();
+    let symbol_backed = crate::lang::qualified::resolve_selector_first(entries, lang, &selector)
+        == Some((start_line, end_line));
+    ContextTarget {
+        start_line,
+        end_line,
+        selector,
+        symbol_backed,
+    }
 }
 
 pub(super) fn format_definition_semantic_match(
@@ -411,13 +456,6 @@ fn collect_semantic_candidates(
             parents.pop();
         }
     }
-}
-
-fn function_definition_range_from_outline(m: &Match, cache: &OutlineCache) -> Option<(u32, u32)> {
-    let range = m.def_range?;
-    let wanted = m.def_name.as_deref();
-    let entries = structured_outline_entries(&m.path, cache)?;
-    find_function_definition_range(&entries, range, wanted)
 }
 
 fn find_function_definition_range(

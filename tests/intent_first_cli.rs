@@ -1506,12 +1506,16 @@ fn caller() -> i32 {
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show 'lib.rs:1-3,lib.rs:7-9'"),
+        stdout.contains("> Next: srcwalk show lib.rs --section target"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("> Next: srcwalk show lib.rs --section caller"),
         "{stdout}"
     );
     assert_eq!(
         stdout
-            .matches("> Next: srcwalk show 'lib.rs:1-3,lib.rs:7-9'")
+            .matches("> Next: srcwalk show lib.rs --section target")
             .count(),
         1,
         "confirmed structural next action should be deduplicated:\n{stdout}"
@@ -1595,15 +1599,19 @@ fn discover_multiple_structural_matches_suggest_batched_show_target() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show 'a/lib.rs:1-1,b/lib.rs:1-1'"),
-        "expected one batched show next action:\n{stdout}"
+        stdout.contains("> Next: srcwalk show a/lib.rs --section target"),
+        "expected symbol show next action:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("> Next: srcwalk show b/lib.rs --section target"),
+        "expected symbol show next action:\n{stdout}"
     );
     assert_eq!(
         stdout
-            .matches("> Next: srcwalk show 'a/lib.rs:1-1,b/lib.rs:1-1'")
+            .matches("> Next: srcwalk show a/lib.rs --section target")
             .count(),
         1,
-        "batched show next action should be deduplicated:\n{stdout}"
+        "symbol show next action should be deduplicated:\n{stdout}"
     );
     assert!(
         !stdout.contains("srcwalk context a/lib.rs:1-1"),
@@ -1627,7 +1635,7 @@ fn discover_structural_show_targets_quote_spaces_and_comma_paths() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("> Next: srcwalk show 'a file.rs:1-1'"),
+        stdout.contains("> Next: srcwalk show 'a file.rs' --section target"),
         "space-bearing target must be shell-quoted:\n{stdout}"
     );
 
@@ -1643,8 +1651,8 @@ fn discover_structural_show_targets_quote_spaces_and_comma_paths() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("> Next: srcwalk show 'a,file.rs' --section 1-1"),
-        "comma-bearing path must use --section instead of ambiguous inline target:\n{stdout}"
+        stdout.contains("> Next: srcwalk show 'a,file.rs' --section target"),
+        "comma-bearing path must use --section with a symbol selector:\n{stdout}"
     );
     assert!(
         !stdout.contains("srcwalk show a,file.rs:1-1"),
@@ -1692,7 +1700,11 @@ export function startServer() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show 'server.ts:3-8,server.ts:10-12'"),
+        stdout.contains("> Next: srcwalk show server.ts --section createGatewayServer"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("> Next: srcwalk show server.ts --section startServer"),
         "{stdout}"
     );
     assert!(

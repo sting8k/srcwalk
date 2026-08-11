@@ -1521,9 +1521,10 @@ fn caller() -> i32 {
         "confirmed structural next action should be deduplicated:\n{stdout}"
     );
     assert!(
-        stdout.contains("read the confirmed structural target above"),
-        "discover footer should route structural candidates to show first:\n{stdout}"
+        !stdout.contains("read the confirmed structural target above"),
+        "confirmed-target block owns the next action; no generic guidance may follow:\n{stdout}"
     );
+
     assert!(
         !stdout.contains("use --expand to inline definition source"),
         "confirmed structural target should suppress definition expand guidance:\n{stdout}"
@@ -1565,9 +1566,11 @@ fn discover_over_cap_structural_target_omits_action_and_heading() {
         stdout.contains("> Caveat: confirmed structural target lib.rs:1-201 spans 201 lines, over the 200-line next-action bound."),
         "{stdout}"
     );
+    // A structural target exists (just over the cap), so the generic guidance
+    // is suppressed too; the caveat block owns the message.
     assert!(
-        stdout.contains("read the confirmed structural target above"),
-        "existing prose footer must remain unchanged:\n{stdout}"
+        !stdout.contains("read the confirmed structural target above"),
+        "structural-target query must suppress generic guidance:\n{stdout}"
     );
 
     let _ = fs::remove_dir_all(&dir);

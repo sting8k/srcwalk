@@ -14,6 +14,18 @@ use crate::types::SearchResult;
 use super::semantic;
 use super::RenderedSourceLines;
 
+/// Header line for the confirmed-target block. It teaches the classification
+/// (run the printed `Next` command; symbol when stable, numeric as a safe
+/// fallback) instead of claiming every target is symbol-addressed.
+const CONFIRMED_TARGETS_HEADER: &str =
+    "## Confirmed structural targets - run the printed Next command (symbol when stable; numeric as fallback)";
+
+/// Single line emitted after any numeric-fallback targets. Kept at block level
+/// so several fallbacks in one output share one explanation instead of
+/// repeating it after every target.
+const NUMERIC_FALLBACK_NOTE: &str =
+    "> Note: numeric fallback - no unique symbol selector resolves to the exact body, so the printed range is the safe read.";
+
 struct StructuralTarget {
     path: PathBuf,
     start_line: u32,
@@ -69,7 +81,8 @@ pub(super) fn append_structural_next_targets(
         return false;
     }
 
-    let actions = show_actions_for_targets(&targets, &result.scope, rendered_lines);
+    let (actions, fallback_count) =
+        show_actions_for_targets(&targets, &result.scope, rendered_lines);
     let rendered = render_next_actions(&actions);
     if rendered.is_empty() {
         let target = &targets[0];
@@ -92,8 +105,15 @@ pub(super) fn append_structural_next_targets(
         }
         return true;
     }
-    out.push_str("\n\n## Confirmed structural targets\n");
+    out.push('\n');
+    out.push('\n');
+    out.push_str(CONFIRMED_TARGETS_HEADER);
+    out.push('\n');
     out.push_str(&rendered);
+    if fallback_count > 0 {
+        out.push('\n');
+        out.push_str(NUMERIC_FALLBACK_NOTE);
+    }
     true
 }
 
@@ -126,11 +146,13 @@ fn collect_structural_targets(
     targets
 }
 
+/// Build the confirmed-target actions plus how many of them are numeric
+/// fallbacks (used to emit a single block-level explanation).
 fn show_actions_for_targets(
     targets: &[StructuralTarget],
     scope: &Path,
     rendered: &RenderedSourceLines,
-) -> Vec<NextAction> {
+) -> (Vec<NextAction>, usize) {
     let ranges = targets
         .iter()
         .map(|target| (target.start_line, target.end_line))
@@ -145,32 +167,49 @@ fn show_actions_for_targets(
         .collect::<Vec<_>>();
 
     if kept_targets.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
 
-    // US-060b: split wide (>W-line) targets out of every offer path so each
-    // anchors to `path:line (label)` + an `expand: srcwalk show path:A-B`
-    // command instead of being offered bare. The expand command preserves the
-    // exact range (section form for comma paths), so the full range is always
-    // exactly one printed command away.
+    // US-060b: split wide (>W-line) targets out so their numeric range anchors
+    // to a bounded `> anchor:` evidence line instead of being offered bare.
     let (wide, narrow): (Vec<_>, Vec<_>) = kept_targets.into_iter().partition(|target| {
         precision::should_anchor_range((target.end_line - target.start_line + 1) as usize)
     });
 
     let mut actions = Vec::new();
+    let mut fallback_count = 0;
+
     for target in &wide {
-        actions.push(NextAction::guidance(
-            anchored_offer(target, scope, "read confirmed structural source target"),
-            "read confirmed structural source target",
-            10,
-        ));
+        if target.symbol_backed {
+            // Stable parser-backed selector: the symbol command is the primary
+            // action; the numeric range is non-action evidence metadata.
+            actions.push(
+                NextAction::guidance(
+                    show_command_for_target(target, scope),
+                    "read confirmed structural source target",
+                    10,
+                )
+                .with_preamble([anchor_line(target, scope)]),
+            );
+        } else {
+            // Ambiguous / non-round-tripping selector: numeric fallback stays
+            // the primary action and is honestly labeled at block level.
+            fallback_count += 1;
+            actions.push(NextAction::guidance(
+                show_command_for_target(target, scope),
+                "read confirmed structural source target",
+                10,
+            ));
+        }
     }
 
-    // Each narrow target is offered as its own symbol-addressed read command
-    // (`show <path> --section <selector>`). Different targets carry different
-    // selectors, so they can no longer be merged into one numeric batched
-    // `path:A-B,path:C-D` command.
+    // Each narrow target is offered as its own read command. Symbol-backed
+    // targets use `show <path> --section <selector>`; the rest fall back to a
+    // numeric range and are labeled at block level.
     for (index, target) in narrow.iter().enumerate() {
+        if !target.symbol_backed {
+            fallback_count += 1;
+        }
         actions.push(NextAction::from_evidence(
             show_command_for_target(target, scope),
             "read confirmed structural source target",
@@ -179,32 +218,19 @@ fn show_actions_for_targets(
             target.anchor(),
         ));
     }
-    actions
+    (actions, fallback_count)
 }
 
-/// US-060b: build the anchored offer for a wide target — a single-line
-/// `path:start (label)` anchor plus an `> expand:` command that retrieves the
-/// full range in exactly one printed command (preserving section form for comma
-/// paths). Rendered as two `> `-prefixed lines by `render_next_actions`.
-fn anchored_offer(target: &StructuralTarget, scope: &Path, reason: &str) -> String {
-    let label = truncate_label(reason);
-    let path = format::rel_nonempty(&target.path, scope);
+/// US-060b: keep the numeric range of a wide target visible as evidence while
+/// making clear it is a bounded preview, not the body address. Rendered as a
+/// plain (non-action) line using only the START line, so it never looks like a
+/// hint that could be re-read as a numeric range. The symbol command on the
+/// `> Next:` line is the recommended action.
+fn anchor_line(target: &StructuralTarget, scope: &Path) -> String {
     format!(
-        "{}:{} ({label})\n> expand: {}",
-        path,
-        target.start_line,
-        show_command_for_target(target, scope)
+        "  evidence anchor: {} (bounded preview; not the body address)",
+        Anchor::line(&target.path, target.start_line).display_relative_to(scope)
     )
-}
-
-/// Keep the anchor label short enough for a single-line `path:line (label)`.
-fn truncate_label(reason: &str) -> &str {
-    let trimmed = reason.trim();
-    if trimmed.len() <= 40 {
-        trimmed
-    } else {
-        &trimmed[..trimmed.floor_char_boundary(40)]
-    }
 }
 
 fn show_command_for_target(target: &StructuralTarget, scope: &Path) -> String {
@@ -284,13 +310,12 @@ mod tests {
     #[test]
     fn batched_show_quotes_combined_space_targets() {
         let scope = Path::new("");
-        let actions = show_actions_for_targets(
+        let (actions, _) = show_actions_for_targets(
             &[target("a file.rs", 1, 1), target("b file.rs", 2, 2)],
             scope,
             &RenderedSourceLines::default(),
         );
-        // Distinct targets are no longer merged into one numeric command;
-        // each is offered on its own line.
+        // Distinct narrow numeric targets stay on their own lines.
         assert_eq!(actions.len(), 2);
         assert_eq!(actions[0].command(), "srcwalk show 'a file.rs:1-1'");
         assert_eq!(actions[1].command(), "srcwalk show 'b file.rs:2-2'");
@@ -327,7 +352,7 @@ mod tests {
     #[test]
     fn batched_show_splits_comma_paths() {
         let scope = Path::new("");
-        let actions = show_actions_for_targets(
+        let (actions, _) = show_actions_for_targets(
             &[target("a,file.rs", 1, 1), target("b.rs", 2, 2)],
             scope,
             &RenderedSourceLines::default(),
@@ -342,7 +367,7 @@ mod tests {
 
     #[test]
     fn over_cap_singleton_emits_no_action() {
-        let actions = show_actions_for_targets(
+        let (actions, _) = show_actions_for_targets(
             &[target("large.rs", 1, 201)],
             Path::new(""),
             &RenderedSourceLines::default(),
@@ -353,7 +378,7 @@ mod tests {
     #[test]
     fn over_cap_ranges_skip_and_keep_contiguous_priorities() {
         let scope = Path::new("");
-        let actions = show_actions_for_targets(
+        let (actions, fallbacks) = show_actions_for_targets(
             &[
                 target("a,file.rs", 1, 150),
                 target("b,file.rs", 1, 51),
@@ -364,56 +389,152 @@ mod tests {
         );
 
         // The 201-line `b` range is dropped by the line cap; the surviving `a`
-        // (150) and `c` (50) are both >W so they anchor to path:line + expand.
+        // (150) and `c` (50) are both >W and non-symbol-backed, so they become
+        // numeric fallback commands (section form for comma paths).
         assert_eq!(actions.len(), 2);
+        assert_eq!(fallbacks, 2);
         assert_eq!(
             actions[0].command(),
-            "a,file.rs:1 (read confirmed structural source target)\n> expand: srcwalk show 'a,file.rs' --section 1-150"
+            "srcwalk show 'a,file.rs' --section 1-150"
         );
         assert_eq!(actions[0].rank(), 10);
         assert_eq!(
             actions[1].command(),
-            "c,file.rs:1 (read confirmed structural source target)\n> expand: srcwalk show 'c,file.rs' --section 1-50"
+            "srcwalk show 'c,file.rs' --section 1-50"
         );
         assert_eq!(actions[1].rank(), 10);
     }
 
     #[test]
-    fn wide_range_offered_anchors_but_w_boundary_does_not() {
+    fn wide_boundary_stays_plain_offer() {
         let scope = Path::new("");
         // Width W (40) is the boundary: exactly 40 lines stays a plain offer.
-        let boundary = show_actions_for_targets(
+        let (actions, fallbacks) = show_actions_for_targets(
             &[target("p.rs", 1, 40)],
             scope,
             &RenderedSourceLines::default(),
         );
-        assert_eq!(boundary.len(), 1);
-        assert!(
-            !boundary[0].command().contains("expand:"),
-            "width-40 target must not anchor: {:?}",
-            boundary[0].command()
-        );
-        assert_eq!(boundary[0].command(), "srcwalk show p.rs:1-40");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(fallbacks, 1);
+        assert_eq!(actions[0].command(), "srcwalk show p.rs:1-40");
+    }
 
-        // Width W+1 (41) must anchor to `path:line (label)` + `> expand:`.
-        let wide = show_actions_for_targets(
+    #[test]
+    fn wide_numeric_fallback_uses_numeric_command_primary() {
+        let scope = Path::new("");
+        // Width W+1 (41) >W, non-symbol-backed: numeric command is the primary
+        // action (no separate anchor, no `> expand:`).
+        let (actions, fallbacks) = show_actions_for_targets(
             &[target("p.rs", 1, 41)],
             scope,
             &RenderedSourceLines::default(),
         );
-        assert_eq!(wide.len(), 1);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(fallbacks, 1);
+        assert_eq!(actions[0].command(), "srcwalk show p.rs:1-41");
         assert!(
-            wide[0]
-                .command()
-                .contains("> expand: srcwalk show p.rs:1-41"),
-            "width-41 target must anchor with an expand command: {:?}",
-            wide[0].command()
-        );
-        assert!(
-            wide[0].command().starts_with("p.rs:1 ("),
+            !actions[0].command().contains("expand:"),
             "{:?}",
-            wide[0].command()
+            actions[0].command()
         );
+    }
+
+    #[test]
+    fn wide_symbol_backed_promotes_symbol_command_to_primary() {
+        let scope = Path::new("");
+        // Wide symbol-backed target: the symbol command is the primary action
+        // and the numeric range is non-action evidence metadata.
+        let (actions, fallbacks) = show_actions_for_targets(
+            &[symbol_target(
+                "semantic.rs",
+                156,
+                272,
+                "format_definition_semantic_match_with_path",
+            )],
+            scope,
+            &RenderedSourceLines::default(),
+        );
+        assert_eq!(actions.len(), 1);
+        assert_eq!(fallbacks, 0);
+        assert_eq!(
+            actions[0].command(),
+            "srcwalk show semantic.rs --section format_definition_semantic_match_with_path"
+        );
+        assert_eq!(
+            actions[0].reason(),
+            "read confirmed structural source target"
+        );
+    }
+
+    #[test]
+    fn wide_symbol_backed_anchor_is_non_action_metadata() {
+        let scope = Path::new("");
+        let (actions, _) = show_actions_for_targets(
+            &[symbol_target("semantic.rs", 156, 272, "Type.method")],
+            scope,
+            &RenderedSourceLines::default(),
+        );
+        let preamble = &actions[0];
+        // The action's command is the symbol command; the anchor is plain
+        // metadata using the START line only, never a competing action or a
+        // repeat of the full body range.
+        assert_eq!(
+            preamble.command(),
+            "srcwalk show semantic.rs --section Type.method"
+        );
+        let rendered = render_next_actions(std::slice::from_ref(preamble));
+        assert_eq!(
+            rendered,
+            "  evidence anchor: semantic.rs:156 (bounded preview; not the body address)\n> Next: srcwalk show semantic.rs --section Type.method"
+        );
+        assert!(!rendered.contains("expand:"), "{rendered}");
+        assert!(!rendered.contains("> Next: semantic.rs"), "{rendered}");
+        assert!(
+            !rendered.contains("156-272"),
+            "anchor must not repeat the full range: {rendered}"
+        );
+        assert!(
+            !rendered.starts_with('>'),
+            "anchor must be plain metadata, not action-shaped: {rendered}"
+        );
+    }
+
+    #[test]
+    fn narrow_symbol_backed_has_exactly_one_symbol_next() {
+        let scope = Path::new("");
+        let (actions, fallbacks) = show_actions_for_targets(
+            &[symbol_target("lib.rs", 1, 3, "helper")],
+            scope,
+            &RenderedSourceLines::default(),
+        );
+        assert_eq!(actions.len(), 1);
+        assert_eq!(fallbacks, 0);
+        let rendered = render_next_actions(&actions);
+        assert_eq!(rendered, "> Next: srcwalk show lib.rs --section helper");
+        assert!(!rendered.contains("expand:"), "{rendered}");
+        assert!(!rendered.contains(":1-3"), "{rendered}");
+    }
+
+    #[test]
+    fn header_teaches_classification() {
+        assert!(CONFIRMED_TARGETS_HEADER.contains("run the printed Next command"));
+        assert!(CONFIRMED_TARGETS_HEADER.contains("symbol when stable"));
+        assert!(CONFIRMED_TARGETS_HEADER.contains("numeric as fallback"));
+    }
+
+    #[test]
+    fn numeric_fallback_note_is_single_block_level() {
+        // Two non-symbol-backed wide targets -> one shared fallback note at
+        // block level, not repeated per target.
+        let (actions, fallbacks) = show_actions_for_targets(
+            &[target("a.rs", 1, 41), target("b.rs", 1, 41)],
+            Path::new(""),
+            &RenderedSourceLines::default(),
+        );
+        assert_eq!(actions.len(), 2);
+        assert_eq!(fallbacks, 2);
+        assert!(NUMERIC_FALLBACK_NOTE.starts_with("> Note:"));
+        assert!(NUMERIC_FALLBACK_NOTE.contains("numeric fallback"));
     }
 
     #[test]
@@ -427,14 +548,14 @@ mod tests {
         );
 
         // Full containment (1-6) -> offer suppressed.
-        let full = show_actions_for_targets(&[target("p.rs", 1, 6)], scope, &rendered);
+        let (full, _) = show_actions_for_targets(&[target("p.rs", 1, 6)], scope, &rendered);
         assert!(
             full.is_empty(),
             "fully-rendered target must be suppressed: {full:?}"
         );
 
         // Partial overlap (1-3 all rendered, 4-8 not) -> offer kept.
-        let partial = show_actions_for_targets(&[target("p.rs", 1, 8)], scope, &rendered);
+        let (partial, _) = show_actions_for_targets(&[target("p.rs", 1, 8)], scope, &rendered);
         assert_eq!(partial.len(), 1, "partial overlap must keep the offer");
         assert!(
             partial[0].command().contains('8'),
@@ -443,7 +564,26 @@ mod tests {
         );
 
         // No overlap (20-25) -> offer kept.
-        let none = show_actions_for_targets(&[target("p.rs", 20, 25)], scope, &rendered);
+        let (none, _) = show_actions_for_targets(&[target("p.rs", 20, 25)], scope, &rendered);
         assert_eq!(none.len(), 1);
+    }
+
+    #[test]
+    fn mixed_symbol_and_fallback_emit_one_primary_action_each() {
+        let scope = Path::new("");
+        let (actions, fallbacks) = show_actions_for_targets(
+            &[
+                symbol_target("a.rs", 1, 3, "stableOne"),
+                target("b.rs", 1, 41),
+            ],
+            scope,
+            &RenderedSourceLines::default(),
+        );
+        // One canonical primary action per emitted target.
+        assert_eq!(actions.len(), 2);
+        assert_eq!(fallbacks, 1);
+        let rendered = render_next_actions(&actions);
+        assert_eq!(rendered.matches("> Next:").count(), 2, "{rendered}");
+        assert!(!rendered.contains("expand:"), "{rendered}");
     }
 }

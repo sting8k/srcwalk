@@ -1,7 +1,8 @@
 //! US-060b: no offered range wider than W=40 lines appears bare in discover /
-//! trace output. Wide ranges are anchored to `path:line (label)` + an
-//! `expand: srcwalk show path:A-B` command, so the full range is always exactly
-//! one printed command away.
+//! trace output. Wide ranges are anchored to a bounded `> anchor: path:line`
+//! evidence line plus a primary `> Next:` command (symbol-addressed when the
+//! selector round-trips; a numeric range otherwise), so the full body is
+//! always exactly one printed command away.
 
 use std::fs;
 use std::path::PathBuf;
@@ -82,12 +83,31 @@ fn discover_offers_no_bare_range_wider_than_forty() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // The wide definition range is anchored to a symbol-addressed expand
-    // command, not offered bare.
+    // The wide definition range is symbol-addressed: the symbol command is the
+    // primary `> Next:` action, and the numeric range is non-action evidence
+    // metadata (a bounded START-line preview), never a competing `> expand:`
+    // or an action-shaped `> anchor:` line repeating the full body range.
     assert!(
-        stdout.contains("> expand: srcwalk show target.js --section target"),
-        "wide range should be anchored with a symbol expand command, got:\n{stdout}"
+        stdout.contains("> Next: srcwalk show target.js --section target"),
+        "wide range should be symbol-addressed as the primary next action, got:\n{stdout}"
     );
+    assert!(
+        stdout.contains("  evidence anchor: target.js:1 (bounded preview; not the body address)"),
+        "START-line anchor should appear as plain metadata, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("> anchor:"),
+        "anchor must not be action-shaped (no '> anchor:'), got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("evidence anchor: target.js:1-83"),
+        "anchor must not repeat the full body range, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("> expand:"),
+        "no expand line may compete with the symbol next action:\n{stdout}"
+    );
+
     // No bare offer exposes a >40-line range.
     let widths = bare_offered_widths(&stdout);
     assert!(

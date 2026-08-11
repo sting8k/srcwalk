@@ -86,6 +86,12 @@ fn discover_bare_function_emits_symbol_section_command() {
         !out.contains("srcwalk show 'lib.rs:1-3'") && !out.contains("srcwalk show lib.rs:1-3"),
         "no numeric read command should be emitted:\n{out}"
     );
+    // The confirmed block owns the next action; no generic guidance may
+    // follow it as a competing primary `> Next:`.
+    assert!(
+        !out.contains("read the confirmed structural target above"),
+        "generic guidance must not follow a confirmed-target block:\n{out}"
+    );
 }
 
 #[test]
@@ -139,6 +145,22 @@ fn discover_quotes_space_and_comma_paths_in_symbol_command() {
     assert!(
         out.contains("> Next: srcwalk show 'a,file.rs' --section target"),
         "comma path must stay quoted and single-target:\n{out}"
+    );
+}
+
+#[test]
+fn non_structural_search_keeps_numeric_exact_hit_guidance() {
+    let fx = Fixture::new(
+        "text_hit",
+        &[("lib.rs", "fn main() {\n    // nothing structural here\n}\n")],
+    );
+    // A plain text search yields no confirmed structural target, so the
+    // numeric exact-hit guidance must remain (not be replaced by nothing).
+    let out = fx.discover(&["discover", "nothing", "--as", "text", "--scope", "."]);
+    assert!(!out.contains("## Confirmed structural targets"), "{out}");
+    assert!(
+        out.contains("read exact hit evidence with `srcwalk show <path>:<line> -C 10`"),
+        "non-structural search must keep numeric exact-hit guidance:\n{out}"
     );
 }
 

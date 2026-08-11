@@ -951,15 +951,18 @@ pub(super) fn format_search_result_with_header(
         );
     }
 
-    if result.total_found > 0 {
-        let guidance = if has_structural_next_targets {
-            "read the confirmed structural target above, or use `srcwalk context <target>` only when you need a Flow Map or call neighborhood."
-        } else {
-            "read exact hit evidence with `srcwalk show <path>:<line> -C 10`."
-        };
+    // When a confirmed-structural-target block exists, it already owns the
+    // next action(s); appending a generic guidance `> Next:` here would create
+    // a competing primary action. Only add the numeric exact-hit guidance when
+    // there is no structural target (text/access/name occurrence evidence).
+    if result.total_found > 0 && !has_structural_next_targets {
         append_next_action(
             &mut footer,
-            NextAction::guidance(guidance, "read exact hit evidence", 50),
+            NextAction::guidance(
+                "read exact hit evidence with `srcwalk show <path>:<line> -C 10`.",
+                "read exact hit evidence",
+                50,
+            ),
         );
     }
 

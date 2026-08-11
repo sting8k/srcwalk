@@ -1265,11 +1265,11 @@ fn discover_text_or_owner_caveat_survives_budget_truncation() {
 }
 
 #[test]
-fn discover_text_or_non_go_abstains_from_owner_evidence() {
-    // Owner evidence is Go-only. A non-Go Text OR must not emit owner rollup
-    // or mechanical-call markers, even though its output uses `- [` bullet
-    // shapes elsewhere. Assert absence of the exact owner markers, not `- [`.
-    let dir = temp_repo("discover_text_or_non_go_owner");
+fn discover_text_or_python_attributes_owners_without_go_call_appendix() {
+    // US-067 phase 1: Python files now carry owner attribution. The owner
+    // rollup is emitted, the Go-only mechanical-call appendix is NOT (no Go
+    // call-analysis attempt), and the non-Go honesty caveat applies.
+    let dir = temp_repo("discover_text_or_python_owner");
     fs::write(
         dir.join("app.py"),
         "def apply():\n    pass\ndef set():\n    apply()\ndef flush():\n    set()\n",
@@ -1295,7 +1295,11 @@ fn discover_text_or_non_go_abstains_from_owner_evidence() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.contains("owners (#N=Nth query term"), "{stdout}");
+    // Python owner rollup is rendered.
+    assert!(stdout.contains("owners (#N=Nth query term"), "{stdout}");
+    assert!(stdout.contains("apply:1-2[#1]"), "{stdout}");
+    assert!(stdout.contains("set:3-4[#1,#2]"), "{stdout}");
+    // No Go call appendix is emitted for a non-Go-only query.
     assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
     assert!(
         !stdout.contains("[recv=same package-qualified receiver type"),
@@ -1303,6 +1307,66 @@ fn discover_text_or_non_go_abstains_from_owner_evidence() {
     );
     assert!(
         !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    // Non-Go honesty caveat present, and it must not imply call analysis ran.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_malformed_go_with_python_owners_suppresses_go_call_appendix() {
+    // Regression for the gate bug: a malformed Go input must not leave
+    // `go_call_analysis_attempted` true, because `build_owner_link_evidence`
+    // only inserts successfully-parsed Go files into its analysis set. Python
+    // owner attribution is retained, but the Go-only mechanical-call appendix
+    // (zero-edge sentence + call caveat) must NOT render.
+    let dir = temp_repo("discover_malformed_go_suppresses_go_appendix");
+    fs::write(dir.join("app.py"), "def apply():\n    pass\n").unwrap();
+    // Deterministically malformed Go: unclosed parameter list.
+    fs::write(dir.join("broken.go"), "package p\nfunc main( {\n").unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "apply,main",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Python owner evidence is retained.
+    assert!(stdout.contains("[owner apply@1-2]"), "{stdout}");
+    // The malformed Go hit is present but carries NO owner attribution.
+    assert!(stdout.contains("broken.go:2"), "{stdout}");
+    assert!(!stdout.contains("broken.go:2 [owner"), "{stdout}");
+    // No Go zero-edge sentence, no Go call caveat, no Mechanical Go header.
+    assert!(
+        !stdout.contains("No direct name-level call evidence"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    // Non-Go honesty caveat is retained.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
         "{stdout}"
     );
 

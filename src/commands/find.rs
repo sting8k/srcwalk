@@ -10,6 +10,7 @@ use crate::commands::multi_scope::{
     parse_multi_symbol_query, unsupported_find_syntax_error, use_files_error,
 };
 use crate::commands::section_disambiguation::disambiguate_glob_for_section;
+use crate::evidence::owner_links::OWNER_NON_GO_CAVEAT;
 use crate::evidence::owner_links::{
     build_owner_link_evidence, OwnerAnchor, OwnerCallMechanism, OwnerLinkEvidence,
     OwnerLinkHitInput, OWNER_LINK_CAVEAT, OWNER_LINK_EDGE_CAP, OWNER_LINK_ZERO_EDGE,
@@ -710,41 +711,59 @@ fn render_owner_link_appendix(owner_links: &OwnerLinkEvidence, scope: &Path) -> 
         return String::new();
     }
     let mut rendered = String::new();
-    if owner_links.edges.is_empty() {
-        if owner_links.attributed_owner_count() >= 2 {
-            let _ = write!(rendered, "\n\n{OWNER_LINK_ZERO_EDGE}");
+
+    // The Go mechanical-call appendix (zero-edge sentence, "## Mechanical Go
+    // calls", and its call-specific caveat) is gated only by an explicit,
+    // SUCCESSFUL Go call-analysis attempt PLUS actual Go owner evidence. It is
+    // never driven by non-Go owner presence.
+    if owner_links.go_call_analysis_attempted && owner_links.has_go_owners() {
+        if owner_links.edges.is_empty() {
+            // The zero-edge sentence means "no direct call evidence among the
+            // Go hit owners". It is only valid for a Go-only result, and only
+            // when at least two distinct Go owners exist (so the claim is
+            // meaningful). Non-Go owners must not satisfy its threshold.
+            if !owner_links.has_non_go_owners() && owner_links.attributed_go_owner_count() >= 2 {
+                let _ = write!(rendered, "\n\n{OWNER_LINK_ZERO_EDGE}");
+            }
+        } else {
+            rendered.push_str("\n\n## Mechanical Go calls ");
+            rendered.push_str(OWNER_LINK_MECH_LEGEND);
+            for edge in owner_links.edges.iter().take(OWNER_LINK_EDGE_CAP) {
+                let call_path = format::rel_nonempty(&edge.caller.path, scope);
+                let cand_path = format::rel_nonempty(&edge.candidate.path, scope);
+                // `@:` explicitly means the same call file; cross-file candidates
+                // keep the full repo-relative path.
+                let cand_loc = if call_path == cand_path {
+                    format!(
+                        "@:{}-{}",
+                        edge.candidate.start_line, edge.candidate.end_line
+                    )
+                } else {
+                    format!(
+                        "@{cand_path}:{}-{}",
+                        edge.candidate.start_line, edge.candidate.end_line
+                    )
+                };
+                let _ = write!(
+                    rendered,
+                    "\n- [{}] {} calls {}@{call_path}:{}; candidate {}{cand_loc}",
+                    owner_call_mechanism_tag(edge.mechanism),
+                    edge.caller.qualified_name(),
+                    edge.callee_name,
+                    edge.call_line,
+                    edge.candidate.qualified_name()
+                );
+            }
         }
-    } else {
-        rendered.push_str("\n\n## Mechanical Go calls ");
-        rendered.push_str(OWNER_LINK_MECH_LEGEND);
-        for edge in owner_links.edges.iter().take(OWNER_LINK_EDGE_CAP) {
-            let call_path = format::rel_nonempty(&edge.caller.path, scope);
-            let cand_path = format::rel_nonempty(&edge.candidate.path, scope);
-            // `@:` explicitly means the same call file; cross-file candidates
-            // keep the full repo-relative path.
-            let cand_loc = if call_path == cand_path {
-                format!(
-                    "@:{}-{}",
-                    edge.candidate.start_line, edge.candidate.end_line
-                )
-            } else {
-                format!(
-                    "@{cand_path}:{}-{}",
-                    edge.candidate.start_line, edge.candidate.end_line
-                )
-            };
-            let _ = write!(
-                rendered,
-                "\n- [{}] {} calls {}@{call_path}:{}; candidate {}{cand_loc}",
-                owner_call_mechanism_tag(edge.mechanism),
-                edge.caller.qualified_name(),
-                edge.callee_name,
-                edge.call_line,
-                edge.candidate.qualified_name()
-            );
-        }
+        let _ = write!(rendered, "\n\n{OWNER_LINK_CAVEAT}");
     }
-    let _ = write!(rendered, "\n\n{OWNER_LINK_CAVEAT}");
+
+    // Non-Go owner attribution gets its own concise honesty caveat, gated by
+    // actually rendered non-Go owner evidence. It must not imply call analysis
+    // ran for non-Go languages.
+    if owner_links.has_non_go_owners() {
+        let _ = write!(rendered, "\n\n{OWNER_NON_GO_CAVEAT}");
+    }
     rendered
 }
 
@@ -2036,6 +2055,11 @@ mod tests {
     }
 
     fn anchor(path: &str, name: &str, receiver: &str, s: u32, e: u32) -> OwnerAnchor {
+        let display_name = if receiver.is_empty() {
+            name.to_string()
+        } else {
+            format!("{receiver}.{name}")
+        };
         OwnerAnchor {
             path: PathBuf::from(path),
             name: name.into(),
@@ -2044,6 +2068,8 @@ mod tests {
             package_dir: PathBuf::from("."),
             start_line: s,
             end_line: e,
+            language: crate::types::Lang::Go,
+            display_name,
         }
     }
 
@@ -2059,6 +2085,7 @@ mod tests {
         let ev = OwnerLinkEvidence {
             hits,
             edges: edges.to_vec(),
+            go_call_analysis_attempted: true,
         };
         render_owner_link_appendix(&ev, Path::new(""))
     }
@@ -2241,6 +2268,7 @@ mod tests {
         let ev = OwnerLinkEvidence {
             hits,
             edges: Vec::new(),
+            go_call_analysis_attempted: true,
         };
         let mut rendered = String::new();
         render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
@@ -2318,11 +2346,106 @@ mod tests {
         let ev = OwnerLinkEvidence {
             hits,
             edges: Vec::new(),
+            go_call_analysis_attempted: true,
         };
         let mut rendered = String::new();
         render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
         // Duplicate #1,#2 both attribute; zero-hit #4 gap keeps beta at #5 with
         // count multiplier 2. Order within owner is by ascending index.
         assert!(rendered.contains("DB.Set:10-40[#1,#2,#5*2]"), "{rendered}");
+    }
+    fn py_anchor(path: &str, name: &str, s: u32, e: u32) -> OwnerAnchor {
+        OwnerAnchor {
+            path: PathBuf::from(path),
+            name: name.into(),
+            receiver_var: None,
+            receiver_type: None,
+            package_dir: PathBuf::from("."),
+            start_line: s,
+            end_line: e,
+            language: crate::types::Lang::Python,
+            display_name: name.to_string(),
+        }
+    }
+
+    fn go_hit(anchor: OwnerAnchor, line: u32) -> OwnedTextHit {
+        OwnedTextHit {
+            path: anchor.path.clone(),
+            line,
+            owner: anchor,
+        }
+    }
+
+    #[test]
+    fn non_go_only_result_never_renders_go_zero_edge_or_caveat() {
+        // Two Python owners, no Go analysis attempted -> no Go zero-edge, no
+        // Go mechanical caveat; only the non-Go honesty caveat may appear.
+        let py1 = py_anchor("app.py", "apply", 1, 2);
+        let py2 = py_anchor("app.py", "set", 3, 4);
+        let ev = OwnerLinkEvidence {
+            hits: vec![go_hit(py1, 1), go_hit(py2, 3)],
+            edges: Vec::new(),
+            go_call_analysis_attempted: false,
+        };
+        let out = render_owner_link_appendix(&ev, Path::new(""));
+        assert!(!out.contains("No direct name-level call evidence"), "{out}");
+        assert!(
+            !out.contains("structural owner and mechanically filtered"),
+            "{out}"
+        );
+        assert!(!out.contains("## Mechanical Go calls"), "{out}");
+        assert!(
+            out.contains("structural lexical ownership candidates"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn single_go_owner_with_python_owners_suppresses_zero_edge_sentence() {
+        // 1 Go owner + 2 Python owners: Go analysis ran, but the zero-edge
+        // sentence must NOT render (it would be a measured-zero claim across
+        // languages it cannot support). The Go caveat and non-Go caveat may.
+        let go = anchor("a.go", "Run", "DB", 10, 40);
+        let py1 = py_anchor("app.py", "apply", 1, 2);
+        let py2 = py_anchor("app.py", "set", 3, 4);
+        let ev = OwnerLinkEvidence {
+            hits: vec![go_hit(go, 12), go_hit(py1, 1), go_hit(py2, 3)],
+            edges: Vec::new(),
+            go_call_analysis_attempted: true,
+        };
+        let out = render_owner_link_appendix(&ev, Path::new(""));
+        assert!(!out.contains("No direct name-level call evidence"), "{out}");
+        assert!(
+            out.contains("structural owner and mechanically filtered"),
+            "{out}"
+        );
+        assert!(
+            out.contains("structural lexical ownership candidates"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn two_go_owners_no_edges_preserves_zero_edge_and_go_caveat() {
+        // >=2 Go owners, Go-only, no edges -> zero-edge + Go caveat (byte
+        // identity preserved for the pure-Go case).
+        let go1 = anchor("a.go", "Run", "DB", 10, 40);
+        let go2 = anchor("a.go", "Apply", "DB", 50, 80);
+        let ev = OwnerLinkEvidence {
+            hits: vec![go_hit(go1, 12), go_hit(go2, 52)],
+            edges: Vec::new(),
+            go_call_analysis_attempted: true,
+        };
+        let out = render_owner_link_appendix(&ev, Path::new(""));
+        assert!(out.contains("No direct name-level call evidence"), "{out}");
+        assert!(
+            out.contains("structural owner and mechanically filtered"),
+            "{out}"
+        );
+        // Pure Go: no non-Go caveat.
+        assert!(
+            !out.contains("structural lexical ownership candidates"),
+            "{out}"
+        );
     }
 }

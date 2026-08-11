@@ -94,7 +94,7 @@ pub struct RegexCoOccurrenceQuery {
 
 /// Provider-owned language identity for removable capability modules.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProviderLang {
     id: LangId,
     label: &'static str,
@@ -121,7 +121,7 @@ impl ProviderLang {
 /// Programming language, carried through the type system so downstream
 /// code never re-detects. Built-in IDs stay closed; provider extensions use
 /// `Lang::Provider` while the compiler still checks built-in coverage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Lang {
     Rust,
     TypeScript,
@@ -176,7 +176,7 @@ impl FileType {
 
 /// What the output contains — shown in the header bracket.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProviderViewMode {
     id: ViewModeId,
     label: &'static str,
@@ -377,7 +377,7 @@ pub struct OutlineEntry {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProviderOutlineKind {
     id: OutlineKindId,
     outline_label: &'static str,
@@ -426,7 +426,7 @@ impl ProviderOutlineKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum OutlineKind {
     Import,
     Function,

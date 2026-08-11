@@ -10,24 +10,39 @@ use crate::types::{Lang, OutlineEntry, OutlineKind};
 pub(crate) const OWNER_LINK_EDGE_CAP: usize = 10;
 pub(crate) const OWNER_LINK_CAVEAT: &str = "> Caveat: structural owner and mechanically filtered direct-call evidence only; not runtime order, dynamic dispatch, or an inferred chain.";
 pub(crate) const OWNER_LINK_ZERO_EDGE: &str = "No direct name-level call evidence among hit owners. Dynamic dispatch, DI, callbacks, and protocol wiring are not ruled out.";
+/// Honesty caveat for non-Go owner attribution: ranges are structural lexical
+/// ownership candidates, not runtime ownership/binding proof, and no call
+/// analysis was run for non-Go languages.
+pub(crate) const OWNER_NON_GO_CAVEAT: &str =
+    "> Caveat: owner ranges are structural lexical ownership candidates, not runtime ownership or binding proof; no call analysis was run for non-Go languages.";
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) struct OwnerAnchor {
     pub(crate) path: PathBuf,
+    /// Unqualified callable name (e.g. `handle`).
     pub(crate) name: String,
+    /// Go edge analysis may use a receiver binding; other languages leave this
+    /// `None`. Never overload this field to encode non-Go containers.
     pub(crate) receiver_var: Option<String>,
+    /// Go receiver type used only for Go edge identity. Non-Go anchors leave
+    /// this `None`; their qualified identity lives in `display_name`.
     pub(crate) receiver_type: Option<String>,
     pub(crate) package_dir: PathBuf,
     pub(crate) start_line: u32,
     pub(crate) end_line: u32,
+    /// Source language of the owning file.
+    pub(crate) language: Lang,
+    /// Explicit display-qualified name for every owner (e.g. `Service.handle`,
+    /// `Outer.Inner.handle`, `DB.Set`). This is the single source of truth for
+    /// rendered identity; it is required for ALL anchors, including Go. Go
+    /// receiver binding stays in `receiver_var`/`receiver_type` and is never
+    /// derived from this field.
+    pub(crate) display_name: String,
 }
 
 impl OwnerAnchor {
     pub(crate) fn qualified_name(&self) -> String {
-        self.receiver_type.as_ref().map_or_else(
-            || self.name.clone(),
-            |receiver| format!("{receiver}.{}", self.name),
-        )
+        self.display_name.clone()
     }
 
     fn receiver_identity(&self) -> Option<(&Path, &str)> {
@@ -63,6 +78,11 @@ pub(crate) struct OwnerCallEvidence {
 pub(crate) struct OwnerLinkEvidence {
     pub(crate) hits: Vec<OwnedTextHit>,
     pub(crate) edges: Vec<OwnerCallEvidence>,
+    /// True when Go call/edge analysis was actually attempted for this query
+    /// (at least one Go file was parsed for edge evidence). This is the only
+    /// gate for the Go mechanical-call appendix; it is never inferred from
+    /// `edges.is_empty()`.
+    pub(crate) go_call_analysis_attempted: bool,
 }
 
 impl OwnerLinkEvidence {
@@ -73,16 +93,32 @@ impl OwnerLinkEvidence {
             .map(|hit| &hit.owner)
     }
 
-    pub(crate) fn attributed_owner_count(&self) -> usize {
+    pub(crate) fn has_owners(&self) -> bool {
+        !self.hits.is_empty()
+    }
+
+    /// Whether any attributed owner is a non-Go language. Derived from the
+    /// anchors' required `language` field so it cannot drift from the evidence.
+    pub(crate) fn has_non_go_owners(&self) -> bool {
+        self.hits.iter().any(|hit| hit.owner.language != Lang::Go)
+    }
+
+    /// Whether any attributed owner is Go. Gating the Go mechanical appendix on
+    /// this (not merely on `go_call_analysis_attempted`) prevents a non-Go-only
+    /// or mixed result from rendering a Go zero-edge/caveat it cannot support.
+    pub(crate) fn has_go_owners(&self) -> bool {
+        self.hits.iter().any(|hit| hit.owner.language == Lang::Go)
+    }
+
+    /// Count of distinct attributed Go owners. The Go zero-edge sentence is
+    /// gated on this (>= 2) so two Python owners can never satisfy it.
+    pub(crate) fn attributed_go_owner_count(&self) -> usize {
         self.hits
             .iter()
+            .filter(|hit| hit.owner.language == Lang::Go)
             .map(|hit| hit.owner.clone())
             .collect::<BTreeSet<_>>()
             .len()
-    }
-
-    pub(crate) fn has_owners(&self) -> bool {
-        !self.hits.is_empty()
     }
 }
 
@@ -130,9 +166,15 @@ enum Initializer {
 }
 
 pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> OwnerLinkEvidence {
+    // Group inputs by path, tracking which go through the Go (owners + edges)
+    // pipeline versus a non-Go owner-only pipeline. Non-Go files are routed by
+    // their detected language; anything unsupported is skipped.
     let mut by_path: BTreeMap<PathBuf, Vec<&OwnerLinkHitInput<'_>>> = BTreeMap::new();
     for input in inputs {
-        if crate::lang::detect_file_type(input.path) == crate::types::FileType::Code(Lang::Go) {
+        let detected = crate::lang::detect_file_type(input.path);
+        let is_go = detected == crate::types::FileType::Code(Lang::Go);
+        let is_python = detected == crate::types::FileType::Code(Lang::Python);
+        if is_go || is_python {
             by_path
                 .entry(input.path.to_path_buf())
                 .or_default()
@@ -146,6 +188,27 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
         let Ok(content) = fs::read_to_string(path) else {
             continue;
         };
+        let detected = crate::lang::detect_file_type(path);
+        if detected == crate::types::FileType::Code(Lang::Python) {
+            // Python is owner-only: no call edges are inferred in phase 1.
+            let Some((regions, errors)) =
+                crate::evidence::owners::python::python_regions(path, &content)
+            else {
+                continue;
+            };
+            for input in path_inputs {
+                if let Some(owner) =
+                    crate::evidence::owners::python::python_owner_for(&regions, &errors, input.line)
+                {
+                    hits.push(OwnedTextHit {
+                        path: path.clone(),
+                        line: input.line,
+                        owner: owner.clone(),
+                    });
+                }
+            }
+            continue;
+        }
         let package_dir = canonical_package_dir(path);
         let Some((owners, functions)) = go_file_owners(path, &package_dir, &content) else {
             // Malformed/unparsed Go: preserve raw hits, omit owner/edge evidence.
@@ -224,7 +287,17 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
             .then(a.candidate.start_line.cmp(&b.candidate.start_line))
     });
 
-    OwnerLinkEvidence { hits, edges }
+    // `files` holds exactly the Go files that parsed successfully and entered
+    // edge-analysis setup. A malformed/unparseable Go input is skipped before
+    // insertion, so this is the only honest signal that Go call/edge analysis
+    // was actually attempted for the query.
+    let go_call_analysis_attempted = !files.is_empty();
+
+    OwnerLinkEvidence {
+        hits,
+        edges,
+        go_call_analysis_attempted,
+    }
 }
 
 fn resolve_mechanism(
@@ -502,6 +575,9 @@ fn collect_file_owners(
                 Some(Some((receiver_var, receiver_type))) => {
                     let receiver_type =
                         (!receiver_type.is_empty()).then_some(receiver_type.clone());
+                    let display_name = receiver_type
+                        .as_ref()
+                        .map_or_else(|| entry.name.clone(), |r| format!("{r}.{}", entry.name));
                     owners.push(FileOwner {
                         anchor: OwnerAnchor {
                             path: path.to_path_buf(),
@@ -511,6 +587,8 @@ fn collect_file_owners(
                             package_dir: package_dir.to_path_buf(),
                             start_line: entry.start_line,
                             end_line: entry.end_line,
+                            language: Lang::Go,
+                            display_name,
                         },
                     });
                 }
@@ -524,6 +602,8 @@ fn collect_file_owners(
                             package_dir: package_dir.to_path_buf(),
                             start_line: entry.start_line,
                             end_line: entry.end_line,
+                            language: Lang::Go,
+                            display_name: entry.name.clone(),
                         },
                     });
                 }
@@ -1624,6 +1704,8 @@ mod tests {
                     package_dir: dir.clone(),
                     start_line: 4,
                     end_line: 4,
+                    language: Lang::Go,
+                    display_name: "A.Set".into(),
                 },
             },
             FileOwner {
@@ -1635,6 +1717,8 @@ mod tests {
                     package_dir: dir.clone(),
                     start_line: 4,
                     end_line: 4,
+                    language: Lang::Go,
+                    display_name: "B.Set".into(),
                 },
             },
         ];

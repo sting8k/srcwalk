@@ -175,7 +175,8 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
         let is_go = detected == crate::types::FileType::Code(Lang::Go);
         let is_python = detected == crate::types::FileType::Code(Lang::Python);
         let is_rust = detected == crate::types::FileType::Code(Lang::Rust);
-        if is_go || is_python || is_rust {
+        let is_javascript = detected == crate::types::FileType::Code(Lang::JavaScript);
+        if is_go || is_python || is_rust || is_javascript {
             by_path
                 .entry(input.path.to_path_buf())
                 .or_default()
@@ -220,6 +221,26 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
             for input in path_inputs {
                 if let Some(owner) =
                     crate::evidence::owners::rust::rust_owner_for(&regions, &errors, input.line)
+                {
+                    hits.push(OwnedTextHit {
+                        path: path.clone(),
+                        line: input.line,
+                        owner: owner.clone(),
+                    });
+                }
+            }
+            continue;
+        }
+        if detected == crate::types::FileType::Code(Lang::JavaScript) {
+            // JavaScript is owner-only: no call edges are inferred in phase 3B.
+            let Some((regions, errors)) =
+                crate::evidence::owners::js_ts::js_regions(path, &content)
+            else {
+                continue;
+            };
+            for input in path_inputs {
+                if let Some(owner) =
+                    crate::evidence::owners::js_ts::js_owner_for(&regions, &errors, input.line)
                 {
                     hits.push(OwnedTextHit {
                         path: path.clone(),

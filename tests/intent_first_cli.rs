@@ -1319,6 +1319,103 @@ fn discover_text_or_python_attributes_owners_without_go_call_appendix() {
 }
 
 #[test]
+fn discover_text_or_javascript_attributes_owners_without_go_call_appendix() {
+    // US-067 phase 3: JavaScript files now carry owner attribution. The owner
+    // rollup is emitted, the Go-only mechanical-call appendix is NOT (no Go
+    // call-analysis attempt), and the non-Go honesty caveat applies.
+    let dir = temp_repo("discover_text_or_javascript_owner");
+    fs::write(
+        dir.join("app.js"),
+        "function apply() {\n    return 1;\n}\nfunction set() {\n    apply();\n}\nfunction flush() {\n    set();\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "apply,set,flush",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // JavaScript owner rollup is rendered with dot-less top-level names.
+    assert!(stdout.contains("owners (#N=Nth query term"), "{stdout}");
+    assert!(stdout.contains("apply:1-3[#1]"), "{stdout}");
+    assert!(stdout.contains("set:4-6[#1,#2]"), "{stdout}");
+    assert!(stdout.contains("flush:7-9[#2,#3]"), "{stdout}");
+    // No Go call appendix is emitted for a non-Go-only query.
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    // Non-Go honesty caveat present, and it must not imply call analysis ran.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_jsx_routes_through_javascript_grammar_with_callback_barrier() {
+    // A real `.jsx` file must route through the JavaScript grammar (JSX
+    // elements parse), the named component gets an exact owner, and the inline
+    // JSX callback (an anonymous arrow) must NOT fall through as a bogus owner.
+    // The non-Go honesty caveat holds and no Go call appendix is emitted.
+    let dir = temp_repo("discover_jsx_owner_barrier");
+    fs::write(
+        dir.join("app.jsx"),
+        "function App() {\n  return <button onClick={() => { util(); }}>Click</button>;\n}\nfunction util() {\n  return 1;\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover", "App,util", "--match", "any", "--as", "text", "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Named component routes through JS grammar with an exact owner.
+    assert!(stdout.contains("app.jsx:1 [owner App@1-3]"), "{stdout}");
+    assert!(stdout.contains("app.jsx:4 [owner util@4-6]"), "{stdout}");
+    // The inline JSX callback line is an anonymous barrier: it does NOT carry
+    // its own `[owner ...]` and does not fall through to a bogus name.
+    assert!(!stdout.contains("app.jsx:2 [owner"), "{stdout}");
+    // Non-Go honesty caveat present; no Go mechanical-call appendix.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn discover_malformed_go_with_python_owners_suppresses_go_call_appendix() {
     // Regression for the gate bug: a malformed Go input must not leave
     // `go_call_analysis_attempted` true, because `build_owner_link_evidence`

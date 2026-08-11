@@ -1416,6 +1416,131 @@ fn discover_jsx_routes_through_javascript_grammar_with_callback_barrier() {
 }
 
 #[test]
+fn discover_typescript_attributes_owners_without_go_call_appendix() {
+    // A real `.ts` file routes through the TypeScript grammar: namespace
+    // nesting yields dot-joined owners, exact ranges render, and the non-Go
+    // honesty caveat holds with no Go call appendix.
+    let dir = temp_repo("discover_typescript_owner");
+    fs::write(
+        dir.join("app.ts"),
+        "namespace A.B {\n    export function foo() {}\n    export class C {\n        bar() {}\n    }\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover", "foo,bar", "--match", "any", "--as", "text", "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("app.ts:2 [owner A.B.foo@2-2]"), "{stdout}");
+    assert!(
+        stdout.contains("app.ts:4 [owner A.B.C.bar@4-4]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_tsx_routes_through_tsx_grammar_with_callback_barrier() {
+    // A real `.tsx` file routes through the TSX grammar: the named component is
+    // an exact owner, the inline JSX callback is an anonymous barrier (no bogus
+    // owner), and the non-Go caveat/no-Go-appendix holds.
+    let dir = temp_repo("discover_tsx_owner_barrier");
+    fs::write(
+        dir.join("app.tsx"),
+        "function App() {\n  return <button onClick={() => { util(); }}>Go</button>;\n}\nfunction util() {\n  return 1;\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover", "App,util", "--match", "any", "--as", "text", "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("app.tsx:1 [owner App@1-3]"), "{stdout}");
+    assert!(stdout.contains("app.tsx:4 [owner util@4-6]"), "{stdout}");
+    assert!(!stdout.contains("app.tsx:2 [owner"), "{stdout}");
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_mts_cts_route_owners_through_existing_lang_mapping() {
+    // `.mts`/`.cts` share the TypeScript Lang tier via the existing extension
+    // mapping (no extension hacks): both carry owner attribution.
+    let dir = temp_repo("discover_mts_cts_owner_routing");
+    fs::write(
+        dir.join("mod.mts"),
+        "namespace N {\n    export function foo() {}\n}\n",
+    )
+    .unwrap();
+    fs::write(dir.join("main.cts"), "class Svc {\n    handle() {}\n}\n").unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "foo,handle",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("mod.mts:2 [owner N.foo@2-2]"), "{stdout}");
+    assert!(
+        stdout.contains("main.cts:2 [owner Svc.handle@2-2]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn discover_malformed_go_with_python_owners_suppresses_go_call_appendix() {
     // Regression for the gate bug: a malformed Go input must not leave
     // `go_call_analysis_attempted` true, because `build_owner_link_evidence`

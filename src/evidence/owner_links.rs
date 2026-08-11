@@ -175,8 +175,11 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
         let is_go = detected == crate::types::FileType::Code(Lang::Go);
         let is_python = detected == crate::types::FileType::Code(Lang::Python);
         let is_rust = detected == crate::types::FileType::Code(Lang::Rust);
-        let is_javascript = detected == crate::types::FileType::Code(Lang::JavaScript);
-        if is_go || is_python || is_rust || is_javascript {
+        let is_js_ts_family = matches!(
+            detected,
+            crate::types::FileType::Code(Lang::JavaScript | Lang::TypeScript | Lang::Tsx)
+        );
+        if is_go || is_python || is_rust || is_js_ts_family {
             by_path
                 .entry(input.path.to_path_buf())
                 .or_default()
@@ -231,16 +234,19 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
             }
             continue;
         }
-        if detected == crate::types::FileType::Code(Lang::JavaScript) {
-            // JavaScript is owner-only: no call edges are inferred in phase 3B.
+        if let crate::types::FileType::Code(
+            owner_lang @ (Lang::JavaScript | Lang::TypeScript | Lang::Tsx),
+        ) = detected
+        {
+            // JS/TS/TSX is owner-only: no call edges are inferred in phases 3B/3C.
             let Some((regions, errors)) =
-                crate::evidence::owners::js_ts::js_regions(path, &content)
+                crate::evidence::owners::js_ts::regions_for(owner_lang, path, &content)
             else {
                 continue;
             };
             for input in path_inputs {
                 if let Some(owner) =
-                    crate::evidence::owners::js_ts::js_owner_for(&regions, &errors, input.line)
+                    crate::evidence::owners::js_ts::owner_for(&regions, &errors, input.line)
                 {
                     hits.push(OwnedTextHit {
                         path: path.clone(),

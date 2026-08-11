@@ -1369,6 +1369,112 @@ fn discover_malformed_go_with_python_owners_suppresses_go_call_appendix() {
         stdout.contains("structural lexical ownership candidates"),
         "{stdout}"
     );
+}
+
+#[test]
+fn discover_text_or_rust_attributes_owners_without_go_call_appendix() {
+    // US-067 phase 2: Rust files now carry owner attribution. The owner rollup
+    // is emitted, the Go-only mechanical-call appendix is NOT (no Go call-
+    // analysis attempt), and the non-Go honesty caveat applies.
+    let dir = temp_repo("discover_text_or_rust_owner");
+    fs::write(
+        dir.join("app.rs"),
+        "fn apply() {\n}\nfn set() {\n    apply();\n}\nfn flush() {\n    set();\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "apply,set,flush",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Rust owner rollup is rendered with exact owner ranges.
+    assert!(stdout.contains("owners (#N=Nth query term"), "{stdout}");
+    assert!(stdout.contains("apply:1-2[#1]"), "{stdout}");
+    assert!(stdout.contains("set:3-5[#1,#2]"), "{stdout}");
+    assert!(stdout.contains("flush:6-8[#2,#3]"), "{stdout}");
+    // No Go call appendix is emitted for a non-Go-only query.
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        !stdout.contains("[recv=same package-qualified receiver type"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    // Non-Go honesty caveat present, and it must not imply call analysis ran.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_mixed_go_and_rust_attributes_both_and_go_appendix() {
+    // Phase 2 capability honesty: a mixed Go + Rust query retains Rust owner
+    // attribution AND the Go-only mechanical-call appendix (Go call analysis
+    // ran), plus the non-Go honesty caveat for the Rust evidence.
+    let dir = temp_repo("discover_mixed_go_rust_owner");
+    fs::write(
+        dir.join("app.rs"),
+        "fn apply() {\n}\nfn set() {\n    apply();\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("db.go"),
+        "package db\ntype DB struct{}\nfunc (d *DB) Apply() { /* apply body */ }\nfunc (d *DB) Set() { /* set body */ d.Apply() }\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "apply,set",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Rust owner evidence is retained.
+    assert!(stdout.contains("[owner apply@1-2]"), "{stdout}");
+    // Go mechanical-call appendix is present (Go call analysis ran).
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    // Non-Go honesty caveat present for the Rust owner evidence.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

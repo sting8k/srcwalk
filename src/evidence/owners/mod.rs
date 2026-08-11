@@ -14,6 +14,7 @@
 //! model, the unique-narrowest selection, and local-`ERROR` primitives.
 
 pub(crate) mod python;
+pub(crate) mod rust;
 
 use crate::evidence::owner_links::OwnerAnchor;
 

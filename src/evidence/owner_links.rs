@@ -174,7 +174,8 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
         let detected = crate::lang::detect_file_type(input.path);
         let is_go = detected == crate::types::FileType::Code(Lang::Go);
         let is_python = detected == crate::types::FileType::Code(Lang::Python);
-        if is_go || is_python {
+        let is_rust = detected == crate::types::FileType::Code(Lang::Rust);
+        if is_go || is_python || is_rust {
             by_path
                 .entry(input.path.to_path_buf())
                 .or_default()
@@ -199,6 +200,26 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
             for input in path_inputs {
                 if let Some(owner) =
                     crate::evidence::owners::python::python_owner_for(&regions, &errors, input.line)
+                {
+                    hits.push(OwnedTextHit {
+                        path: path.clone(),
+                        line: input.line,
+                        owner: owner.clone(),
+                    });
+                }
+            }
+            continue;
+        }
+        if detected == crate::types::FileType::Code(Lang::Rust) {
+            // Rust is owner-only: no call edges are inferred in phase 2.
+            let Some((regions, errors)) =
+                crate::evidence::owners::rust::rust_regions(path, &content)
+            else {
+                continue;
+            };
+            for input in path_inputs {
+                if let Some(owner) =
+                    crate::evidence::owners::rust::rust_owner_for(&regions, &errors, input.line)
                 {
                     hits.push(OwnedTextHit {
                         path: path.clone(),
@@ -234,9 +255,15 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
         );
     }
 
+    // Edge analysis is Go-only: the candidate set must contain ONLY Go owners.
+    // `hits` also carries Python/Rust owners, but they must never populate
+    // `OwnerCallEvidence` — a same-name non-Go owner in the same package/dir
+    // would otherwise create a fake Go->non-Go bare edge (cross-language
+    // contamination). Callers and candidates accordingly remain Go-only.
     let candidate_owners = hits
         .iter()
         .map(|hit| hit.owner.clone())
+        .filter(|owner| owner.language == Lang::Go)
         .collect::<BTreeSet<_>>();
     let constructors = collect_constructors(&files);
     let mut edges = BTreeSet::new();
@@ -1313,6 +1340,53 @@ mod tests {
         // abstain (param binding); ClosureShadow's inner `b *Other` shadows and
         // its `b.Close()` resolves to Other.Close, not Batch.Close.
         assert_eq!(close_edges.len(), 0, "{:#?}", evidence.edges);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mixed_go_rust_python_owners_keep_edges_go_only() {
+        // US-067 cross-language guard: Go edge resolution must only ever link
+        // Go-owned callers to Go-owned candidates. Python/Rust owners sharing
+        // the same bare callable name are owner-only (no call analysis) and must
+        // never populate `OwnerCallEvidence`; a mixed query whose hits include a
+        // non-Go `helper` must still emit only Go->Go edges, and the valid Go
+        // bare edge must remain unchanged.
+        let dir = temp_dir("cross-lang");
+        let go = dir.join("handler.go");
+        let rs = dir.join("other.rs");
+        let py = dir.join("other.py");
+        fs::write(
+            &go,
+            "package p\nfunc helper() {}\nfunc Run() {\n    helper()\n}\n",
+        )
+        .unwrap();
+        fs::write(&rs, "fn helper() {\n    let x = 1;\n}\n").unwrap();
+        fs::write(&py, "def helper():\n    pass\n").unwrap();
+        let mut all = inputs("hit", &go, &[2, 3]);
+        all.extend(inputs("hit", &rs, &[1]));
+        all.extend(inputs("hit", &py, &[1]));
+        let evidence = build_owner_link_evidence(&all);
+
+        // Every attributed edge is Go->Go; no non-Go path appears as a caller
+        // or candidate anywhere (the cross-language candidate never renders).
+        for edge in &evidence.edges {
+            assert_eq!(edge.caller.language, Lang::Go, "{:#?}", evidence.edges);
+            assert_eq!(edge.candidate.language, Lang::Go, "{:#?}", evidence.edges);
+            assert_eq!(edge.caller.path, go, "{:#?}", evidence.edges);
+            assert_eq!(edge.candidate.path, go, "{:#?}", evidence.edges);
+        }
+        // The valid Go->Go bare edge is preserved unchanged.
+        let helper_edges = evidence
+            .edges
+            .iter()
+            .filter(|edge| edge.callee_name == "helper")
+            .collect::<Vec<_>>();
+        assert_eq!(helper_edges.len(), 1, "{:#?}", evidence.edges);
+        assert_eq!(helper_edges[0].caller.name, "Run");
+        assert_eq!(
+            helper_edges[0].mechanism,
+            OwnerCallMechanism::SamePackageBareInvocation
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

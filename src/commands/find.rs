@@ -2448,4 +2448,363 @@ mod tests {
             "{out}"
         );
     }
+
+    // ---------- US-067: deterministic owner replay audit harness (test-only) ----------
+    //
+    // Taps the same production seam as `run_text_or_*` (find.rs ~210-252): raw per-term
+    // `search_content_raw_with_artifact` results are filtered, paginated with a no-omission
+    // assertion, and fed ONCE into `build_owner_link_evidence`. Output is deterministic
+    // TSV (no timestamps/absolute machine paths) so an external pinned-repo replay can be
+    // diffed. No barrier/error classification and no AST/name logic live here.
+
+    /// One raw term-hit row with an optional attached owner anchor.
+    #[derive(Clone)]
+    struct AuditRow {
+        term_index: usize,
+        term: String,
+        /// Repo-relative, `/`-normalized path (used for emission/sorting).
+        rel: String,
+        /// Original path, used only for owner-anchor lookup before emission.
+        path: PathBuf,
+        line: u32,
+        owner: Option<(String, u32, u32)>, // (qualified_name, start, end)
+    }
+
+    /// Fail-fast field guard: a value containing `\t`, `\r`, or `\n` would corrupt
+    /// a TSV column (no escaping scheme is used), so reject it before serialization.
+    fn assert_tsv_safe(field: &str, what: &str) {
+        assert!(
+            !field.contains('\t') && !field.contains('\r') && !field.contains('\n'),
+            "TSV-unsafe {what} field corruption: {field:?}",
+        );
+    }
+
+    /// Deterministic serialization of the three audit outputs. Factored so the
+    /// ignored replay harness and the synthetic dedupe test share one emitter.
+    #[must_use]
+    fn audit_tsv_files(
+        rows: &[AuditRow],
+        per_term: &[(usize, String, usize)], // (term_index, term, total_found)
+    ) -> (String, String, String) {
+        // raw.tsv sorted by (term_index, rel, line).
+        let mut raw = rows.to_vec();
+        raw.sort_by(|a, b| {
+            a.term_index
+                .cmp(&b.term_index)
+                .then(a.rel.cmp(&b.rel))
+                .then(a.line.cmp(&b.line))
+        });
+        let mut raw_tsv = String::from(
+            "term_index\tterm\trelpath\tline\towner_or_empty\tstart_or_empty\tend_or_empty\n",
+        );
+        for r in &raw {
+            assert_tsv_safe(&r.term, "term");
+            assert_tsv_safe(&r.rel, "relpath");
+            let (qn, start, end) = r.owner.as_ref().map_or(
+                (String::new(), String::new(), String::new()),
+                |(qn, s, e)| {
+                    assert_tsv_safe(qn, "qualified_name");
+                    (qn.clone(), s.to_string(), e.to_string())
+                },
+            );
+            raw_tsv.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                r.term_index, r.term, r.rel, r.line, qn, start, end
+            ));
+        }
+
+        // tuples.tsv: DISTINCT sorted (rel, line, qualified_name, start, end).
+        let mut tuple_set: BTreeSet<(String, u32, String, u32, u32)> = BTreeSet::new();
+        for r in rows {
+            if let Some((qn, s, e)) = &r.owner {
+                tuple_set.insert((r.rel.clone(), r.line, qn.clone(), *s, *e));
+            }
+        }
+        let mut tuples_tsv = String::from("relpath\tline\tqualified_name\tstart\tend\n");
+        for (rel, line, qn, s, e) in &tuple_set {
+            tuples_tsv.push_str(&format!("{}\t{}\t{}\t{}\t{}\n", rel, line, qn, s, e));
+        }
+
+        // summary.tsv (key/value, no header noise).
+        let mut summary = String::new();
+        for (idx, term, total) in per_term {
+            assert_tsv_safe(term, "term");
+            let raw_count = rows.iter().filter(|r| r.term_index == *idx).count();
+            summary.push_str(&format!(
+                "per-term\t{}\t{}\t{}\t{}\n",
+                idx, term, total, raw_count
+            ));
+        }
+        let total_raw = rows.len();
+        let unique_pl = rows
+            .iter()
+            .map(|r| (r.rel.clone(), r.line))
+            .collect::<BTreeSet<_>>()
+            .len();
+        let distinct_tuples = tuple_set.len();
+        let distinct_qn = tuple_set
+            .iter()
+            .map(|t| t.2.clone())
+            .collect::<BTreeSet<_>>()
+            .len();
+        let unattributed = rows.iter().filter(|r| r.owner.is_none()).count();
+        summary.push_str(&format!("aggregate\ttotal_raw_term_rows\t{}\n", total_raw));
+        summary.push_str(&format!(
+            "aggregate\tunique_path_line_rows\t{}\n",
+            unique_pl
+        ));
+        summary.push_str(&format!(
+            "aggregate\tdistinct_attributed_tuples\t{}\n",
+            distinct_tuples
+        ));
+        summary.push_str(&format!(
+            "aggregate\tdistinct_qualified_names\t{}\n",
+            distinct_qn
+        ));
+        summary.push_str(&format!(
+            "aggregate\tunattributed_raw_term_rows\t{}\n",
+            unattributed
+        ));
+
+        (raw_tsv, tuples_tsv, summary)
+    }
+
+    /// Repo-relative, `/`-normalized path under the canonical scope. Fails on
+    /// non-UTF8 or any path outside the scope (never emits absolute machine paths).
+    #[must_use]
+    fn audit_relpath(canonical_scope: &Path, path: &Path) -> String {
+        let rel = path
+            .strip_prefix(canonical_scope)
+            .expect("match path is not under the canonical scope");
+        let s = rel
+            .to_str()
+            .expect("non-UTF8 repo-relative path in US-067 audit");
+        s.replace('\\', "/")
+    }
+
+    /// Deterministic (path, line) -> owner map, asserting any duplicate key has a
+    /// byte-identical anchor (one owner per hit location).
+    fn owner_anchor_map(evidence: &OwnerLinkEvidence) -> BTreeMap<(PathBuf, u32), OwnerAnchor> {
+        let mut map = BTreeMap::new();
+        for hit in &evidence.hits {
+            let key = (hit.path.clone(), hit.line);
+            if let Some(prev) = map.get(&key) {
+                assert_eq!(
+                    prev, &hit.owner,
+                    "duplicate (path,line) owner mismatch at {:?}:{}",
+                    hit.path, hit.line
+                );
+            }
+            map.insert(key, hit.owner.clone());
+        }
+        map
+    }
+
+    /// Drives the production search + owner pipeline and writes the three
+    /// deterministic TSV outputs into a FRESH `out_dir`. Panics on any protocol
+    /// breach (non-[1,2,3] term positions, TSV-unsafe term, per-term omission,
+    /// non-UTF8/outside-scope path, duplicate (path,line) owner mismatch, or a
+    /// pre-existing output dir).
+    fn run_us067_replay(scope: &Path, query: &str, limit: usize, out_dir: &Path) {
+        let indexed = indexed_comma_terms(query);
+        let positions: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
+        assert_eq!(
+            positions,
+            vec![1, 2, 3],
+            "SRCWALK_US067_AUDIT_QUERY must be exactly 3 comma terms with original positions [1,2,3] (no empty gaps); got {positions:?}: {query:?}"
+        );
+        for (_, term) in &indexed {
+            assert_tsv_safe(term, "term");
+        }
+
+        let canonical_scope = scope
+            .canonicalize()
+            .expect("SRCWALK_US067_AUDIT_SCOPE must exist and be canonicalizable");
+        // One shared outline cache across all terms, matching the production command.
+        let cache = OutlineCache::default();
+
+        let mut rows: Vec<AuditRow> = Vec::new();
+        let mut per_term: Vec<(usize, String, usize)> = Vec::new();
+
+        for (idx, term) in &indexed {
+            let mut result = search::search_content_raw_with_artifact(
+                term,
+                &canonical_scope,
+                None,
+                ArtifactMode::Source,
+            )
+            .expect("search_content_raw_with_artifact");
+            search::apply_general_filter(&mut result, &canonical_scope, &cache, None)
+                .expect("apply_general_filter");
+            let total_found = result.total_found;
+            search::pagination::paginate(&mut result, Some(limit), 0);
+            assert_eq!(
+                total_found,
+                result.matches.len(),
+                "per-term omission: term {} total_found {} != matches.len() {}; raise SRCWALK_US067_AUDIT_LIMIT >= {}",
+                term, total_found, result.matches.len(), total_found
+            );
+            per_term.push((*idx, term.to_string(), total_found));
+            for m in &result.matches {
+                rows.push(AuditRow {
+                    term_index: *idx,
+                    term: term.to_string(),
+                    rel: audit_relpath(&canonical_scope, &m.path),
+                    path: m.path.clone(),
+                    line: m.line,
+                    owner: None,
+                });
+            }
+        }
+
+        // Build inputs from the stable `rows` paths in a short scope; drop them
+        // before mutating rows so no duplicate path vector is kept alive.
+        let anchors = {
+            let inputs: Vec<OwnerLinkHitInput> = rows
+                .iter()
+                .map(|r| OwnerLinkHitInput {
+                    path: &r.path,
+                    line: r.line,
+                })
+                .collect();
+            let evidence = build_owner_link_evidence(&inputs);
+            owner_anchor_map(&evidence)
+        };
+        for r in &mut rows {
+            r.owner = anchors
+                .get(&(r.path.clone(), r.line))
+                .map(|a| (a.qualified_name(), a.start_line, a.end_line));
+        }
+
+        let (raw_tsv, tuples_tsv, summary_tsv) = audit_tsv_files(&rows, &per_term);
+        assert!(
+            !out_dir.exists(),
+            "SRCWALK_US067_AUDIT_OUT must be a fresh (non-existent) directory; refusing to overwrite {}",
+            out_dir.display()
+        );
+        std::fs::create_dir_all(out_dir).expect("create audit out dir");
+        std::fs::write(out_dir.join("raw.tsv"), raw_tsv).expect("write raw.tsv");
+        std::fs::write(out_dir.join("tuples.tsv"), tuples_tsv).expect("write tuples.tsv");
+        std::fs::write(out_dir.join("summary.tsv"), summary_tsv).expect("write summary.tsv");
+    }
+
+    #[test]
+    fn us067_audit_tsv_deterministic_and_tuples_dedupe() {
+        let rows = vec![
+            AuditRow {
+                term_index: 2,
+                term: "return".into(),
+                rel: "a.ts".into(),
+                path: PathBuf::from("a.ts"),
+                line: 10,
+                owner: Some(("A.f".into(), 5, 12)),
+            },
+            AuditRow {
+                term_index: 1,
+                term: "pipe".into(),
+                rel: "a.ts".into(),
+                path: PathBuf::from("a.ts"),
+                line: 10,
+                owner: Some(("A.f".into(), 5, 12)), // duplicate tuple
+            },
+            AuditRow {
+                term_index: 1,
+                term: "pipe".into(),
+                rel: "b.ts".into(),
+                path: PathBuf::from("b.ts"),
+                line: 3,
+                owner: None,
+            },
+        ];
+        let per_term = vec![(1, "pipe".into(), 2), (2, "return".into(), 1)];
+        let (raw, tuples, summary) = audit_tsv_files(&rows, &per_term);
+
+        // raw.tsv sorted by (term_index, rel, line).
+        let rl: Vec<&str> = raw.lines().collect();
+        assert_eq!(rl.len(), 4, "header + 3 rows: {raw}");
+        assert!(
+            rl[1].starts_with("1\tpipe\ta.ts\t10\tA.f\t5\t12"),
+            "{}",
+            rl[1]
+        );
+        assert!(rl[2].starts_with("1\tpipe\tb.ts\t3\t\t\t"), "{}", rl[2]);
+        assert!(
+            rl[3].starts_with("2\treturn\ta.ts\t10\tA.f\t5\t12"),
+            "{}",
+            rl[3]
+        );
+
+        // tuples.tsv dedupe: one distinct tuple despite two same-key raw rows.
+        let tl: Vec<&str> = tuples.lines().collect();
+        assert_eq!(tl.len(), 2, "header + 1 distinct tuple: {tuples}");
+        assert!(tl[1].starts_with("a.ts\t10\tA.f\t5\t12"), "{}", tl[1]);
+
+        assert!(summary.contains("per-term\t1\tpipe\t2\t2\n"), "{summary}");
+        assert!(summary.contains("per-term\t2\treturn\t1\t1\n"), "{summary}");
+        assert!(
+            summary.contains("aggregate\ttotal_raw_term_rows\t3\n"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("aggregate\tunique_path_line_rows\t2\n"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("aggregate\tdistinct_attributed_tuples\t1\n"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("aggregate\tdistinct_qualified_names\t1\n"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("aggregate\tunattributed_raw_term_rows\t1\n"),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "TSV-unsafe term field corruption")]
+    fn us067_tsv_guard_rejects_delimiter_in_term() {
+        let rows = vec![AuditRow {
+            term_index: 1,
+            term: "pi\tpe".into(),
+            rel: "a.ts".into(),
+            path: PathBuf::from("a.ts"),
+            line: 1,
+            owner: None,
+        }];
+        let _ = audit_tsv_files(&rows, &[(1, "pipe".into(), 1)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "TSV-unsafe qualified_name field corruption")]
+    fn us067_tsv_guard_rejects_delimiter_in_qualified_name() {
+        let rows = vec![AuditRow {
+            term_index: 1,
+            term: "pipe".into(),
+            rel: "a.ts".into(),
+            path: PathBuf::from("a.ts"),
+            line: 1,
+            owner: Some(("A\nB".into(), 5, 12)),
+        }];
+        let _ = audit_tsv_files(&rows, &[(1, "pipe".into(), 1)]);
+    }
+
+    #[test]
+    #[ignore = "requires pinned external repo; US-067 replay"]
+    fn us067_owner_replay_audit() {
+        let scope =
+            std::env::var("SRCWALK_US067_AUDIT_SCOPE").expect("SRCWALK_US067_AUDIT_SCOPE required");
+        let query =
+            std::env::var("SRCWALK_US067_AUDIT_QUERY").expect("SRCWALK_US067_AUDIT_QUERY required");
+        let limit: usize = std::env::var("SRCWALK_US067_AUDIT_LIMIT")
+            .expect("SRCWALK_US067_AUDIT_LIMIT required")
+            .parse()
+            .expect("SRCWALK_US067_AUDIT_LIMIT must be a usize");
+        assert!(limit > 0, "SRCWALK_US067_AUDIT_LIMIT must be positive");
+        let out =
+            std::env::var("SRCWALK_US067_AUDIT_OUT").expect("SRCWALK_US067_AUDIT_OUT required");
+        run_us067_replay(Path::new(&scope), &query, limit, Path::new(&out));
+    }
 }

@@ -49,15 +49,15 @@ const PYTHON_BODILESS_DECLARATIONS: &[&str] = &[];
 /// (tree-sitter-python 0.23.6). Pinned so any grammar metadata change fails the
 /// manifest gate and forces a re-audit of the inventories above.
 #[cfg(test)]
-const PYTHON_NODE_TYPES_FINGERPRINT: u64 = 0x1dd4c1a2e4a91aeb;
+const PYTHON_NODE_TYPES_FINGERPRINT: u64 = 0x1dd4_c1a2_e4a9_1aeb;
 
 /// Stable FNV-1a 64-bit hash, dependency-free and reproducible across builds.
 #[cfg(test)]
 fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
     }
     hash
 }
@@ -146,25 +146,22 @@ fn walk(
         }
         "class_definition" => {
             // Class is a lexical container for naming, not itself a callable.
-            match node
+            if let Some(name) = node
                 .child_by_field_name("name")
                 .and_then(|n| n.utf8_text(bytes).ok())
             {
-                Some(name) => {
-                    containers.push(name.to_string());
-                    recurse(node, bytes, path, containers, errors, regions);
-                    containers.pop();
-                }
-                None => {
-                    // Unnamed class container: pin a conservative barrier over the
-                    // whole class so nested malformed regions cannot leak to an
-                    // outer function. Recurse (without a name container).
-                    regions.push(OwnerRegion::AnonymousBarrier {
-                        start_line: node.start_position().row as u32 + 1,
-                        end_line: node.end_position().row as u32 + 1,
-                    });
-                    recurse(node, bytes, path, containers, errors, regions);
-                }
+                containers.push(name.to_string());
+                recurse(node, bytes, path, containers, errors, regions);
+                containers.pop();
+            } else {
+                // Unnamed class container: pin a conservative barrier over the
+                // whole class so nested malformed regions cannot leak to an
+                // outer function. Recurse (without a name container).
+                regions.push(OwnerRegion::AnonymousBarrier {
+                    start_line: node.start_position().row as u32 + 1,
+                    end_line: node.end_position().row as u32 + 1,
+                });
+                recurse(node, bytes, path, containers, errors, regions);
             }
         }
         "lambda" => {
@@ -237,7 +234,7 @@ mod tests {
     fn assert_owner(regions: &[OwnerRegion], errors: &[ErrorRange], line: u32, name: &str) {
         let owner = python_owner_for(regions, errors, line);
         assert_eq!(
-            owner.map(|o| o.qualified_name()),
+            owner.map(OwnerAnchor::qualified_name),
             Some(name.to_string()),
             "line {line} should attribute to {name}"
         );
@@ -335,10 +332,9 @@ mod tests {
         assert!(
             e.iter()
                 .any(|er| er.is_point && er.start_byte == er.end_byte),
-            "{:?}",
-            e
+            "{e:?}"
         );
-        assert!(e.iter().any(|er| er.contains_line(1)), "{:?}", e);
+        assert!(e.iter().any(|er| er.contains_line(1)), "{e:?}");
         // A synthetic named region on line 1 must abstain due to the point.
         let anchor = OwnerAnchor {
             path: path(),
@@ -381,10 +377,10 @@ mod tests {
     /// Slice-1 binding quality gate: a table of independent, varied fixtures.
     /// Each case is parsed separately with local line numbers (no shared buffer,
     /// no offset math). Counts assertions programmatically and asserts the floor
-    /// (>=60 positive hits, >=20 intentional abstentions); mechanically repeated
-    /// blank/separator lines never count toward the abstention floor. Every
-    /// positive row asserts the exact owner (qualified_name, start_line,
-    /// end_line); every abstention row asserts no attribution (0 mismatches).
+    /// (`>=60` positive hits, `>=20` intentional abstentions); mechanically repeated
+    /// `blank`/`separator` lines never count toward the abstention floor. Every
+    /// positive row asserts the exact owner (`qualified_name`, `start_line`,
+    /// `end_line`); every abstention row asserts no attribution (0 mismatches).
     #[test]
     fn python_owner_matrix_meets_quality_gates() {
         let cases: &[Case] = &[

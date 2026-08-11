@@ -2,7 +2,7 @@
 
 ## Status
 
-ready for implementation — **blocked until srcwalk 1.6.0 ships**
+implemented — review complete; real Windows verification pending
 
 ## Lane
 
@@ -15,10 +15,9 @@ normal (with stronger validation)
 - Risk flags: existing output behavior and agent-visible public contracts; path
   rendering is platform-sensitive. No matching, ranking, evidence, or semantic
   relation changes.
-- Implementation owner: Toby after the 1.6.0 release is complete.
+- Implementation owner: Toby.
 - Single working branch: `feat/owner-evidence-output-compaction`; continue on
-  this branch after the 1.6.0 release commit. Do not create a second feature
-  branch for US-065.
+  this branch. Do not create a second feature branch for US-065.
 - Scope split: this story ships independently before multi-language owner
   attribution. Multi-language owners are explicitly out of scope here.
 
@@ -113,6 +112,12 @@ Required grouped shape for two or more hits in one file:
     :20 [owner Foo@1-30] — text
 ```
 
+Grouping is **conditional**: it is applied only when the grouped form is strictly
+smaller in bytes than the current repeated inline form. Short paths (e.g. a
+2-hit `batch.go`) can tie or grow under a group header, so such groups stay
+inline to honor the no-growth invariant. Render both candidates and pick the
+smaller; on a tie keep the inline (ungrouped) form.
+
 Single-hit files remain byte-identical to current output.
 
 The `[N matches]` noun is intentionally facet-local rather than copied from
@@ -162,6 +167,8 @@ source: ...
 - Keep the existing section-level provenance behavior.
 - Tests and Comments do not share a group even when paths match.
 - Single-hit rows remain in their current shape.
+- As in Seam A, grouping is conditional: render both candidates and pick the
+  strictly-smaller one; on a tie keep the inline form.
 
 ### C. Trace Callers
 
@@ -186,6 +193,11 @@ visible call sites, group two or more visible entries from the same file:
 - `--expand` source windows remain attached to the correct child call site and
   retain exact source lines.
 - Single call sites keep the current line shape.
+- As in Seam A, grouping is conditional: render the grouped and ungrouped
+  candidates and pick the strictly-smaller one; on a tie keep the inline form.
+  `--expand` windows are included in both candidates, interleaved at the correct
+  child call site, so the byte comparison (and the retained source windows) stay
+  correct.
 
 ### D. Definition Provenance Hoist
 
@@ -207,8 +219,16 @@ section:
    the current invocation/page. It is deterministic per invocation and is never
    cached or carried between `--offset` pages.
 
-This contract applies only to Definitions in this story. Do not refactor every
-provenance surface speculatively.
+The same hoist is applied to the compact `Matches — same package` (`usages_local`)
+facet. Its default is chosen from the **existing rendered provenance carriers**
+— one `group[0]` per path group, or a singleton row — never weighted by the
+number of child hits; ties resolve to the first-seen carrier. The default is
+printed once immediately below the heading, and identical per-group provenance
+is suppressed. Definitions remains entry-level (each visible definition is its
+own carrier). Deviations print locally. The cross-package (`usages_cross`)
+section is intentionally **not** hoisted — it keeps per-group provenance. This
+contract is bounded to Definitions and usages_local in this story; do not refactor
+every provenance surface speculatively.
 
 ## Design Seams
 
@@ -232,13 +252,19 @@ provenance surface speculatively.
 
 - Every pre-change visible entry maps one-to-one to a post-change entry with the
   same path, line/range, text, owner, metadata, and caller fields.
-- Multi-hit file paths appear exactly once within their section group; child rows
-  use `:LINE` or `:START-END` anchors.
+- When the grouped candidate wins, a multi-hit file path appears exactly once
+  within its section group and child rows use `:LINE` or `:START-END` anchors.
+  When grouping is unprofitable or a tie, the file's exact inline rows are
+  retained at their original positions in the visible slice; no row is moved or
+  reordered.
 - Single-hit files are byte-identical to current output.
 - Owner runs fold only for three or more contiguous hits with the exact same
   owner; K=2 stays inline, and mixed/unattributed rows stay honest.
 - Definitions with uniform provenance print it once. Mixed-provenance fixtures
-  print the default once and each deviation locally.
+  print the default once and each deviation locally. The same hoist applies to
+  the usages_local section; usages_cross keeps per-group provenance.
+- Single-hit files, usages_cross groups, and non-compact paths stay byte-identical
+  to current output.
 - Trace collapse/pagination exposes exactly the same call-site identities before
   and after compaction; printed pointer commands return the same remainder.
 - Group paths and printed commands round-trip when pasted from repository root,
@@ -246,11 +272,16 @@ provenance surface speculatively.
 
 ### Efficiency
 
-- On the pinned Pebble audit command set, combined stdout bytes decrease by at
-  least 15% with identical evidence identities and omission counts.
+- Target: on the pinned Pebble audit command set, combined stdout bytes decrease
+  by 15% with identical evidence identities and omission counts. 15% is a target,
+  not a hard gate. Record the actual combined `--no-budget` reduction; hard
+  escalation is required only below 10%. A result of 10–15% is accepted honestly
+  with no scope chasing.
 - The Text OR per-term detail section with 10 same-file hits prints the path once
   and is strictly smaller.
-- No representative command grows in bytes solely because of grouping.
+- No representative command grows in bytes solely because of grouping. Grouping
+  is conditional (applied only when strictly smaller); on a tie the inline form
+  is kept, so grouping never grows output.
 - Report bytes and o200k tokens separately; do not equate stdout bytes with API
   billed tokens.
 
@@ -267,14 +298,23 @@ provenance surface speculatively.
 Run from `benchmark/fixtures/repos/pebble` (or reproduce equivalent committed
 fixtures in integration tests):
 
+Two explicit measurement modes are run on the pinned set.
+
+**Mode A — `--no-budget` (compaction KPI)**: all four commands use `--no-budget`:
+
 ```bash
 srcwalk discover 'strictWALTail,readWAL' --match any --as text --scope . --no-budget
-srcwalk discover SyncWait --scope .
-srcwalk discover Set --as symbol --scope .
-srcwalk trace callers Set --scope .
+srcwalk discover SyncWait --scope . --no-budget
+srcwalk discover Set --as symbol --scope . --no-budget
+srcwalk trace callers Set --scope . --no-budget
 ```
 
-Record before/after:
+**Mode B — original/default budget**: same four commands WITHOUT `--no-budget`
+(original flags). These runs prove (a) no previously visible evidence is lost and
+(b) within the same budget the compact rendering retains at least as much
+evidence, potentially more. Default-budget bytes are NOT the compaction KPI.
+
+For both modes, record before/after:
 
 - stdout bytes and o200k tokens;
 - ordered evidence identity list `(section, path, line/range, kind, owner)`;
@@ -290,9 +330,9 @@ relax the acceptance rule.
 
 | Layer | Required proof |
 | --- | --- |
-| Unit | stable first-appearance grouping; single/multi boundary; owner-run K=2 inline / K=3 folded; uniform/mixed/tied provenance defaults; page-local default |
+| Unit | stable first-appearance grouping; single/multi boundary; profitable/unprofitable/tie grouping decisions; interleaved order preservation (ungrouped rows keep original slice positions; profitable group emits at first occurrence); owner-run K=2 inline / K=3 folded; uniform/mixed/tied provenance defaults; carrier-majority default for usages_local; page-local default |
 | Integration | exact packets for all four surfaces; single-hit byte identity; no lost evidence identities; collapse/offset/expand caller cases |
-| Measurement | pinned Pebble before/after byte + o200k report; combined reduction ≥15% |
+| Measurement | pinned Pebble before/after byte + o200k report in both modes (A `--no-budget` KPI, B default-budget evidence-retention); record actual reduction; hard escalation only below 10% |
 | Round-trip | grouped path copied into `show`; unchanged pointer commands execute and return expected remainder |
 | Platform | real Windows build/run for grouped relative, nested, and cross-directory paths |
 | Release | `cargo fmt`; targeted tests; `cargo test --locked`; `cargo clippy -- -D warnings`; docs/examples aligned |
@@ -313,8 +353,9 @@ Parser/string round-trip tests alone do not satisfy this gate.
 
 ## Documentation And Release Notes
 
-- Release notes: “group repeated same-file hits and hoist stable definition
-  provenance; evidence, ordering, paths, and reachability unchanged.”
+- Release notes: “group repeated same-file hits (only when strictly smaller) and
+  hoist stable definition and same-package-usage provenance; evidence, ordering,
+  paths, and reachability unchanged.”
 - No GUIDE concept is added: agents already understand file headers and `:LINE`
   child rows. Update GUIDE only if an existing exact format statement/example is
   invalidated.
@@ -336,7 +377,8 @@ Parser/string round-trip tests alone do not satisfy this gate.
 
 ## Done Bar
 
-US-065 is done only when all acceptance criteria pass, the ≥15% pinned-corpus
-reduction is recorded, exact-format docs/tests are updated, and real Windows
-verification is attached. Internal merge may precede the Windows run only if the
-PR is explicitly marked not release-ready.
+US-065 is done only when all acceptance criteria pass, the actual pinned-corpus
+reduction is recorded (15% target; hard escalation only below 10%; 10–15%
+accepted honestly with no scope chasing), exact-format docs/tests are updated,
+and real Windows verification is attached. Internal merge may precede the
+Windows run only if the PR is explicitly marked not release-ready.

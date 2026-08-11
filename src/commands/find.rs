@@ -319,26 +319,7 @@ fn render_text_or_term_details(
             "\n\n## {} — {shown}/{} matches",
             result.term, result.total_found
         );
-        for m in &result.matches {
-            let owner = owner_links
-                .owner_for(&m.path, m.line)
-                .map_or_else(String::new, |owner| {
-                    format!(
-                        " [owner {}@{}-{}]",
-                        owner.qualified_name(),
-                        owner.start_line,
-                        owner.end_line
-                    )
-                });
-            let _ = write!(
-                rendered,
-                "\n  {}:{}{} — {}",
-                format::rel_nonempty(&m.path, scope),
-                m.line,
-                owner,
-                m.text.trim()
-            );
-        }
+        render_text_or_term_matches(&mut rendered, &result.matches, scope, owner_links);
         if result.omitted > 0 {
             let _ = write!(
                 rendered,
@@ -348,6 +329,167 @@ fn render_text_or_term_details(
         }
     }
     rendered
+}
+
+/// Render one term's visible matches, grouping same-file hits >= 2 and folding
+/// contiguous equal-owner runs of >= 3 (owner K=3). Single-hit files keep the
+/// current one-line shape. For multi-hit files, the grouped candidate wins only
+/// when it is strictly fewer UTF-8 bytes than the ungrouped inline rows; a tie
+/// keeps the current ungrouped inline shape.
+///
+/// Ordering semantics: the per-file decision (grouped vs inline) is precomputed
+/// once, then the ORIGINAL visible slice is iterated in order. A profitable
+/// (grouped) file emits its whole group at the first occurrence of that path and
+/// later occurrences are consumed; an unprofitable or single-hit file emits each
+/// row at its original position. This keeps rejected/tied file rows in their
+/// original relative order instead of clustering them together.
+fn render_text_or_term_matches(
+    rendered: &mut String,
+    matches: &[Match],
+    scope: &Path,
+    owner_links: &OwnerLinkEvidence,
+) {
+    use std::collections::HashMap;
+    use std::fmt::Write as _;
+
+    // Group by path preserving first-appearance order.
+    let mut files: Vec<(&Path, Vec<&Match>)> = Vec::new();
+    for m in matches {
+        match files.iter_mut().find(|(p, _)| *p == m.path.as_path()) {
+            Some((_, group)) => group.push(m),
+            None => files.push((m.path.as_path(), vec![m])),
+        }
+    }
+
+    // Precompute the per-path rendering decision: `Some(grouped)` when the
+    // grouped candidate is strictly smaller than the inline rows, `None` when
+    // the file is single-hit or grouping ties/loses (emits rows inline).
+    let mut grouped_by_path: HashMap<&Path, String> = HashMap::new();
+    for (path, group) in &files {
+        if group.len() < 2 {
+            continue;
+        }
+        let mut grouped_candidate = String::new();
+        let _ = write!(
+            grouped_candidate,
+            "\n  {} [{} matches]",
+            format::rel_nonempty(path, scope),
+            group.len()
+        );
+        render_owner_runs(&mut grouped_candidate, group, owner_links);
+
+        let mut ungrouped_candidate = String::new();
+        render_text_or_term_ungrouped(&mut ungrouped_candidate, group, path, scope, owner_links);
+
+        if grouped_candidate.len() < ungrouped_candidate.len() {
+            grouped_by_path.insert(path, grouped_candidate);
+        }
+    }
+
+    // Iterate the original visible slice. Emit a profitable group once at its
+    // first occurrence; emit every other row at its original position.
+    let mut emitted: std::collections::HashSet<&Path> = std::collections::HashSet::new();
+    for m in matches {
+        let path = m.path.as_path();
+        if let Some(grouped) = grouped_by_path.get(path) {
+            if emitted.insert(path) {
+                rendered.push_str(grouped);
+            }
+            // Later occurrences of an emitted profitable group are consumed.
+            continue;
+        }
+        // Single-hit or unprofitable/tied: emit this row at its position.
+        render_text_or_term_ungrouped(rendered, &[m], path, scope, owner_links);
+    }
+}
+
+/// Render every hit in a file as a one-line inline row (the ungrouped shape).
+fn render_text_or_term_ungrouped(
+    rendered: &mut String,
+    group: &[&Match],
+    path: &Path,
+    scope: &Path,
+    owner_links: &OwnerLinkEvidence,
+) {
+    use std::fmt::Write as _;
+    for m in group {
+        let owner = owner_tag_inline(owner_links, m);
+        let _ = write!(
+            rendered,
+            "\n  {}:{}{} — {}",
+            format::rel_nonempty(path, scope),
+            m.line,
+            owner,
+            m.text.trim()
+        );
+    }
+}
+
+/// Render a multi-hit file group's child rows, folding contiguous runs of >= 3
+/// hits with the exact same owner anchor into an owner subgroup header.
+fn render_owner_runs(rendered: &mut String, group: &[&Match], owner_links: &OwnerLinkEvidence) {
+    use std::fmt::Write as _;
+
+    let mut i = 0;
+    while i < group.len() {
+        let owner = owner_links.owner_for(&group[i].path, group[i].line);
+        // Find the contiguous run sharing the same owner anchor.
+        let mut j = i + 1;
+        while j < group.len()
+            && owners_equal(owner, owner_links.owner_for(&group[j].path, group[j].line))
+        {
+            j += 1;
+        }
+        let run_len = j - i;
+        if let Some(owner) = owner.filter(|_| run_len >= 3) {
+            // K=3 fold: owner once as a subgroup header.
+            let _ = write!(
+                rendered,
+                "\n    [owner {}@{}-{}] [{} hits]",
+                owner.qualified_name(),
+                owner.start_line,
+                owner.end_line,
+                run_len
+            );
+            for m in &group[i..j] {
+                let _ = write!(rendered, "\n      :{} — {}", m.line, m.text.trim());
+            }
+        } else {
+            // Runs of 1-2, unique/mixed owners, or unattributed stay inline.
+            for m in &group[i..j] {
+                let owner = owner_tag_inline(owner_links, m);
+                let _ = write!(rendered, "\n    :{}{} — {}", m.line, owner, m.text.trim());
+            }
+        }
+        i = j;
+    }
+}
+
+/// Owner anchor tag with a leading space for inline hit rows, or empty string.
+fn owner_tag_inline(owner_links: &OwnerLinkEvidence, m: &Match) -> String {
+    owner_links
+        .owner_for(&m.path, m.line)
+        .map_or_else(String::new, |owner| {
+            format!(
+                " [owner {}@{}-{}]",
+                owner.qualified_name(),
+                owner.start_line,
+                owner.end_line
+            )
+        })
+}
+
+/// Whether two owner anchors are the same (same qualified name and range).
+fn owners_equal(a: Option<&OwnerAnchor>, b: Option<&OwnerAnchor>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => {
+            x.qualified_name() == y.qualified_name()
+                && x.start_line == y.start_line
+                && x.end_line == y.end_line
+        }
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 struct TextOrRollupRender {

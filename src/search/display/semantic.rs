@@ -142,15 +142,58 @@ pub(super) fn format_definition_semantic_match(
     out: &mut String,
 ) {
     let path = rel_nonempty(&m.path, scope);
-    format_definition_semantic_match_with_path(m, Some(&path), cache, out, "  ");
+    format_definition_semantic_match_with_path(m, Some(&path), cache, out, "  ", None);
 }
 
-pub(super) fn format_definition_semantic_match_in_file(
+/// Compact-facet variant: when `suppress` is the exact provenance tuple of the
+/// entry, the per-entry provenance line is omitted (hoisted to the section
+/// default computed by the caller).
+pub(super) fn format_definition_semantic_match_suppressed(
+    m: &Match,
+    scope: &Path,
+    cache: &OutlineCache,
+    out: &mut String,
+    suppress: Option<&str>,
+) {
+    let path = rel_nonempty(&m.path, scope);
+    format_definition_semantic_match_with_path(m, Some(&path), cache, out, "  ", suppress);
+}
+
+pub(super) fn format_definition_semantic_match_in_file_suppressed(
     m: &Match,
     cache: &OutlineCache,
     out: &mut String,
+    suppress: Option<&str>,
 ) {
-    format_definition_semantic_match_with_path(m, None, cache, out, "    ");
+    format_definition_semantic_match_with_path(m, None, cache, out, "    ", suppress);
+}
+
+/// Compute the exact provenance tuple string `source · kind · confidence` for a
+/// definition match, mirroring `append_match_provenance_with_kind`. Returns
+/// `None` for relation/impl/base artifacts that do not print a provenance line.
+pub(super) fn definition_provenance_tuple(m: &Match, cache: &OutlineCache) -> Option<String> {
+    if m.impl_target.is_some() || m.base_target.is_some() {
+        return None;
+    }
+    let source = super::match_evidence_source(m);
+    let kind_override = if super::is_artifact_anchor_match(m) {
+        Some("anchor")
+    } else if matches!(
+        crate::lang::detect_file_type(&m.path),
+        crate::types::FileType::Document(_)
+    ) && semantic_candidate_for_match(m, cache).is_some()
+    {
+        let candidate = semantic_candidate_for_match(m, cache).unwrap();
+        super::document_outline_kind_label(candidate.kind)
+    } else {
+        None
+    };
+    Some(format!(
+        "source: {} · kind: {} · confidence: {}",
+        super::evidence_source_label_for(source),
+        kind_override.unwrap_or_else(|| super::displayed_evidence_kind_label(m)),
+        super::confidence_label_for(source)
+    ))
 }
 
 fn format_definition_semantic_match_with_path(
@@ -159,6 +202,7 @@ fn format_definition_semantic_match_with_path(
     cache: &OutlineCache,
     out: &mut String,
     indent: &str,
+    suppress: Option<&str>,
 ) {
     let atom = m.to_evidence_atom();
     if super::is_artifact_anchor_match(m) {
@@ -171,7 +215,7 @@ fn format_definition_semantic_match_with_path(
             "\n{indent}[anchor] {label} {}",
             format_loc(path, atom.anchor().start_line())
         );
-        super::append_match_provenance_with_kind(m, out, indent, Some("anchor"));
+        append_provenance_if_not_default(m, out, indent, Some("anchor"), cache, suppress);
         return;
     }
     if m.impl_target.is_some() {
@@ -217,7 +261,7 @@ fn format_definition_semantic_match_with_path(
         } else {
             None
         };
-        super::append_match_provenance_with_kind(m, out, indent, kind_override);
+        append_provenance_if_not_default(m, out, indent, kind_override, cache, suppress);
         for child in candidate.children.iter().take(2) {
             let _ = write!(
                 out,
@@ -246,7 +290,7 @@ fn format_definition_semantic_match_with_path(
         } else {
             let _ = write!(out, "\n{indent}[{kind}] {}", format_range(path, start, end));
         }
-        super::append_match_provenance(m, out, indent);
+        append_provenance_if_not_default(m, out, indent, None, cache, suppress);
     } else {
         let kind = if m.impl_target.is_some() {
             "impl"
@@ -266,9 +310,27 @@ fn format_definition_semantic_match_with_path(
                 format_loc(path, atom.anchor().start_line())
             );
         }
-        super::append_match_provenance(m, out, indent);
+        append_provenance_if_not_default(m, out, indent, None, cache, suppress);
     }
     append_artifact_definition_snippet(m, out);
+}
+
+/// Append a match provisioning line unless it equals the supplied section
+/// default tuple (hoisted provenance).
+fn append_provenance_if_not_default(
+    m: &Match,
+    out: &mut String,
+    indent: &str,
+    kind_override: Option<&'static str>,
+    cache: &OutlineCache,
+    suppress: Option<&str>,
+) {
+    if let Some(default) = suppress {
+        if definition_provenance_tuple(m, cache).as_deref() == Some(default) {
+            return;
+        }
+    }
+    super::append_match_provenance_with_kind(m, out, indent, kind_override);
 }
 
 fn format_loc(path: Option<&str>, line: u32) -> String {

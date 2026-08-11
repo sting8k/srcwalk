@@ -160,6 +160,8 @@ fn callers_private_attributed_to_enclosing_class_method() {
         stdout.contains("— 3 call sites"),
         "exactly the three #evict sites:\n{stdout}"
     );
+    // Short relative path `cache.js`: grouping is a tie/no-gain, so the three
+    // sites stay inline (conditional grouping keeps ungrouped on tie).
     for line in ["cache.js:6", "cache.js:7", "cache.js:8"] {
         assert!(stdout.contains(line), "call site {line} missing:\n{stdout}");
     }
@@ -184,6 +186,7 @@ fn public_name_distinct_from_private() {
         pub_out.contains("— 2 call sites"),
         "public evict must see only its two sites:\n{pub_out}"
     );
+    // Short path `cache.js`: 2 sites stay inline (grouping would be a tie).
     assert!(
         pub_out.contains("cache.js:9") && pub_out.contains("cache.js:10"),
         "public evict must see the bare + member sites:\n{pub_out}"

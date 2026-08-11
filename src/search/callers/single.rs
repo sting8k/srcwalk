@@ -1067,59 +1067,62 @@ pub fn search_callers_expanded_with_artifact(
         // (as the pointer command uses) lists the full remaining page.
         let list_collapse = effective_offset == 0 && precision::should_collapse_list(shown);
         let render_count = if list_collapse { precision::K } else { shown };
-        for (i, caller) in sorted_callers.iter().take(render_count).enumerate() {
-            let caller_kind = detect_file_type(&caller.path)
-                .structural_lang()
-                .and_then(crate::capabilities::caller_context_kind)
-                .unwrap_or("fn");
-
-            let _ = write!(
-                output,
-                "  [{caller_kind}] {} {}:{}",
-                caller.calling_function,
-                rel_nonempty(&caller.path, scope),
-                caller.line,
-            );
-            if let Some(ref prefix) = caller.receiver {
-                if let Some(kind) = caller.prefix_kind {
-                    let _ = write!(output, " prefix={prefix}({})", kind.suffix());
-                } else {
-                    let _ = write!(output, " prefix={prefix}");
-                }
-            }
-            if let Some(argc) = caller.arg_count {
-                let _ = write!(output, " args={argc}");
-            }
-            let _ = writeln!(output);
-
-            // Expand only when explicitly requested and we have the range.
-            if i < expand {
-                if let Some((start, end)) = caller.caller_range {
-                    // Use cached content — no re-read needed.
-                    // Show a compact window around the callsite (±2 lines)
-                    // bounded by the enclosing function range.
-                    let lines: Vec<&str> = caller.content.lines().collect();
-                    let window_start = caller.line.saturating_sub(2).max(start);
-                    let window_end = (caller.line + 2).min(end);
-                    let start_idx = (window_start as usize).saturating_sub(1);
-                    let end_idx = (window_end as usize).min(lines.len());
-
-                    output.push_str("\n```\n");
-
-                    for (idx, line) in lines[start_idx..end_idx].iter().enumerate() {
-                        let line_num = start_idx + idx + 1;
-                        let prefix = if line_num == caller.line as usize {
-                            "► "
-                        } else {
-                            "  "
-                        };
-                        let _ = writeln!(output, "{prefix}{line_num:4} │ {line}");
-                    }
-
-                    output.push_str("```\n");
-                }
+        let visible: Vec<&CallerMatch> = sorted_callers.iter().take(render_count).collect();
+        // Group visible call sites by file after all selection semantics.
+        let mut groups: Vec<(&Path, Vec<(usize, &CallerMatch)>)> = Vec::new();
+        for (i, caller) in visible.iter().enumerate() {
+            match groups.iter_mut().find(|(p, _)| *p == caller.path.as_path()) {
+                Some((_, group)) => group.push((i, caller)),
+                None => groups.push((caller.path.as_path(), vec![(i, caller)])),
             }
         }
+        // Precompute the per-path decision: grouped when strictly smaller than
+        // the ungrouped inline rows, else inline (single site, tie, or loss).
+        // Expand windows stay attached to their call site in both shapes.
+        let mut grouped_by_path: std::collections::HashMap<&Path, String> =
+            std::collections::HashMap::new();
+        for (path, group) in &groups {
+            if group.len() == 1 {
+                continue;
+            }
+            let mut grouped_candidate = String::new();
+            let _ = writeln!(
+                grouped_candidate,
+                "  {} [{} call sites]",
+                rel_nonempty(path, scope),
+                group.len()
+            );
+            for (i, caller) in group {
+                render_caller_line(&mut grouped_candidate, caller, None, scope);
+                render_caller_expand(&mut grouped_candidate, caller, *i, expand);
+            }
+
+            let mut ungrouped_candidate = String::new();
+            for (i, caller) in group {
+                render_caller_line(&mut ungrouped_candidate, caller, Some(path), scope);
+                render_caller_expand(&mut ungrouped_candidate, caller, *i, expand);
+            }
+
+            if grouped_candidate.len() < ungrouped_candidate.len() {
+                grouped_by_path.insert(path, grouped_candidate);
+            }
+        }
+        // Iterate the original visible slice. Emit a profitable group once at
+        // its first call site; emit every other (single / unprofitable) call
+        // site inline at its original position with its expand window.
+        let mut emitted: std::collections::HashSet<&Path> = std::collections::HashSet::new();
+        for (i, caller) in visible.iter().enumerate() {
+            let path = caller.path.as_path();
+            if let Some(grouped) = grouped_by_path.get(path) {
+                if emitted.insert(path) {
+                    output.push_str(grouped);
+                }
+                continue;
+            }
+            render_caller_line(&mut output, caller, Some(path), scope);
+            render_caller_expand(&mut output, caller, i, expand);
+        }
+
         // US-060: every collapsed item stays reachable via one pointer command.
         if list_collapse {
             let omitted = shown - precision::K;
@@ -1285,6 +1288,84 @@ pub fn search_callers_expanded_with_artifact(
         let _ = write!(output, "\n\n{footer}");
     }
     Ok(output)
+}
+
+/// Render one call-site line. When `path` is `Some`, the full `file:line` is
+/// shown (single-call-site file); when `None`, a grouped child row using only
+/// `:line` is rendered (the file header already carries the path).
+fn render_caller_line(
+    output: &mut String,
+    caller: &CallerMatch,
+    path: Option<&Path>,
+    scope: &Path,
+) {
+    let caller_kind = detect_file_type(&caller.path)
+        .structural_lang()
+        .and_then(crate::capabilities::caller_context_kind)
+        .unwrap_or("fn");
+
+    match path {
+        Some(p) => {
+            let _ = write!(
+                output,
+                "  [{caller_kind}] {} {}:{}",
+                caller.calling_function,
+                rel_nonempty(p, scope),
+                caller.line,
+            );
+        }
+        None => {
+            let _ = write!(
+                output,
+                "    [{caller_kind}] {} :{}",
+                caller.calling_function, caller.line,
+            );
+        }
+    }
+
+    if let Some(ref prefix) = caller.receiver {
+        if let Some(kind) = caller.prefix_kind {
+            let _ = write!(output, " prefix={prefix}({})", kind.suffix());
+        } else {
+            let _ = write!(output, " prefix={prefix}");
+        }
+    }
+    if let Some(argc) = caller.arg_count {
+        let _ = write!(output, " args={argc}");
+    }
+    let _ = writeln!(output);
+}
+
+/// Render the expand window for one call site when it is within the requested
+/// expand depth (`i` is the global visible index).
+fn render_caller_expand(output: &mut String, caller: &CallerMatch, i: usize, expand: usize) {
+    if i >= expand {
+        return;
+    }
+    if let Some((start, end)) = caller.caller_range {
+        // Use cached content — no re-read needed.
+        // Show a compact window around the callsite (±2 lines) bounded by the
+        // enclosing function range.
+        let lines: Vec<&str> = caller.content.lines().collect();
+        let window_start = caller.line.saturating_sub(2).max(start);
+        let window_end = (caller.line + 2).min(end);
+        let start_idx = (window_start as usize).saturating_sub(1);
+        let end_idx = (window_end as usize).min(lines.len());
+
+        output.push_str("\n```\n");
+
+        for (idx, line) in lines[start_idx..end_idx].iter().enumerate() {
+            let line_num = start_idx + idx + 1;
+            let prefix = if line_num == caller.line as usize {
+                "► "
+            } else {
+                "  "
+            };
+            let _ = writeln!(output, "{prefix}{line_num:4} │ {line}");
+        }
+
+        output.push_str("```\n");
+    }
 }
 
 fn append_artifact_callers_grouped(

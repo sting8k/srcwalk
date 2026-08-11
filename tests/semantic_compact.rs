@@ -224,6 +224,146 @@ fn symbol_search_compact_groups_multiple_definitions_in_same_file() {
 }
 
 #[test]
+fn definitions_hoist_uniform_default_once() {
+    // US-065-D: a compact Definitions section with uniform provenance prints the
+    // default tuple once below the header and does not repeat it per entry.
+    let dir = tempfile::tempdir().unwrap();
+    for idx in 0..6 {
+        std::fs::write(
+            dir.path().join(format!("K{idx}.go")),
+            format!("package db\nfunc K{idx}(v int) {{}} \n"),
+        )
+        .unwrap();
+    }
+
+    let out = srcwalk()
+        .args(["discover", "K*", "--glob", "*.go", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("### Definitions (6)"),
+        "expected a compact Definitions facet, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("source: ast · kind: definition · confidence: structural syntax"),
+        "expected the hoisted default provenance tuple, got:\n{stdout}"
+    );
+    // The uniform default appears exactly once (as the section default line).
+    assert_eq!(
+        stdout
+            .matches("kind: definition · confidence: structural syntax")
+            .count(),
+        1,
+        "uniform default provenance should be printed once, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn definitions_single_entry_keeps_inline_provenance() {
+    // US-065-D: a one-definition result keeps its per-entry provenance inline
+    // (no hoist), byte-identical to pre-compaction output.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("solo.go"),
+        "package db\nfunc Ksolo(v int) {}\n",
+    )
+    .unwrap();
+    let solo = srcwalk()
+        .args(["discover", "Ksolo", "--glob", "*.go", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let solo_stdout = String::from_utf8_lossy(&solo.stdout);
+    assert!(
+        solo_stdout.contains("[fn] Ksolo") && solo_stdout.contains("kind: definition"),
+        "single definition should keep its inline provenance, got:\n{solo_stdout}"
+    );
+}
+
+#[test]
+fn usages_local_hoists_default_provenance_keeps_deviations() {
+    // US-065: the compact `Matches — same package` (usages_local) facet hoists
+    // the most frequent provenance tuple once and suppresses identical per-group
+    // provenance, while a deviation group keeps its own tuple locally.
+    let dir = tempfile::tempdir().unwrap();
+    // A go.mod is required so the definition's package root is known and the
+    // calls are classified as same-package (usages_local).
+    std::fs::write(dir.path().join("go.mod"), "module app\n\ngo 1.21\n").unwrap();
+    // Multiple name occurrences of the target in one package (uniform tuple).
+    std::fs::write(
+        dir.path().join("use.go"),
+        "package app\nfunc helper() {}\nfunc f() { helper() }\nfunc h() { helper() }\nfunc k() { helper() }\nfunc m() { helper() }\nfunc n() { helper() }\n",
+    )
+    .unwrap();
+    let out = srcwalk()
+        .args(["discover", "helper", "--as", "symbol", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // The default provenance appears once below the section header.
+    assert!(
+        stdout.contains("### Name occurrences — same package"),
+        "expected usages_local facet, got:\n{stdout}"
+    );
+    assert_eq!(
+        stdout
+            .matches("kind: name occurrence · confidence: text evidence")
+            .count(),
+        1,
+        "usages_local default provenance should be hoisted once, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn usages_cross_section_byte_unchanged() {
+    // US-065: provenance hoist is bounded to usages_local; the cross-package
+    // section must not change. Build a mixed fixture with a cross-package hit.
+    let dir = tempfile::tempdir().unwrap();
+    let pkg_a = dir.path().join("pkg_a");
+    let pkg_b = dir.path().join("pkg_b");
+    std::fs::create_dir_all(&pkg_a).unwrap();
+    std::fs::create_dir_all(&pkg_b).unwrap();
+    std::fs::write(pkg_a.join("go.mod"), "module pkg_a\n\ngo 1.21\n").unwrap();
+    std::fs::write(pkg_b.join("go.mod"), "module pkg_b\n\ngo 1.21\n").unwrap();
+    std::fs::write(
+        pkg_a.join("a.go"),
+        "package pkg_a\nfunc Target() {}\nfunc use() { Target() }\n",
+    )
+    .unwrap();
+    // Enough cross-package usages to exceed the compact threshold (>5 matches).
+    std::fs::write(
+        pkg_b.join("b.go"),
+        "package pkg_b\nimport \"pkg_a\"\nfunc u1() { pkg_a.Target() }\nfunc u2() { pkg_a.Target() }\nfunc u3() { pkg_a.Target() }\nfunc u4() { pkg_a.Target() }\nfunc u5() { pkg_a.Target() }\nfunc u6() { pkg_a.Target() }\n",
+    )
+    .unwrap();
+    let out = srcwalk()
+        .args(["discover", "Target", "--as", "symbol", "--scope"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The cross section keeps its per-entry provenance (no hoist): each group
+    // still prints its own provenance tuple.
+    assert!(
+        stdout.contains("### Name occurrences — other"),
+        "expected a cross-package compact section, got:\n{stdout}"
+    );
+    // No hoist: per-group provenance is still emitted (not suppressed).
+    assert_eq!(
+        stdout
+            .matches("kind: name occurrence · confidence: text evidence")
+            .count(),
+        2,
+        "cross-package section must keep per-group provenance, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn symbol_search_semantic_rows_work_across_rust_typescript_and_python() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

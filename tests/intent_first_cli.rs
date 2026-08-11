@@ -2,6 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+const OWNER_LINK_ZERO_EDGE: &str = "No direct name-level call evidence among hit owners. Dynamic dispatch, DI, callbacks, and protocol wiring are not ruled out.";
+
 fn srcwalk() -> Command {
     Command::new(env!("CARGO_BIN_EXE_srcwalk"))
 }
@@ -1054,6 +1056,222 @@ fn discover_match_any_text_comma_terms_are_literal_or() {
     assert!(stdout.contains("one.txt:1"), "{stdout}");
     assert!(stdout.contains("two.txt:1"), "{stdout}");
     assert!(stdout.contains("literal OR text evidence only"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_text_or_go_owners_render_mechanical_call_evidence() {
+    let dir = temp_repo("discover_text_or_go_owner_edges");
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\ntype DB struct{}\nfunc (d *DB) Apply() { /* alpha */ }\nfunc (d *DB) Set() { /* beta */ d.Apply() }\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[owner DB.Apply@3-3]"), "{stdout}");
+    assert!(stdout.contains("[owner DB.Set@4-4]"), "{stdout}");
+    assert!(
+        stdout.contains("## Mechanically resolved Go call sites"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("DB.Set contains call named `Apply`"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("candidate definition `DB.Apply`"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_text_or_go_owner_render_caps_edge_bullets_at_ten() {
+    let dir = temp_repo("discover_text_or_go_owner_cap");
+    // 12 candidate methods on the same receiver; Run calls each once so the
+    // builder emits 12 edges but the renderer must cap the bullet list at 10.
+    let mut src = String::from("package p\ntype DB struct{}");
+    for i in 0..12 {
+        src.push_str(&format!("\nfunc (d *DB) M{i}() {{ /* body */ }}"));
+    }
+    src.push_str("\nfunc (d *DB) Run() {\n");
+    for i in 0..12 {
+        src.push_str(&format!("    d.M{i}()\n"));
+    }
+    src.push('}');
+    fs::write(dir.join("cap.go"), src).unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover", "body,Run", "--match", "any", "--as", "text", "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("## Mechanically resolved Go call sites"),
+        "{stdout}"
+    );
+    let bullets = stdout
+        .lines()
+        .filter(|l| l.starts_with("- ") && l.contains("contains call named"))
+        .count();
+    assert_eq!(bullets, 10, "{stdout}");
+    assert!(!stdout.contains("M11"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_text_or_go_owner_only_prints_exact_zero_edge_line_once() {
+    let dir = temp_repo("discover_text_or_go_owner_zero_edge");
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha */ }\nfunc Second() { /* beta */ }\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches(OWNER_LINK_ZERO_EDGE).count(), 1, "{stdout}");
+    assert!(
+        !stdout.contains("## Mechanically resolved Go call sites"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_text_or_single_go_owner_keeps_caveat_without_zero_edge_line() {
+    let dir = temp_repo("discover_text_or_go_single_owner");
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha beta */ }\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[owner First@2-2]"), "{stdout}");
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_text_or_owner_caveat_survives_budget_truncation() {
+    let dir = temp_repo("discover_text_or_go_owner_budget");
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha beta */ }\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--budget",
+            "30",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("... truncated"), "{stdout}");
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

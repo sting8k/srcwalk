@@ -10,6 +10,10 @@ use crate::commands::multi_scope::{
     parse_multi_symbol_query, unsupported_find_syntax_error, use_files_error,
 };
 use crate::commands::section_disambiguation::disambiguate_glob_for_section;
+use crate::evidence::owner_links::{
+    build_owner_link_evidence, OwnerAnchor, OwnerLinkEvidence, OwnerLinkHitInput,
+    OWNER_LINK_CAVEAT, OWNER_LINK_EDGE_CAP, OWNER_LINK_ZERO_EDGE,
+};
 use crate::evidence::{render_next_actions, NextAction};
 use crate::types::{Match, QueryType, RegexCoOccurrenceQuery, RegexTextKind, RegexTextQuery};
 use crate::OutlineCache;
@@ -197,14 +201,30 @@ pub(crate) fn run_text_or_filtered_with_artifact(
         });
     }
 
+    let owner_links = if artifact.enabled() {
+        OwnerLinkEvidence::default()
+    } else {
+        let inputs = term_results
+            .iter()
+            .flat_map(|result| {
+                result.matches.iter().map(|matched| OwnerLinkHitInput {
+                    term: &result.term,
+                    path: &matched.path,
+                    line: matched.line,
+                })
+            })
+            .collect::<Vec<_>>();
+        build_owner_link_evidence(&inputs)
+    };
+
     let compact =
         terms.len() >= TEXT_OR_COMPACT_MIN_TERMS || total_found > TEXT_OR_COMPACT_MIN_MATCHES;
     let (rendered, has_specific_next) = if compact {
-        let rollup = render_text_or_file_rollup(&term_results, scope);
+        let rollup = render_text_or_file_rollup(&term_results, scope, &owner_links);
         (rollup.body, rollup.has_specific_next)
     } else {
         (
-            render_text_or_term_details(&term_results, term_limit, scope),
+            render_text_or_term_details(&term_results, term_limit, scope, &owner_links),
             false,
         )
     };
@@ -219,6 +239,7 @@ pub(crate) fn run_text_or_filtered_with_artifact(
         text_or_file_word(total_files.len()),
         rendered
     );
+    output.push_str(&render_owner_link_appendix(&owner_links, scope));
     if total_found > 0 && (!has_specific_next || artifact.enabled()) {
         let rendered = render_next_actions(&[NextAction::guidance(
             "read raw hit evidence with `srcwalk show <path>:<line> -C 10`.",
@@ -249,6 +270,7 @@ fn render_text_or_term_details(
     term_results: &[TextOrTermResult],
     term_limit: usize,
     scope: &Path,
+    owner_links: &OwnerLinkEvidence,
 ) -> String {
     use std::fmt::Write as _;
 
@@ -261,11 +283,22 @@ fn render_text_or_term_details(
             result.term, result.total_found
         );
         for m in &result.matches {
+            let owner = owner_links
+                .owner_for(&m.path, m.line)
+                .map_or_else(String::new, |owner| {
+                    format!(
+                        " [owner {}@{}-{}]",
+                        owner.qualified_name(),
+                        owner.start_line,
+                        owner.end_line
+                    )
+                });
             let _ = write!(
                 rendered,
-                "\n  {}:{} — {}",
+                "\n  {}:{}{} — {}",
                 format::rel_nonempty(&m.path, scope),
                 m.line,
+                owner,
                 m.text.trim()
             );
         }
@@ -288,6 +321,7 @@ struct TextOrRollupRender {
 fn render_text_or_file_rollup(
     term_results: &[TextOrTermResult],
     scope: &Path,
+    owner_links: &OwnerLinkEvidence,
 ) -> TextOrRollupRender {
     use std::fmt::Write as _;
 
@@ -357,6 +391,7 @@ fn render_text_or_file_rollup(
                 file.lines.len() - TEXT_OR_ROLLUP_LINE_LIMIT
             );
         }
+        render_text_or_owner_rollup(&mut rendered, &file.path, scope, owner_links);
         let windows = text_or_select_hit_windows(file);
         if !windows.is_empty() {
             let summaries = windows
@@ -426,6 +461,79 @@ fn render_text_or_file_rollup(
         body: rendered,
         has_specific_next,
     }
+}
+
+fn render_text_or_owner_rollup(
+    rendered: &mut String,
+    path: &Path,
+    scope: &Path,
+    owner_links: &OwnerLinkEvidence,
+) {
+    use std::fmt::Write as _;
+
+    let mut owners: BTreeMap<OwnerAnchor, BTreeMap<String, usize>> = BTreeMap::new();
+    for hit in owner_links.hits.iter().filter(|hit| hit.path == path) {
+        *owners
+            .entry(hit.owner.clone())
+            .or_default()
+            .entry(hit.term.clone())
+            .or_insert(0) += 1;
+    }
+    if owners.is_empty() {
+        return;
+    }
+    let summaries = owners
+        .into_iter()
+        .map(|(owner, terms)| {
+            let terms = terms
+                .into_iter()
+                .map(|(term, count)| format!("{term}({count})"))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{}@{}:{}-{} terms={terms}",
+                owner.qualified_name(),
+                format::rel_nonempty(&owner.path, scope),
+                owner.start_line,
+                owner.end_line
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let _ = write!(rendered, "\n  owners: {summaries}");
+}
+
+fn render_owner_link_appendix(owner_links: &OwnerLinkEvidence, scope: &Path) -> String {
+    use std::fmt::Write as _;
+
+    if !owner_links.has_owners() {
+        return String::new();
+    }
+    let mut rendered = String::new();
+    if owner_links.edges.is_empty() {
+        if owner_links.attributed_owner_count() >= 2 {
+            let _ = write!(rendered, "\n\n{OWNER_LINK_ZERO_EDGE}");
+        }
+    } else {
+        rendered.push_str("\n\n## Mechanically resolved Go call sites");
+        for edge in owner_links.edges.iter().take(OWNER_LINK_EDGE_CAP) {
+            let _ = write!(
+                rendered,
+                "\n- {} contains call named `{}` at {}:{}; candidate definition `{}` is {}:{}-{} ({}).",
+                edge.caller.qualified_name(),
+                edge.callee_name,
+                format::rel_nonempty(&edge.caller.path, scope),
+                edge.call_line,
+                edge.candidate.qualified_name(),
+                format::rel_nonempty(&edge.candidate.path, scope),
+                edge.candidate.start_line,
+                edge.candidate.end_line,
+                edge.mechanism.label()
+            );
+        }
+    }
+    let _ = write!(rendered, "\n\n{OWNER_LINK_CAVEAT}");
+    rendered
 }
 
 struct TextOrFileRollup {

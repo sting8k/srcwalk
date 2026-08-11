@@ -37,7 +37,6 @@ impl OwnerAnchor {
 
 #[derive(Debug, Clone)]
 pub(crate) struct OwnedTextHit {
-    pub(crate) term: String,
     pub(crate) path: PathBuf,
     pub(crate) line: u32,
     pub(crate) owner: OwnerAnchor,
@@ -49,18 +48,6 @@ pub(crate) enum OwnerCallMechanism {
     CrossFileSameQualifiedReceiver,
     SameFileSameQualifiedReceiver,
     SamePackageBareInvocation,
-}
-
-impl OwnerCallMechanism {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::SingleAssignmentLocalConstructor => "single-assignment local constructor",
-            Self::CrossFileSameQualifiedReceiver | Self::SameFileSameQualifiedReceiver => {
-                "same package-qualified receiver type"
-            }
-            Self::SamePackageBareInvocation => "same-package bare invocation",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -100,7 +87,6 @@ impl OwnerLinkEvidence {
 }
 
 pub(crate) struct OwnerLinkHitInput<'a> {
-    pub(crate) term: &'a str,
     pub(crate) path: &'a Path,
     pub(crate) line: u32,
 }
@@ -168,7 +154,6 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
         for input in path_inputs {
             if let Some(owner) = narrowest_owner(&owners, input.line) {
                 hits.push(OwnedTextHit {
-                    term: input.term.to_string(),
                     path: path.clone(),
                     line: input.line,
                     owner: owner.anchor.clone(),
@@ -996,14 +981,10 @@ mod tests {
         dir
     }
 
-    fn inputs<'a>(term: &'a str, path: &'a Path, lines: &[u32]) -> Vec<OwnerLinkHitInput<'a>> {
+    fn inputs<'a>(_term: &'a str, path: &'a Path, lines: &[u32]) -> Vec<OwnerLinkHitInput<'a>> {
         lines
             .iter()
-            .map(|line| OwnerLinkHitInput {
-                term,
-                path,
-                line: *line,
-            })
+            .map(|line| OwnerLinkHitInput { path, line: *line })
             .collect()
     }
 

@@ -1091,18 +1091,12 @@ fn discover_text_or_go_owners_render_mechanical_call_evidence() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("[owner DB.Apply@3-3]"), "{stdout}");
     assert!(stdout.contains("[owner DB.Set@4-4]"), "{stdout}");
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
     assert!(
-        stdout.contains("## Mechanically resolved Go call sites"),
+        stdout.contains("DB.Set calls Apply@feature.go:4"),
         "{stdout}"
     );
-    assert!(
-        stdout.contains("DB.Set contains call named `Apply`"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("candidate definition `DB.Apply`"),
-        "{stdout}"
-    );
+    assert!(stdout.contains("candidate DB.Apply@:3-3"), "{stdout}");
     assert!(
         stdout.contains("structural owner and mechanically filtered"),
         "{stdout}"
@@ -1141,13 +1135,10 @@ fn discover_text_or_go_owner_render_caps_edge_bullets_at_ten() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("## Mechanically resolved Go call sites"),
-        "{stdout}"
-    );
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
     let bullets = stdout
         .lines()
-        .filter(|l| l.starts_with("- ") && l.contains("contains call named"))
+        .filter(|l| l.starts_with("- [") && l.contains(" calls "))
         .count();
     assert_eq!(bullets, 10, "{stdout}");
     assert!(!stdout.contains("M11"), "{stdout}");
@@ -1185,10 +1176,7 @@ fn discover_text_or_go_owner_only_prints_exact_zero_edge_line_once() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.matches(OWNER_LINK_ZERO_EDGE).count(), 1, "{stdout}");
-    assert!(
-        !stdout.contains("## Mechanically resolved Go call sites"),
-        "{stdout}"
-    );
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
     assert!(
         stdout.contains("structural owner and mechanically filtered"),
         "{stdout}"

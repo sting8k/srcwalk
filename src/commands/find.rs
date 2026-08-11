@@ -11,8 +11,8 @@ use crate::commands::multi_scope::{
 };
 use crate::commands::section_disambiguation::disambiguate_glob_for_section;
 use crate::evidence::owner_links::{
-    build_owner_link_evidence, OwnerAnchor, OwnerLinkEvidence, OwnerLinkHitInput,
-    OWNER_LINK_CAVEAT, OWNER_LINK_EDGE_CAP, OWNER_LINK_ZERO_EDGE,
+    build_owner_link_evidence, OwnerAnchor, OwnerCallMechanism, OwnerLinkEvidence,
+    OwnerLinkHitInput, OWNER_LINK_CAVEAT, OWNER_LINK_EDGE_CAP, OWNER_LINK_ZERO_EDGE,
 };
 use crate::evidence::{render_next_actions, NextAction};
 use crate::types::{Match, QueryType, RegexCoOccurrenceQuery, RegexTextKind, RegexTextQuery};
@@ -30,11 +30,43 @@ const TEXT_OR_WINDOW_CONTEXT_LINES: u32 = 10;
 const TEXT_OR_WINDOW_LIMIT: usize = 3;
 const TEXT_OR_WINDOW_MAX_SPAN: u32 = 80;
 
+/// Mechanism tags + `calls NAME` honesty note, in a one-line legend framing.
+const OWNER_LINK_MECH_LEGEND: &str =
+    "[recv=same package-qualified receiver type; local=single-assignment constructor; calls NAME=call-expression name, not candidate binding; bare=same-package invocation]";
+
+/// Short stable tag for a call mechanism, kept plain-language.
+fn owner_call_mechanism_tag(m: OwnerCallMechanism) -> &'static str {
+    match m {
+        OwnerCallMechanism::SingleAssignmentLocalConstructor => "local",
+        OwnerCallMechanism::CrossFileSameQualifiedReceiver
+        | OwnerCallMechanism::SameFileSameQualifiedReceiver => "recv",
+        OwnerCallMechanism::SamePackageBareInvocation => "bare",
+    }
+}
+
 fn comma_terms(query: &str) -> Vec<&str> {
     query
         .split(',')
         .map(str::trim)
         .filter(|term| !term.is_empty())
+        .collect()
+}
+
+/// Original 1-based comma-separated term positions (before dedup/drop).
+/// Empty slots are dropped but NOT renumbered, so `#N` is honest occurrence
+/// identity: `alpha,alpha,,missing,beta` -> [(1,alpha),(2,alpha),(4,missing),(5,beta)].
+fn indexed_comma_terms(query: &str) -> Vec<(usize, &str)> {
+    query
+        .split(',')
+        .enumerate()
+        .filter_map(|(i, t)| {
+            let t = t.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some((i + 1, t))
+            }
+        })
         .collect()
 }
 
@@ -155,6 +187,7 @@ pub(crate) fn run_text_or_filtered_with_artifact(
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
     let terms = comma_terms(query);
+    let indexed_terms = indexed_comma_terms(query);
     if terms.len() < 2 {
         return Err(SrcwalkError::InvalidQuery {
             query: query.to_string(),
@@ -173,7 +206,7 @@ pub(crate) fn run_text_or_filtered_with_artifact(
     let mut total_files = BTreeSet::new();
     let mut term_results = Vec::with_capacity(terms.len());
 
-    for term in &terms {
+    for (query_term_index, term) in &indexed_terms {
         let mut result = search::search_content_raw_with_artifact(term, scope, glob, artifact)?;
         search::apply_general_filter(&mut result, scope, cache, filter)?;
         total_found += result.total_found;
@@ -193,6 +226,7 @@ pub(crate) fn run_text_or_filtered_with_artifact(
         let omitted = result.total_found.saturating_sub(shown_so_far);
 
         term_results.push(TextOrTermResult {
+            query_term_index: *query_term_index,
             term: (*term).to_string(),
             total_found: result.total_found,
             file_count,
@@ -208,7 +242,6 @@ pub(crate) fn run_text_or_filtered_with_artifact(
             .iter()
             .flat_map(|result| {
                 result.matches.iter().map(|matched| OwnerLinkHitInput {
-                    term: &result.term,
                     path: &matched.path,
                     line: matched.line,
                 })
@@ -259,6 +292,10 @@ pub(crate) fn run_text_or_filtered_with_artifact(
 }
 
 struct TextOrTermResult {
+    /// 1-based position in the ORIGINAL comma-separated user input, before any
+    /// dedup/normalization/drop. Zero-hit and empty-invalid slots keep their
+    /// original index (never renumbered), so `#N` is honest occurrence identity.
+    query_term_index: usize,
     term: String,
     total_found: usize,
     file_count: usize,
@@ -391,7 +428,7 @@ fn render_text_or_file_rollup(
                 file.lines.len() - TEXT_OR_ROLLUP_LINE_LIMIT
             );
         }
-        render_text_or_owner_rollup(&mut rendered, &file.path, scope, owner_links);
+        render_text_or_owner_rollup(&mut rendered, &file.path, owner_links, term_results);
         let windows = text_or_select_hit_windows(file);
         if !windows.is_empty() {
             let summaries = windows
@@ -466,18 +503,29 @@ fn render_text_or_file_rollup(
 fn render_text_or_owner_rollup(
     rendered: &mut String,
     path: &Path,
-    scope: &Path,
     owner_links: &OwnerLinkEvidence,
+    term_results: &[TextOrTermResult],
 ) {
     use std::fmt::Write as _;
 
-    let mut owners: BTreeMap<OwnerAnchor, BTreeMap<String, usize>> = BTreeMap::new();
-    for hit in owner_links.hits.iter().filter(|hit| hit.path == path) {
-        *owners
-            .entry(hit.owner.clone())
-            .or_default()
-            .entry(hit.term.clone())
-            .or_insert(0) += 1;
+    // Aggregate owners by each indexed result's matches + owner attribution.
+    // `#N` is the ORIGINAL comma-separated position (query_term_index), so
+    // exact duplicate terms keep distinct honest indices. `#N` alone = count 1;
+    // `#N*K` = count K.
+    let mut owners: BTreeMap<OwnerAnchor, BTreeMap<usize, usize>> = BTreeMap::new();
+    for result in term_results {
+        for m in &result.matches {
+            if m.path != *path {
+                continue;
+            }
+            if let Some(owner) = owner_links.owner_for(&m.path, m.line) {
+                *owners
+                    .entry(owner.clone())
+                    .or_default()
+                    .entry(result.query_term_index)
+                    .or_insert(0) += 1;
+            }
+        }
     }
     if owners.is_empty() {
         return;
@@ -487,20 +535,30 @@ fn render_text_or_owner_rollup(
         .map(|(owner, terms)| {
             let terms = terms
                 .into_iter()
-                .map(|(term, count)| format!("{term}({count})"))
+                .map(|(index, count)| {
+                    if count <= 1 {
+                        format!("#{index}")
+                    } else {
+                        format!("#{index}*{count}")
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(",");
+            // The file path is already explicit in the enclosing file-scoped
+            // rollup header, so owner anchors use `:start-end` only.
             format!(
-                "{}@{}:{}-{} terms={terms}",
+                "{}:{}-{}[{terms}]",
                 owner.qualified_name(),
-                format::rel_nonempty(&owner.path, scope),
                 owner.start_line,
                 owner.end_line
             )
         })
         .collect::<Vec<_>>()
         .join("; ");
-    let _ = write!(rendered, "\n  owners: {summaries}");
+    let _ = write!(
+        rendered,
+        "\n  owners (#N=Nth query term; *K=hits): {summaries}"
+    );
 }
 
 fn render_owner_link_appendix(owner_links: &OwnerLinkEvidence, scope: &Path) -> String {
@@ -515,20 +573,32 @@ fn render_owner_link_appendix(owner_links: &OwnerLinkEvidence, scope: &Path) -> 
             let _ = write!(rendered, "\n\n{OWNER_LINK_ZERO_EDGE}");
         }
     } else {
-        rendered.push_str("\n\n## Mechanically resolved Go call sites");
+        rendered.push_str("\n\n## Mechanical Go calls ");
+        rendered.push_str(OWNER_LINK_MECH_LEGEND);
         for edge in owner_links.edges.iter().take(OWNER_LINK_EDGE_CAP) {
+            let call_path = format::rel_nonempty(&edge.caller.path, scope);
+            let cand_path = format::rel_nonempty(&edge.candidate.path, scope);
+            // `@:` explicitly means the same call file; cross-file candidates
+            // keep the full repo-relative path.
+            let cand_loc = if call_path == cand_path {
+                format!(
+                    "@:{}-{}",
+                    edge.candidate.start_line, edge.candidate.end_line
+                )
+            } else {
+                format!(
+                    "@{cand_path}:{}-{}",
+                    edge.candidate.start_line, edge.candidate.end_line
+                )
+            };
             let _ = write!(
                 rendered,
-                "\n- {} contains call named `{}` at {}:{}; candidate definition `{}` is {}:{}-{} ({}).",
+                "\n- [{}] {} calls {}@{call_path}:{}; candidate {}{cand_loc}",
+                owner_call_mechanism_tag(edge.mechanism),
                 edge.caller.qualified_name(),
                 edge.callee_name,
-                format::rel_nonempty(&edge.caller.path, scope),
                 edge.call_line,
-                edge.candidate.qualified_name(),
-                format::rel_nonempty(&edge.candidate.path, scope),
-                edge.candidate.start_line,
-                edge.candidate.end_line,
-                edge.mechanism.label()
+                edge.candidate.qualified_name()
             );
         }
     }
@@ -1766,4 +1836,333 @@ pub(crate) fn symbol_or_file_suggestion(
         return Some(format!("{name} ({rel}:{line})"));
     }
     read::suggest_similar_file(scope, query)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::evidence::owner_links::{OwnedTextHit, OwnerAnchor, OwnerCallEvidence};
+    use std::path::PathBuf;
+
+    /// Single parser that recovers (`tag`, `caller`, `callee`, `call_file`,
+    /// `call_line`, `candidate`, `def_range`) from one rendered bullet. The candidate location is
+    /// `@:start-end` (same call file) or `@full/path:start-end` (cross-file).
+    /// Location separators are resolved rightmost (`rsplit_once(':')`) so windows
+    /// drive paths like `C:\repo\pkg\a.go:22` parse correctly.
+    struct ParsedEdge {
+        tag: String,
+        caller: String,
+        callee: String,
+        call_file: String,
+        call_line: u32,
+        candidate: String,
+        cand_file: String,
+        def_range: String,
+    }
+
+    fn parse_edge(b: &str) -> Option<ParsedEdge> {
+        let rest = b.strip_prefix("- [")?;
+        let (tag, rest) = rest.split_once(']')?;
+        let rest = rest.strip_prefix(' ')?;
+        let (caller, rest) = rest.split_once(" calls ")?;
+        // rest = `CALLEE@PATH:LINE; candidate CANDIDATE@LOC`
+        let (callee, rest) = rest.split_once('@')?;
+        let (call_site, cand_site) = rest.split_once("; candidate ")?;
+        let (call_file, call_line) = rsplit_once_colon(call_site)?;
+        let (candidate, cand_loc) = cand_site.split_once('@')?;
+        let (cand_file, def_range) = if let Some(r) = cand_loc.strip_prefix(':') {
+            (call_file.to_string(), r.to_string())
+        } else {
+            let (f, r) = rsplit_once_colon(cand_loc)?;
+            (f.to_string(), r.to_string())
+        };
+        Some(ParsedEdge {
+            tag: tag.to_string(),
+            caller: caller.to_string(),
+            callee: callee.to_string(),
+            call_file: call_file.to_string(),
+            call_line: call_line.to_string().parse().ok()?,
+            candidate: candidate.to_string(),
+            cand_file,
+            def_range,
+        })
+    }
+
+    fn rsplit_once_colon(s: &str) -> Option<(&str, &str)> {
+        let idx = s.rfind(':')?;
+        Some((&s[..idx], &s[idx + 1..]))
+    }
+
+    fn anchor(path: &str, name: &str, receiver: &str, s: u32, e: u32) -> OwnerAnchor {
+        OwnerAnchor {
+            path: PathBuf::from(path),
+            name: name.into(),
+            receiver_var: None,
+            receiver_type: (!receiver.is_empty()).then(|| receiver.to_string()),
+            package_dir: PathBuf::from("."),
+            start_line: s,
+            end_line: e,
+        }
+    }
+
+    fn render(edges: &[OwnerCallEvidence]) -> String {
+        // Seed one hit so has_owners() holds; the appendix renders edges
+        // independently of hit content.
+        let anchor = anchor("seed.go", "Seed", "S", 1, 1);
+        let hits = vec![OwnedTextHit {
+            path: anchor.path.clone(),
+            line: 1,
+            owner: anchor,
+        }];
+        let ev = OwnerLinkEvidence {
+            hits,
+            edges: edges.to_vec(),
+        };
+        render_owner_link_appendix(&ev, Path::new(""))
+    }
+
+    #[test]
+    fn edge_bullets_round_trip_same_file_elision_and_cross_file() {
+        let same_file = OwnerCallEvidence {
+            caller: anchor("pkg/a.go", "Set", "DB", 10, 40),
+            call_line: 22,
+            callee_name: "Apply".into(),
+            candidate: anchor("pkg/a.go", "Apply", "DB", 30, 60),
+            mechanism: OwnerCallMechanism::SameFileSameQualifiedReceiver,
+        };
+        let cross_file = OwnerCallEvidence {
+            caller: anchor("pkg/a.go", "SyncPod", "Kubelet", 5, 50),
+            call_line: 12,
+            callee_name: "killPod".into(),
+            candidate: anchor("pkg/kubelet/sub.go", "killPod", "Kubelet", 7, 20),
+            mechanism: OwnerCallMechanism::CrossFileSameQualifiedReceiver,
+        };
+        let bare = OwnerCallEvidence {
+            caller: anchor("pkg/b.go", "Run", "", 1, 9),
+            call_line: 3,
+            callee_name: "cleanup".into(),
+            candidate: anchor("pkg/b.go", "cleanup", "", 2, 4),
+            mechanism: OwnerCallMechanism::SamePackageBareInvocation,
+        };
+
+        let out = render(&[same_file, cross_file, bare]);
+        let bullets: Vec<&str> = out.lines().filter(|l| l.starts_with("- ")).collect();
+        assert_eq!(bullets.len(), 3, "{out}");
+
+        let e0 = parse_edge(bullets[0]).unwrap();
+        assert_eq!(
+            (e0.tag.as_str(), e0.caller.as_str(), e0.callee.as_str()),
+            ("recv", "DB.Set", "Apply")
+        );
+        assert_eq!(e0.call_file, "pkg/a.go");
+        assert_eq!(e0.call_line, 22);
+        assert_eq!(e0.candidate, "DB.Apply");
+        assert_eq!(e0.cand_file, "pkg/a.go");
+        assert_eq!(e0.def_range, "30-60");
+
+        let e1 = parse_edge(bullets[1]).unwrap();
+        assert_eq!(
+            (e1.tag.as_str(), e1.caller.as_str()),
+            ("recv", "Kubelet.SyncPod")
+        );
+        assert_eq!(e1.call_file, "pkg/a.go");
+        assert_eq!(e1.call_line, 12);
+        assert_eq!(e1.candidate, "Kubelet.killPod");
+        assert_eq!(e1.cand_file, "pkg/kubelet/sub.go");
+        assert_eq!(e1.def_range, "7-20");
+
+        let e2 = parse_edge(bullets[2]).unwrap();
+        assert_eq!(
+            (e2.tag.as_str(), e2.caller.as_str(), e2.callee.as_str()),
+            ("bare", "Run", "cleanup")
+        );
+        assert_eq!(e2.call_file, "pkg/b.go");
+        assert_eq!(e2.call_line, 3);
+        assert_eq!(e2.cand_file, "pkg/b.go");
+        assert_eq!(e2.def_range, "2-4");
+
+        // Legend must be present exactly once.
+        assert_eq!(
+            out.matches("[recv=same package-qualified receiver type")
+                .count(),
+            1,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn edge_bullets_parse_windows_drive_paths_and_colon_safe() {
+        // Windows drive path in the call site; `@:` sentinel for same-file candidate.
+        let same_win = OwnerCallEvidence {
+            caller: anchor(r"C:\repo\pkg\a.go", "Run", "DB", 10, 40),
+            call_line: 22,
+            callee_name: "Apply".into(),
+            candidate: anchor(r"C:\repo\pkg\a.go", "Apply", "DB", 30, 60),
+            mechanism: OwnerCallMechanism::SameFileSameQualifiedReceiver,
+        };
+        // Cross-file windows candidate keeps full path.
+        let cross_win = OwnerCallEvidence {
+            caller: anchor(r"C:\repo\pkg\a.go", "SyncPod", "Kubelet", 5, 50),
+            call_line: 12,
+            callee_name: "killPod".into(),
+            candidate: anchor(r"C:\repo\pkg\sub.go", "killPod", "Kubelet", 7, 20),
+            mechanism: OwnerCallMechanism::CrossFileSameQualifiedReceiver,
+        };
+        let out = render(&[same_win, cross_win]);
+        let bullets: Vec<&str> = out.lines().filter(|l| l.starts_with("- ")).collect();
+        assert_eq!(bullets.len(), 2, "{out}");
+
+        let e0 = parse_edge(bullets[0]).unwrap();
+        assert_eq!(e0.call_file, r"C:\repo\pkg\a.go");
+        assert_eq!(e0.call_line, 22);
+        assert_eq!(e0.cand_file, r"C:\repo\pkg\a.go");
+        assert_eq!(e0.def_range, "30-60");
+
+        let e1 = parse_edge(bullets[1]).unwrap();
+        assert_eq!(e1.call_file, r"C:\repo\pkg\a.go");
+        assert_eq!(e1.call_line, 12);
+        assert_eq!(e1.cand_file, r"C:\repo\pkg\sub.go");
+        assert_eq!(e1.def_range, "7-20");
+    }
+
+    #[test]
+    fn owner_rollup_uses_original_term_index_order_and_counts() {
+        // Three query terms in original positions #1,#3 (position #2 is a
+        // zero-hit/empty slot that must NOT renumber). Owner `Set` hits term #1
+        // once and term #3 twice.
+        let path = PathBuf::from("pkg/a.go");
+        let owner = anchor("pkg/a.go", "Set", "DB", 10, 40);
+        let mk_result = |index: usize, term: &str, lines: Vec<u32>| TextOrTermResult {
+            query_term_index: index,
+            term: term.into(),
+            total_found: lines.len(),
+            file_count: 1,
+            matches: lines
+                .into_iter()
+                .map(|line| Match {
+                    path: path.clone(),
+                    line,
+                    text: String::new(),
+                    is_definition: false,
+                    exact: false,
+                    file_lines: 100,
+                    mtime: std::time::SystemTime::UNIX_EPOCH,
+                    def_range: None,
+                    def_name: None,
+                    def_weight: 0,
+                    impl_target: None,
+                    base_target: None,
+                    in_comment: false,
+                })
+                .collect(),
+            omitted: 0,
+        };
+        let terms = vec![
+            mk_result(1, "alpha", vec![12]),
+            mk_result(3, "beta", vec![14, 15]), // original position 3 (slot 2 empty)
+        ];
+        let hits = vec![
+            OwnedTextHit {
+                path: path.clone(),
+                line: 12,
+                owner: owner.clone(),
+            },
+            OwnedTextHit {
+                path: path.clone(),
+                line: 14,
+                owner: owner.clone(),
+            },
+            OwnedTextHit {
+                path: path.clone(),
+                line: 15,
+                owner: owner.clone(),
+            },
+        ];
+        let ev = OwnerLinkEvidence {
+            hits,
+            edges: Vec::new(),
+        };
+        let mut rendered = String::new();
+        render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
+        assert!(
+            rendered.contains("owners (#N=Nth query term; *K=hits): DB.Set:10-40[#1,#3*2]"),
+            "{rendered}"
+        );
+        // Determinism: rendering twice yields identical output.
+        let mut again = String::new();
+        render_text_or_owner_rollup(&mut again, &path, &ev, &terms);
+        assert_eq!(rendered, again);
+    }
+
+    #[test]
+    fn indexed_comma_terms_keep_original_positions_with_gaps_and_dups() {
+        // `alpha,alpha,,missing,beta` -> indices 1,2,4,5 (empty #3 retained as a
+        // gap; duplicates keep distinct identity).
+        let got = indexed_comma_terms("alpha,alpha,,missing,beta");
+        let expected: Vec<(usize, &str)> =
+            vec![(1, "alpha"), (2, "alpha"), (4, "missing"), (5, "beta")];
+        assert_eq!(got, expected);
+        // Leading/trailing empties and whitespace also do not renumber.
+        let got2 = indexed_comma_terms(", ,alpha,beta,");
+        assert_eq!(got2, vec![(3, "alpha"), (4, "beta")]);
+    }
+
+    #[test]
+    fn owner_rollup_duplicate_zero_hit_and_count_multiplier() {
+        // Query `alpha,alpha,,missing,beta` over a single owner who matches all
+        // four surviving terms on distinct lines. Duplicate #1,#2 both attribute;
+        // zero-hit #4 (missing) must NOT shift beta to a lower index; beta (#5)
+        // hits twice so it renders `#5*2`.
+        let path = PathBuf::from("pkg/a.go");
+        let owner = anchor("pkg/a.go", "Set", "DB", 10, 40);
+        let mk_result = |index: usize, term: &str, lines: Vec<u32>| TextOrTermResult {
+            query_term_index: index,
+            term: term.into(),
+            total_found: lines.len(),
+            file_count: 1,
+            matches: lines
+                .into_iter()
+                .map(|line| Match {
+                    path: path.clone(),
+                    line,
+                    text: String::new(),
+                    is_definition: false,
+                    exact: false,
+                    file_lines: 100,
+                    mtime: std::time::SystemTime::UNIX_EPOCH,
+                    def_range: None,
+                    def_name: None,
+                    def_weight: 0,
+                    impl_target: None,
+                    base_target: None,
+                    in_comment: false,
+                })
+                .collect(),
+            omitted: 0,
+        };
+        // alpha#1 line 12, alpha#2 line 13, missing#4 (no hits, omitted), beta#5 lines 14,15.
+        let terms = vec![
+            mk_result(1, "alpha", vec![12]),
+            mk_result(2, "alpha", vec![13]),
+            mk_result(4, "missing", vec![]),
+            mk_result(5, "beta", vec![14, 15]),
+        ];
+        let hits = vec![12, 13, 14, 15]
+            .into_iter()
+            .map(|line| OwnedTextHit {
+                path: path.clone(),
+                line,
+                owner: owner.clone(),
+            })
+            .collect();
+        let ev = OwnerLinkEvidence {
+            hits,
+            edges: Vec::new(),
+        };
+        let mut rendered = String::new();
+        render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
+        // Duplicate #1,#2 both attribute; zero-hit #4 gap keeps beta at #5 with
+        // count multiplier 2. Order within owner is by ascending index.
+        assert!(rendered.contains("DB.Set:10-40[#1,#2,#5*2]"), "{rendered}");
+    }
 }

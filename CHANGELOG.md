@@ -5,15 +5,24 @@ All notable changes to srcwalk are documented here.
 ## [1.6.0] - 2026-08-12
 
 ### Added
-- Default-on Go structural owner attribution and bounded mechanical call evidence for `discover --match any --as text`: compact file rollups include a narrowest-owner rollup (`owners (#N=Nth query term; *K=hits)`) and a `## Mechanical Go calls` appendix with capped (≤10), deterministically ordered, same-file `@:`-elided direct-call edges.
+- Structural owner attribution for visible `discover --match any --as text` hits across Go, Python, Rust, JavaScript/TypeScript, Java, Kotlin, C#, and PHP. Owner identities are qualified where the language structure supports it, and owner ranges remain exact-read navigation candidates.
+- A bounded mechanical Go call appendix for attributed Go owners, with deterministic ordering, same-file `@:` elision, and explicit `[recv]`, `[local]`, and `[bare]` mechanism labels.
+- Conditional low-signal advisories that report when a text term's measured spread across matched files is broad, alongside the existing result output. The advisory reports measured spread only; it does not change results, ranking, or limits.
 
 ### Changed
-- Go owner evidence is now emitted by default (no opt-in flag). It is navigation evidence only, not runtime order, dynamic dispatch, or an inferred chain; zero-edge owners abstain with an explicit caveat. Owner ranges are candidate exact reads, not relation or binding proof.
+- Repeated output evidence is compacted by grouping stable file paths and provenance while preserving hits, ordering, limits, pagination, caveats, and copy-pasteable targets.
+- Confirmed structural targets now prefer symbol-addressed `show <path> --section <symbol>` actions when the selector round-trips uniquely, with numeric ranges retained as safe fallbacks.
+- Qualified symbol/section handling and deterministic mixed-language owner orchestration were strengthened across the supported owner languages.
 
-### Docs
-- `skills/srcwalk/GUIDE.md` documents the owner rollup, the `[recv]`/`[local]`/`[bare]` edge labels, the `calls NAME` = call-expression-name honesty note, `@:` same-file elision, and the mechanical-filter/dynamic-dispatch caveat.
+### Reliability
+- Added deterministic replay and integration coverage for owner attribution, mixed-language orchestration, exact action routing, output compaction, low-signal advisories, and normalized Windows owner paths.
+- Release binaries are available for Linux x86_64/ARM64, macOS x86_64/ARM64, and Windows x86_64, with SHA-256 files and build-provenance attestations.
 
-Known behavior: on very large monorepos, initial scope-narrowing may add extra navigation turns (srcwalk-general behavior, unrelated to owner evidence; observed in one eval3 run; tokens remained neutral-to-better).
+### Evidence boundary
+- Owner evidence is structural navigation evidence, not runtime binding, dispatch, execution order, or semantic relation proof.
+- Non-Go owner attribution does not infer call edges. Go call candidates remain mechanically filtered navigation evidence and may abstain when the supported proof conditions are absent.
+
+Known behavior: exploratory navigation on large repositories can take additional tool round-trips compared with bulk file reads. Measured comparisons to date are single-run and direction-only; no performance claim is made in either direction.
 
 ## [1.5.0] - 2026-08-10
 

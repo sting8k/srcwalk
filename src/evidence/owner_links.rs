@@ -180,7 +180,8 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
             crate::types::FileType::Code(Lang::JavaScript | Lang::TypeScript | Lang::Tsx)
         );
         let is_java = detected == crate::types::FileType::Code(Lang::Java);
-        if is_go || is_python || is_rust || is_js_ts_family || is_java {
+        let is_kotlin = detected == crate::types::FileType::Code(Lang::Kotlin);
+        if is_go || is_python || is_rust || is_js_ts_family || is_java || is_kotlin {
             by_path
                 .entry(input.path.to_path_buf())
                 .or_default()
@@ -268,6 +269,26 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
             for input in path_inputs {
                 if let Some(owner) =
                     crate::evidence::owners::java::java_owner_for(&regions, &errors, input.line)
+                {
+                    hits.push(OwnedTextHit {
+                        path: path.clone(),
+                        line: input.line,
+                        owner: owner.clone(),
+                    });
+                }
+            }
+            continue;
+        }
+        if detected == crate::types::FileType::Code(Lang::Kotlin) {
+            // Kotlin is owner-only: no call edges are inferred in Wave 2A.
+            let Some((regions, errors)) =
+                crate::evidence::owners::kotlin::kotlin_regions(path, &content)
+            else {
+                continue;
+            };
+            for input in path_inputs {
+                if let Some(owner) =
+                    crate::evidence::owners::kotlin::kotlin_owner_for(&regions, &errors, input.line)
                 {
                     hits.push(OwnedTextHit {
                         path: path.clone(),

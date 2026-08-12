@@ -389,6 +389,28 @@ mod tests {
     }
 
     #[test]
+    fn local_class_inside_static_initializer_abstains() {
+        // A named local class declared inside an initializer has no complete
+        // identity: its lexical path crosses the unnamed initializer context.
+        // `run` must NOT attribute to `Service.Local.run` (or `Service.run`).
+        let (r, e) = parse(
+            "class Service {\n    static {\n        class Local { void run() { int a = 1; } }\n    }\n}\n",
+        );
+        assert_abstain(&r, &e, 3);
+        assert_abstain(&r, &e, 2);
+    }
+
+    #[test]
+    fn local_class_inside_instance_initializer_abstains() {
+        // Same strict crossing-context invariant for a bare instance initializer.
+        let (r, e) = parse(
+            "class Service {\n    {\n        class Local { void run() { int a = 1; } }\n    }\n}\n",
+        );
+        assert_abstain(&r, &e, 3);
+        assert_abstain(&r, &e, 2);
+    }
+
+    #[test]
     fn clean_callable_elsewhere_in_partial_tree_still_eligible() {
         let (r, e) = parse("class Service {\n    void good() { int x = 1; }\n    void broken() {\n        int x = (\n    }\n}\n");
         assert_owner(&r, &e, 2, "Service.good");

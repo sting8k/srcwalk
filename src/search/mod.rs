@@ -11,6 +11,7 @@ mod filter;
 pub mod glob;
 mod go_imports;
 pub mod io;
+mod low_signal;
 pub mod pagination;
 pub mod rank;
 pub mod siblings;
@@ -40,6 +41,9 @@ pub use self::display::{
 pub use self::filter::apply_general_filter;
 pub(crate) use self::io::{file_metadata, read_file_bytes};
 use self::io::{parse_pattern, walker};
+pub(crate) use self::low_signal::{
+    insert_low_signal_advisories, low_signal_term_advisory, low_signal_term_stats,
+};
 use self::pagination::paginate;
 
 use self::display::{
@@ -526,14 +530,7 @@ pub fn search_symbol_glob_raw_with_artifact(
 }
 
 /// Raw content search — returns structured result for programmatic inspection.
-pub fn search_content_raw(
-    query: &str,
-    scope: &Path,
-    glob: Option<&str>,
-) -> Result<SearchResult, SrcwalkError> {
-    search_content_raw_with_artifact(query, scope, glob, ArtifactMode::Source)
-}
-
+/// `eligible_files` is always 0 (counting is opt-in).
 pub fn search_content_raw_with_artifact(
     query: &str,
     scope: &Path,
@@ -542,6 +539,19 @@ pub fn search_content_raw_with_artifact(
 ) -> Result<SearchResult, SrcwalkError> {
     let (pattern, is_regex) = parse_pattern(query);
     content::search_with_artifact(pattern, scope, is_regex, None, glob, artifact)
+}
+
+/// Raw literal-text search that also counts eligible files in the same pass.
+/// Only the explicit single-scope `--as text` and Text OR routes call this;
+/// every other content caller stays on `search_content_raw_with_artifact`.
+pub(crate) fn search_content_raw_with_artifact_counting(
+    query: &str,
+    scope: &Path,
+    glob: Option<&str>,
+    artifact: ArtifactMode,
+) -> Result<SearchResult, SrcwalkError> {
+    let (pattern, is_regex) = parse_pattern(query);
+    content::search_with_artifact_counting(pattern, scope, is_regex, None, glob, artifact)
 }
 
 /// Raw regex search — returns structured result for programmatic inspection.

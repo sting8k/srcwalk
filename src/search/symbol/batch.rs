@@ -84,6 +84,7 @@ pub(super) fn search_batch(
             query: (*query).to_string(),
             scope: scope.to_path_buf(),
             total_found: total,
+            eligible_files: 0,
             definition_candidates: def_count,
             name_occurrence_candidates: merged
                 .iter()

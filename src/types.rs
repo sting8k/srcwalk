@@ -94,7 +94,7 @@ pub struct RegexCoOccurrenceQuery {
 
 /// Provider-owned language identity for removable capability modules.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProviderLang {
     id: LangId,
     label: &'static str,
@@ -121,7 +121,7 @@ impl ProviderLang {
 /// Programming language, carried through the type system so downstream
 /// code never re-detects. Built-in IDs stay closed; provider extensions use
 /// `Lang::Provider` while the compiler still checks built-in coverage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Lang {
     Rust,
     TypeScript,
@@ -176,7 +176,7 @@ impl FileType {
 
 /// What the output contains — shown in the header bracket.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProviderViewMode {
     id: ViewModeId,
     label: &'static str,
@@ -317,6 +317,9 @@ pub struct SearchResult {
     pub scope: PathBuf,
     pub matches: Vec<Match>,
     pub total_found: usize,
+    /// Number of files that survived content-search eligibility guards before matching.
+    /// This denominator is unpaginated and remains stable through filtering and pagination.
+    pub(crate) eligible_files: usize,
     /// Definition candidates before pagination; retained so ambiguity stays visible on every page.
     pub definition_candidates: usize,
     /// Text-matched name occurrences before pagination; excludes literal text-search matches.
@@ -377,7 +380,7 @@ pub struct OutlineEntry {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProviderOutlineKind {
     id: OutlineKindId,
     outline_label: &'static str,
@@ -426,7 +429,7 @@ impl ProviderOutlineKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum OutlineKind {
     Import,
     Function,

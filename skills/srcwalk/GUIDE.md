@@ -64,11 +64,17 @@ srcwalk discover 'foo,bar,baz' --match any --as text --scope <dir>  # literal te
 
 Use auto overview depth first; explicit `--depth N` is strict. Narrow `overview --symbols` shows inline `kind name@line-range` anchors when budget allows; broad auto overview may summarize areas/candidates and emit narrow-scope drilldowns.
 
-Intent inference: path-like globs infer file discovery; punctuation/path comma lists infer literal Text OR; symbol globs stay symbol search. Add `--as symbol|file|text|access` when ambiguous. After a first pass, use `--expand=3`, `--filter kind:fn`, or `--exclude 'tests/**'` only when output is too broad. Regex-style queries are translated, not executed as regex: `foo\(` de-escapes to literal + symbol search, `a.*b` runs same-line ordered co-occurrence, `models\.json` behaves like `models.json`, and an unresolved path fragment like `packages/ai` lists matching relative paths (≤20). Each translation is labeled `interpreted as`; zero-match branches print a `> Try:` recovery line. Windows drive paths and `./`/`../` paths are never treated as regex.
+Intent inference: path-like globs infer file discovery; punctuation/path comma lists infer literal Text OR; symbol globs stay symbol search. Add `--as symbol|file|text|access` when ambiguous. After a first pass, use `--expand=3`, `--filter kind:fn`, or `--exclude 'tests/**'` only when output is too broad. Regex-style queries are translated, not executed as regex: `foo\(` de-escapes to literal + symbol search, `a.*b` runs same-line ordered co-occurrence, `models\.json` behaves like `models.json`, and an unresolved path fragment like `packages/ai` lists matching relative paths (≤20). Each translation is labeled `interpreted as`; zero-match branches print a `> Try:` recovery line. Windows drive paths and `./`/`../` paths are never treated as regex. Text Search and Text OR may add a conditional `> Note:` when a term has at least 400 matches across at least 150 files and reaches at least 1.5% of eligible files; treat it as measured spread, then consider `overview`, a narrower term or scope, or a structural route when that spread was not intentional.
 
-If `discover` prints `## Confirmed structural targets`, run the matching `srcwalk show <path>:<range>` first. Use `srcwalk context <target>` only when you need a Flow Map, scoped occurrences, or call neighborhood; do not run `context` for each hop just to read source.
+If `discover` prints `## Confirmed structural targets`, run the printed `> Next:` command verbatim. It is symbol-addressed (`show <path> --section <symbol>`) when the selector round-trips to the exact body; a numeric `<path>:<start-end>` command is the safe fallback when ambiguity prevents a unique symbol selector. A numeric range shown beside a stable symbol is evidence metadata (a bounded preview), not the preferred body address. Use `srcwalk context <target>` only when you need a Flow Map, scoped occurrences, or call neighborhood; do not run `context` for each hop just to read source.
 
 Symbol discovery separates parser-backed definitions from text-matched name occurrences. Repeated same-name definitions receive an ambiguity caveat. Text discovery remains literal evidence; `--match all` is same-file co-occurrence, not semantic relation proof.
+
+For Go `discover --as text --match any`, matched lines may carry a structural owner rollup and a bounded mechanical call appendix:
+- `owners (#N=...; *K=hits)` lists each matched line's narrowest structural owner by query-term position; the range is a candidate exact read (`srcwalk show`), not relation or runtime binding proof.
+- Edge labels: `[recv]`=same package-qualified receiver type, `[local]`=single-assignment constructor local, `[bare]`=same-package invocation.
+- `calls NAME` names the call expression, not the candidate binding; the candidate is a mechanically filtered definition candidate, not a proven binding.
+- Edges are mechanically filtered direct-call navigation (absence does not rule out dynamic dispatch, DI, callbacks, or protocol wiring); `@:` = candidate in the same call file, cross-file keeps the repo-relative path. Capped, deterministically ordered; zero-edge owners abstain with an explicit caveat.
 
 ### Understand one target or read exact evidence
 
@@ -89,7 +95,7 @@ Do not pass a bare file to `context`; use `show` or root reads. `context` accept
 
 ### Trace calls
 
-Use `trace callers` for upstream call sites and `trace callees` for downstream calls. Do not grep `foo(` for relation claims. Long result lists collapse to the top entries plus a `+N more → <command>` pointer, and wide evidence ranges may appear as an anchor plus an `expand: <command>` line. These pointer lines are exact commands: run them verbatim when you need the remaining items or the full range. Nothing is dropped — collapsed items are always one command away.
+Use `trace callers` for upstream call sites and `trace callees` for downstream calls. Do not grep `foo(` for relation claims. Long result lists collapse to the top entries plus a `+N more → <command>` pointer, and wide evidence ranges may appear as an anchor plus an `expand: <command>` line. These pointer lines are exact commands: run them verbatim when you need the remaining items or the full range. Nothing is dropped — collapsed items are always one command away. Drill down with exact call-site reads or `context` on a caller/callee.
 
 ```bash
 srcwalk trace callers <symbol> --scope <dir>
@@ -97,18 +103,14 @@ srcwalk trace callees <symbol> --detailed --scope <dir>
 srcwalk trace callees <symbol> --depth 2 --scope <dir>
 ```
 
-Drill down with exact call-site reads or `context` on a caller/callee.
-
 ### Inspect file coupling
 
-Use `deps` for imports, links/assets, local symbol deps, and dependents. Run it before file moves, deletes, or coupling explanations. For JS/TS/TSX, alias-derived edges marked `(via tsconfig paths)` are config-derived static evidence, not runtime proof, and `Uses (unresolved local-looking)` lists local-looking specifiers (`./`, `../`, `@/`, `~/`) that resolve to no existing file — known-missing local references, not external packages.
+Use `deps` for imports, links/assets, local symbol deps, and dependents. Run it before file moves, deletes, or coupling explanations. Do not grep import/use/require/link tags for dependency claims. For JS/TS/TSX, alias-derived edges marked `(via tsconfig paths)` are config-derived static evidence, not runtime proof, and `Uses (unresolved local-looking)` lists local-looking specifiers (`./`, `../`, `@/`, `~/`) that resolve to no existing file — known-missing local references, not external packages.
 
 ```bash
 srcwalk deps <file>
 srcwalk context <related-symbol> --scope <dir>
 ```
-
-Do not grep import/use/require/link tags for dependency claims.
 
 ### Assess and review changes
 
@@ -133,13 +135,11 @@ srcwalk compare <symbol-a> <symbol-b> --scope <dir>
 
 ### Confirm raw text or filesystem metadata
 
-Use `rg` for raw regex and regex flags; srcwalk translates common regex-style queries into literal/co-occurrence searches but never runs a regex engine. srcwalk text discovery is literal evidence plus navigation context. Use shell `find`/`fd` only for filesystem metadata: permissions, mtimes, empty dirs, symlinks, binary assets, generated outputs, cleanup lists.
+Use `rg` for raw regex and regex flags; srcwalk translates common regex-style queries into literal/co-occurrence searches but never runs a regex engine. srcwalk text discovery is literal evidence plus navigation context. Use shell `find`/`fd` only for filesystem metadata: permissions, mtimes, empty dirs, symlinks, binary assets, generated outputs, cleanup lists. Do not infer definitions, usages, callers, deps, or code paths from shell path lists, or convert identifiers into paths without evidence.
 
 ```bash
 rg '<regex>' <dir>
 ```
-
-Do not infer definitions, usages, callers, deps, or code paths from shell path lists. Do not convert identifiers into paths without evidence.
 
 ## Artifact and language support
 

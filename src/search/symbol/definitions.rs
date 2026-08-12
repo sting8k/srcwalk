@@ -6,6 +6,10 @@ use std::time::SystemTime;
 use crate::error::SrcwalkError;
 use crate::lang::detect_file_type;
 use crate::lang::outline::outline_language;
+use crate::lang::qualified::{
+    normalize_outline_container, normalize_receiver_type, outline_container_kind,
+    split_dot_symbol_query,
+};
 use crate::lang::treesitter::{
     definition_weight, elixir_definition_weight, extract_base_list_targets,
     extract_definition_name, extract_elixir_definition_name, extract_impl_trait, extract_impl_type,
@@ -307,18 +311,6 @@ fn outline_entry_matches_query(entry: &OutlineEntry, query: &str) -> bool {
         || crate::lang::document::outline_name_matches(entry.kind, &entry.name, query)
 }
 
-/// US-064: split a `Q.N` symbol query — exactly one dot, both sides non-empty.
-/// Multi-dot queries (`a.b.c`) and trailing/leading dots return `None`.
-pub(crate) fn split_dot_symbol_query(query: &str) -> Option<(&str, &str)> {
-    let mut parts = query.split('.');
-    let qualifier = parts.next()?;
-    let plain = parts.next()?;
-    if parts.next().is_some() || qualifier.is_empty() || plain.is_empty() {
-        return None;
-    }
-    Some((qualifier, plain))
-}
-
 /// US-064: extract a Go receiver type from a `method_declaration` node.
 /// The receiver is the first `parameter_list` child; its type is the last
 /// named child of the receiver's `parameter_declaration`.
@@ -341,19 +333,6 @@ fn go_receiver_type_from_node(node: tree_sitter::Node, lines: &[&str]) -> Option
         .last()?;
     let text = node_text_simple(type_node, lines);
     Some(normalize_receiver_type(&text))
-}
-
-/// US-064: normalize a Go receiver type — strip leading `*` and generic
-/// params: `*Batch` → `Batch`, `syncQueue[T]` → `syncQueue`. Shared with the
-/// display layer's ambiguity assist (single source of truth).
-pub(crate) fn normalize_receiver_type(receiver: &str) -> String {
-    let stripped = receiver.trim().trim_start_matches('*').trim();
-    stripped
-        .chars()
-        .take_while(|&c| c != '[')
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 /// US-064: container name if `node` is a container (class/struct/object/
@@ -397,26 +376,6 @@ fn qualified_def_matches(
     }
     lang == Some(crate::types::Lang::Go)
         && go_receiver_type_from_node(node, lines).as_deref() == Some(qualifier)
-}
-
-/// US-064: is this outline kind a container that qualifies its members?
-fn outline_container_kind(kind: OutlineKind) -> bool {
-    matches!(
-        kind,
-        OutlineKind::Class
-            | OutlineKind::Struct
-            | OutlineKind::Module
-            | OutlineKind::Interface
-            | OutlineKind::Enum
-    )
-}
-
-/// US-064: normalize an outline container name — `impl X` entries count as `X`.
-fn normalize_outline_container(name: &str) -> String {
-    name.strip_prefix("impl ")
-        .unwrap_or(name)
-        .trim()
-        .to_string()
 }
 
 fn collect_outline_defs(

@@ -1044,7 +1044,10 @@ fn resolve_symbol(buf: &[u8], path: &Path, symbol: &str) -> Option<(usize, usize
     let content = std::str::from_utf8(buf).ok()?;
     let lang = detect_file_type(path).structural_lang()?;
     let entries = lang_get_outline_entries(content, lang);
-    find_symbol_in_entries(&entries, symbol)
+    // Shared US-064 resolver: exact dotted-name precedence first, then `Q.N`
+    // qualifier + plain-name interpretation (container / Go receiver).
+    crate::lang::qualified::resolve_selector_first(&entries, Some(lang), symbol)
+        .map(|(start, end)| (start as usize, end as usize))
 }
 
 /// Collect symbol names from outline entries (recursively) with their line ranges,
@@ -1092,24 +1095,6 @@ fn collect_symbol_names<'a>(entries: &'a [OutlineEntry], out: &mut Vec<(&'a str,
         ));
         collect_symbol_names(&entry.children, out);
     }
-}
-
-/// Recursively search for a symbol in outline entries.
-fn find_symbol_in_entries(entries: &[OutlineEntry], symbol: &str) -> Option<(usize, usize)> {
-    for entry in entries {
-        if entry.name == symbol
-            || entry.signature.as_deref() == Some(symbol)
-            || crate::lang::css::outline_name_matches(entry.kind, &entry.name, symbol)
-            || crate::lang::document::outline_name_matches(entry.kind, &entry.name, symbol)
-        {
-            return Some((entry.start_line as usize, entry.end_line as usize));
-        }
-        // Search children (methods inside class, etc.)
-        if let Some(range) = find_symbol_in_entries(&entry.children, symbol) {
-            return Some(range);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

@@ -137,6 +137,7 @@ pub(super) fn search_name_glob_with_artifact(
         scope: scope.to_path_buf(),
         matches: merged,
         total_found: total,
+        eligible_files: 0,
         definition_candidates: total,
         name_occurrence_candidates: 0,
         definitions: total,

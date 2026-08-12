@@ -31,6 +31,10 @@ pub(crate) struct NextAction {
     rank: u16,
     confidence: NextActionConfidence,
     source_anchor: Option<Anchor>,
+    /// Non-action evidence/metadata lines rendered verbatim before the
+    /// `> Next:` line (e.g. a numeric anchor beside a symbol-addressed body
+    /// read). These are never actions, so they must not look like one.
+    preamble: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +59,17 @@ impl NextAction {
             rank,
             confidence,
             source_anchor,
+            preamble: Vec::new(),
         }
+    }
+
+    /// Attach non-action evidence/metadata lines rendered before `> Next:`.
+    pub(crate) fn with_preamble(
+        mut self,
+        preamble: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.preamble = preamble.into_iter().map(Into::into).collect();
+        self
     }
 
     pub(crate) fn from_evidence(
@@ -154,6 +168,10 @@ pub(crate) fn render_next_actions(actions: &[NextAction]) -> String {
     let mut out = String::new();
     for action in actions {
         if !out.is_empty() {
+            out.push('\n');
+        }
+        for line in &action.preamble {
+            out.push_str(line);
             out.push('\n');
         }
         let _ = write!(out, "> Next: {}", action.command());

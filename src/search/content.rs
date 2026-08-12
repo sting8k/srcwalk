@@ -1,5 +1,6 @@
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use super::file_metadata;
@@ -45,6 +46,9 @@ pub fn search(
     )
 }
 
+/// Content search. `eligible_files` is always 0 here: counting eligibility is
+/// opt-in and only the explicit literal-text routes request it, so out-of-scope
+/// regex/co-occurrence/expanded/inferred routes incur no per-file counter.
 pub fn search_with_artifact(
     pattern: &str,
     scope: &Path,
@@ -52,6 +56,33 @@ pub fn search_with_artifact(
     context: Option<&Path>,
     glob: Option<&str>,
     artifact: ArtifactMode,
+) -> Result<SearchResult, SrcwalkError> {
+    search_with_artifact_impl(pattern, scope, is_regex, context, glob, artifact, false)
+}
+
+/// Explicit literal-text search variant that also counts eligible files in the
+/// same walker pass via an atomic counter. Only single-scope `--as text` Search
+/// and explicit Text OR call this; every other content caller stays on
+/// `search_with_artifact` with `eligible_files = 0` and no per-file lock.
+pub fn search_with_artifact_counting(
+    pattern: &str,
+    scope: &Path,
+    is_regex: bool,
+    context: Option<&Path>,
+    glob: Option<&str>,
+    artifact: ArtifactMode,
+) -> Result<SearchResult, SrcwalkError> {
+    search_with_artifact_impl(pattern, scope, is_regex, context, glob, artifact, true)
+}
+
+fn search_with_artifact_impl(
+    pattern: &str,
+    scope: &Path,
+    is_regex: bool,
+    context: Option<&Path>,
+    glob: Option<&str>,
+    artifact: ArtifactMode,
+    count_eligible: bool,
 ) -> Result<SearchResult, SrcwalkError> {
     let matcher = if is_regex {
         RegexMatcher::new(pattern)
@@ -64,6 +95,7 @@ pub fn search_with_artifact(
     })?;
 
     let matches: Mutex<Vec<Match>> = Mutex::new(Vec::new());
+    let eligible_files = AtomicUsize::new(0);
     let walker = if artifact.enabled() {
         super::io::walker_with_artifact_dirs(scope, glob)?
     } else {
@@ -73,6 +105,7 @@ pub fn search_with_artifact(
     walker.run(|| {
         let matcher = &matcher;
         let matches = &matches;
+        let eligible_files = &eligible_files;
 
         Box::new(move |entry| {
             let Ok(entry) = entry else {
@@ -102,6 +135,13 @@ pub fn search_with_artifact(
                 if meta.len() > max_size {
                     return ignore::WalkState::Continue;
                 }
+            }
+
+            // On the opt-in counting variant, tally eligibility in this existing
+            // content-search pass, after every walker/glob/artifact/binary/size
+            // guard and before I/O. Non-counting callers skip the atomic touch.
+            if count_eligible {
+                eligible_files.fetch_add(1, Ordering::Relaxed);
             }
 
             let (file_lines, mtime) = file_metadata(path);
@@ -150,6 +190,11 @@ pub fn search_with_artifact(
     let mut all_matches = matches
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let eligible_files = if count_eligible {
+        eligible_files.load(Ordering::Relaxed)
+    } else {
+        0
+    };
 
     rank::sort(&mut all_matches, pattern, scope, context);
 
@@ -160,6 +205,7 @@ pub fn search_with_artifact(
         scope: scope.to_path_buf(),
         matches: all_matches,
         total_found: total,
+        eligible_files,
         definition_candidates: 0,
         name_occurrence_candidates: 0,
         definitions: 0,
@@ -168,4 +214,44 @@ pub fn search_with_artifact(
         has_more: false,
         offset: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ArtifactMode;
+
+    use super::{search_with_artifact, search_with_artifact_counting};
+
+    #[test]
+    fn eligible_counting_is_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn one() { frobnicate }\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn two() { frobnicate }\n").unwrap();
+
+        // Non-opt-in content search must not collect an eligible denominator.
+        let plain = search_with_artifact(
+            "frobnicate",
+            dir.path(),
+            false,
+            None,
+            None,
+            ArtifactMode::Source,
+        )
+        .unwrap();
+        assert_eq!(plain.eligible_files, 0, "non-opt-in route abstains");
+        assert_eq!(plain.total_found, 2);
+
+        // The opt-in literal-text variant reports the eligible-file count.
+        let counted = search_with_artifact_counting(
+            "frobnicate",
+            dir.path(),
+            false,
+            None,
+            None,
+            ArtifactMode::Source,
+        )
+        .unwrap();
+        assert_eq!(counted.eligible_files, 2, "opt-in route counts eligibility");
+        assert_eq!(counted.total_found, 2);
+    }
 }

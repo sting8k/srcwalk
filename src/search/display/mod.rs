@@ -97,7 +97,7 @@ pub(super) fn is_artifact_anchor_match(m: &Match) -> bool {
     m.is_definition && m.text.starts_with("artifact anchor ")
 }
 
-fn match_evidence_source(m: &Match) -> EvidenceSource {
+pub(super) fn match_evidence_source(m: &Match) -> EvidenceSource {
     if is_artifact_anchor_match(m) {
         EvidenceSource::Artifact
     } else if matches!(
@@ -119,7 +119,7 @@ pub(super) fn document_outline_kind_label(kind: OutlineKind) -> Option<&'static 
     }
 }
 
-fn displayed_evidence_kind_label(m: &Match) -> &'static str {
+pub(super) fn displayed_evidence_kind_label(m: &Match) -> &'static str {
     if m.in_comment {
         "comment occurrence"
     } else if m.impl_target.is_some() {
@@ -151,6 +151,98 @@ pub(super) fn append_match_provenance_with_kind(
 
 pub(super) fn append_match_provenance(m: &Match, out: &mut String, indent: &str) {
     append_match_provenance_with_kind(m, out, indent, None);
+}
+
+/// The exact provenance tuple string a non-definition match would print, used to
+/// compare against a section default for suppression. Mirrors
+/// `append_match_provenance` (no kind override).
+fn non_definition_provenance_tuple(m: &Match) -> String {
+    let source = match_evidence_source(m);
+    format!(
+        "source: {} · kind: {} · confidence: {}",
+        evidence_source_label_for(source),
+        displayed_evidence_kind_label(m),
+        confidence_label_for(source)
+    )
+}
+
+/// Append facet rows (Tests, Comments) grouping two or more visible hits from
+/// the same file under a file header. Grouping applies only when it is strictly
+/// fewer UTF-8 bytes than the ungrouped inline rows; a tie keeps ungrouped.
+/// Single-hit files keep their current one-line shape. Ordering is
+/// first-appearance by file, then original order.
+fn append_facet_grouped_rows(out: &mut String, matches: &[Match], scope: &Path) {
+    use std::collections::HashMap;
+    use std::fmt::Write as _;
+
+    let mut files: Vec<(&Path, Vec<&Match>)> = Vec::new();
+    for m in matches {
+        match files.iter_mut().find(|(p, _)| *p == m.path.as_path()) {
+            Some((_, group)) => group.push(m),
+            None => files.push((m.path.as_path(), vec![m])),
+        }
+    }
+
+    // Precompute the per-path decision: grouped when strictly smaller, else
+    // inline (single-hit, tie, or loss).
+    let mut grouped_by_path: HashMap<&Path, String> = HashMap::new();
+    for (path, group) in &files {
+        if group.len() < 2 {
+            continue;
+        }
+        let mut grouped_candidate = String::new();
+        let _ = write!(
+            grouped_candidate,
+            "\n  {} [{} matches]",
+            crate::format::rel_nonempty(path, scope),
+            group.len()
+        );
+        for m in group {
+            let atom = (*m).to_evidence_atom();
+            let _ = write!(
+                grouped_candidate,
+                "\n    :{} — {}",
+                atom.anchor().start_line(),
+                atom.snippet().trim()
+            );
+        }
+
+        let mut ungrouped_candidate = String::new();
+        append_facet_ungrouped_rows(&mut ungrouped_candidate, group, scope);
+
+        if grouped_candidate.len() < ungrouped_candidate.len() {
+            grouped_by_path.insert(path, grouped_candidate);
+        }
+    }
+
+    // Iterate the original visible slice. Emit a profitable group once at its
+    // first occurrence; emit every other (single-hit / unprofitable) row at its
+    // original position so rejected/tied file rows keep their relative order.
+    let mut emitted: std::collections::HashSet<&Path> = std::collections::HashSet::new();
+    for m in matches {
+        let path = m.path.as_path();
+        if let Some(grouped) = grouped_by_path.get(path) {
+            if emitted.insert(path) {
+                out.push_str(grouped);
+            }
+            continue;
+        }
+        append_facet_ungrouped_rows(out, &[m], scope);
+    }
+}
+
+/// Render every hit in a file as a one-line inline row (the ungrouped shape).
+fn append_facet_ungrouped_rows(out: &mut String, group: &[&Match], scope: &Path) {
+    use std::fmt::Write as _;
+    for m in group {
+        let atom = m.to_evidence_atom();
+        let _ = write!(
+            out,
+            "\n  {} — {}",
+            atom.anchor().display_relative_to(scope),
+            atom.snippet().trim()
+        );
+    }
 }
 pub fn format_raw_result(
     result: &SearchResult,
@@ -307,11 +399,15 @@ fn format_scope_miss(expanded: &glob::GlobResult, root: &Path, pattern: &str) ->
     out
 }
 
-/// Format match entries with optional expansion.
+/// Format compact facet matches. When `hoist_provenance` is true (used only for
+/// the `Matches — same package` `usages_local` facet), the most frequent
+/// non-definition provenance tuple is hoisted once as a section default and
+/// identical per-group provenance is suppressed; deviations print locally.
 fn format_compact_facet_matches(
     matches: &[Match],
     scope: &Path,
     cache: &OutlineCache,
+    hoist_provenance: bool,
     out: &mut String,
 ) {
     let mut definitions: IndexMap<&Path, Vec<&Match>> = IndexMap::new();
@@ -324,25 +420,33 @@ fn format_compact_facet_matches(
         }
     }
 
-    for (path, group) in definitions {
-        if group.len() == 1 {
-            semantic::format_definition_semantic_match(group[0], scope, cache, out);
-            continue;
-        }
-        let _ = write!(
-            out,
-            "\n  {} [{} matches]",
-            rel_nonempty(path, scope),
-            group.len()
-        );
-        for m in group {
-            semantic::format_definition_semantic_match_in_file(m, cache, out);
-        }
+    render_compact_definitions(&definitions, scope, cache, out);
+
+    // Hoist the most frequent non-definition provenance tuple as a section
+    // default when requested (usages_local only). Only suppress when the
+    // section has >= 2 provenance carriers. The default is chosen from the
+    // actual rendered provenance carriers (one per path group / single row,
+    // i.e. `group[0]`), NOT weighted by the number of child hits — a group
+    // renders one provenance line regardless of how many matches it contains.
+    // Ties resolve by first-appearance.
+    let carriers: Vec<&Match> = grouped.values().map(|g| g[0]).collect();
+    let suppress = if hoist_provenance && carriers.len() >= 2 {
+        pick_non_definition_provenance_default(&carriers)
+    } else {
+        None
+    };
+    if let Some(tuple) = &suppress {
+        let _ = write!(out, "\n  {tuple}");
     }
 
     for (path, group) in grouped {
         if group.len() == 1 {
-            format_compact_non_definition_match(group[0], scope, out);
+            format_compact_non_definition_match_suppressed(
+                group[0],
+                scope,
+                out,
+                suppress.as_deref(),
+            );
             continue;
         }
         let noun = non_definition_group_noun(group[0]);
@@ -352,7 +456,7 @@ fn format_compact_facet_matches(
             rel_nonempty(path, scope),
             group.len()
         );
-        append_match_provenance(group[0], out, "    ");
+        append_match_provenance_if_not_default(group[0], out, "    ", suppress.as_deref());
         for m in group {
             let atom = m.to_evidence_atom();
             let kind = non_definition_label(m);
@@ -366,7 +470,108 @@ fn format_compact_facet_matches(
     }
 }
 
-fn format_compact_non_definition_match(m: &Match, scope: &Path, out: &mut String) {
+/// Render the compact Definitions facet, hoisting the most frequent provenance
+/// tuple as a section default and suppressing identical per-entry provenance.
+/// The default is page-local and deterministic: most frequent tuple, ties by
+/// first occurrence; never cached or carried across `--offset` pages.
+fn render_compact_definitions(
+    definitions: &IndexMap<&Path, Vec<&Match>>,
+    scope: &Path,
+    cache: &OutlineCache,
+    out: &mut String,
+) {
+    use std::fmt::Write as _;
+
+    // Flatten visible definitions in first-appearance order to pick the default.
+    let mut flat: Vec<&Match> = Vec::new();
+    for group in definitions.values() {
+        flat.extend(group.iter().copied());
+    }
+    let default = pick_definition_provenance_default(&flat, cache);
+
+    // Hoist the default tuple once below the section header only when the
+    // section has >= 2 visible definitions; a single definition keeps its
+    // current per-entry provenance byte-identical.
+    let suppress = default.filter(|_| flat.len() >= 2);
+    if let Some(tuple) = &suppress {
+        let _ = write!(out, "\n  {tuple}");
+    }
+
+    for (path, group) in definitions {
+        if group.len() == 1 {
+            semantic::format_definition_semantic_match_suppressed(
+                group[0],
+                scope,
+                cache,
+                out,
+                suppress.as_deref(),
+            );
+            continue;
+        }
+        let _ = write!(
+            out,
+            "\n  {} [{} matches]",
+            rel_nonempty(path, scope),
+            group.len()
+        );
+        for m in group {
+            semantic::format_definition_semantic_match_in_file_suppressed(
+                m,
+                cache,
+                out,
+                suppress.as_deref(),
+            );
+        }
+    }
+}
+
+/// Select the most frequent visible definition provenance tuple as the section
+/// default; ties resolve by first occurrence. Returns `None` when there is no
+/// computable tuple (e.g. all relation/impl entries), so nothing is hoisted.
+fn pick_definition_provenance_default(matches: &[&Match], cache: &OutlineCache) -> Option<String> {
+    pick_most_frequent(
+        matches
+            .iter()
+            .filter_map(|m| semantic::definition_provenance_tuple(m, cache)),
+    )
+}
+
+/// Select the most frequent non-definition provenance tuple as the section
+/// default; ties resolve by first occurrence.
+fn pick_non_definition_provenance_default(matches: &[&Match]) -> Option<String> {
+    pick_most_frequent(matches.iter().map(|m| non_definition_provenance_tuple(m)))
+}
+
+/// Most frequent tuple; ties resolve by first occurrence (iteration order).
+fn pick_most_frequent(tuples: impl Iterator<Item = String>) -> Option<String> {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for tuple in tuples {
+        match counts.iter_mut().find(|(t, _)| *t == tuple) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((tuple, 1)),
+        }
+    }
+    let mut best: Option<(String, usize)> = None;
+    for (tuple, count) in counts {
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_count)| count > *best_count)
+        {
+            best = Some((tuple, count));
+        }
+    }
+    best.map(|(tuple, _)| tuple)
+}
+
+/// Compact single-row non-definition match. When `suppress` equals the entry's
+/// exact provenance tuple, the per-entry provenance line is omitted (hoisted to
+/// the section default computed by the caller); a deviation prints locally.
+fn format_compact_non_definition_match_suppressed(
+    m: &Match,
+    scope: &Path,
+    out: &mut String,
+    suppress: Option<&str>,
+) {
     let atom = m.to_evidence_atom();
     let kind = non_definition_label(m);
     let _ = write!(
@@ -375,7 +580,23 @@ fn format_compact_non_definition_match(m: &Match, scope: &Path, out: &mut String
         atom.anchor().display_relative_to(scope),
         atom.snippet().trim()
     );
-    append_match_provenance(m, out, "  ");
+    append_match_provenance_if_not_default(m, out, "  ", suppress);
+}
+
+/// Append provenance only when it deviates from the section default (or there is
+/// no default). Exactly matches `append_match_provenance` otherwise.
+fn append_match_provenance_if_not_default(
+    m: &Match,
+    out: &mut String,
+    indent: &str,
+    suppress: Option<&str>,
+) {
+    if let Some(default) = suppress {
+        if non_definition_provenance_tuple(m) == default {
+            return;
+        }
+    }
+    append_match_provenance(m, out, indent);
 }
 
 /// Groups consecutive usage matches in the same enclosing function to reduce token noise.
@@ -741,7 +962,13 @@ pub(super) fn format_search_result_with_header(
         if !faceted.definitions.is_empty() {
             let _ = write!(out, "\n\n### Definitions ({})", faceted.definitions.len());
             if compact_facets {
-                format_compact_facet_matches(&faceted.definitions, &result.scope, cache, &mut out);
+                format_compact_facet_matches(
+                    &faceted.definitions,
+                    &result.scope,
+                    cache,
+                    false,
+                    &mut out,
+                );
             } else {
                 format_matches(
                     &faceted.definitions,
@@ -772,6 +999,7 @@ pub(super) fn format_search_result_with_header(
                     &faceted.implementations,
                     &result.scope,
                     cache,
+                    false,
                     &mut out,
                 );
             } else {
@@ -796,7 +1024,7 @@ pub(super) fn format_search_result_with_header(
         if !faceted.bases.is_empty() {
             let _ = write!(out, "\n\n### Base relationships ({})", faceted.bases.len());
             if compact_facets {
-                format_compact_facet_matches(&faceted.bases, &result.scope, cache, &mut out);
+                format_compact_facet_matches(&faceted.bases, &result.scope, cache, false, &mut out);
             } else {
                 format_matches(
                     &faceted.bases,
@@ -820,36 +1048,26 @@ pub(super) fn format_search_result_with_header(
             let _ = write!(out, "\n\n### Tests ({})", faceted.tests.len());
             append_match_provenance(&faceted.tests[0], &mut out, "");
             // Compact test format — one line per match, no expand budget consumed
-            for m in &faceted.tests {
-                let atom = m.to_evidence_atom();
-                let _ = write!(
-                    out,
-                    "\n  {} — {}",
-                    atom.anchor().display_relative_to(&result.scope),
-                    atom.snippet().trim()
-                );
-            }
+            append_facet_grouped_rows(&mut out, &faceted.tests, &result.scope);
         }
 
         if !faceted.comments.is_empty() {
             let _ = write!(out, "\n\n### Comments ({})", faceted.comments.len());
             append_match_provenance(&faceted.comments[0], &mut out, "");
-            for m in &faceted.comments {
-                let atom = m.to_evidence_atom();
-                let _ = write!(
-                    out,
-                    "\n  {} — {}",
-                    atom.anchor().display_relative_to(&result.scope),
-                    atom.snippet().trim()
-                );
-            }
+            append_facet_grouped_rows(&mut out, &faceted.comments, &result.scope);
         }
 
         if !faceted.usages_local.is_empty() {
             let header = non_definition_facet_heading(&faceted.usages_local, true);
             let _ = write!(out, "\n\n### {header} ({})", faceted.usages_local.len());
             if compact_facets {
-                format_compact_facet_matches(&faceted.usages_local, &result.scope, cache, &mut out);
+                format_compact_facet_matches(
+                    &faceted.usages_local,
+                    &result.scope,
+                    cache,
+                    true,
+                    &mut out,
+                );
             } else {
                 format_matches(
                     &faceted.usages_local,
@@ -873,7 +1091,13 @@ pub(super) fn format_search_result_with_header(
             let header = non_definition_facet_heading(&faceted.usages_cross, false);
             let _ = write!(out, "\n\n### {header} ({})", faceted.usages_cross.len());
             if compact_facets {
-                format_compact_facet_matches(&faceted.usages_cross, &result.scope, cache, &mut out);
+                format_compact_facet_matches(
+                    &faceted.usages_cross,
+                    &result.scope,
+                    cache,
+                    false,
+                    &mut out,
+                );
             } else {
                 format_matches(
                     &faceted.usages_cross,
@@ -951,15 +1175,18 @@ pub(super) fn format_search_result_with_header(
         );
     }
 
-    if result.total_found > 0 {
-        let guidance = if has_structural_next_targets {
-            "read the confirmed structural target above, or use `srcwalk context <target>` only when you need a Flow Map or call neighborhood."
-        } else {
-            "read exact hit evidence with `srcwalk show <path>:<line> -C 10`."
-        };
+    // When a confirmed-structural-target block exists, it already owns the
+    // next action(s); appending a generic guidance `> Next:` here would create
+    // a competing primary action. Only add the numeric exact-hit guidance when
+    // there is no structural target (text/access/name occurrence evidence).
+    if result.total_found > 0 && !has_structural_next_targets {
         append_next_action(
             &mut footer,
-            NextAction::guidance(guidance, "read exact hit evidence", 50),
+            NextAction::guidance(
+                "read exact hit evidence with `srcwalk show <path>:<line> -C 10`.",
+                "read exact hit evidence",
+                50,
+            ),
         );
     }
 
@@ -1298,5 +1525,402 @@ mod us062_paths_equivalent_tests {
         std::fs::create_dir_all(base.join("two")).unwrap();
         assert!(!paths_equivalent(&base.join("one"), &base.join("two")));
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod provenance_tuple_tests {
+    use super::*;
+    use crate::types::Match;
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+
+    fn def_match(name: &str, line: u32) -> Match {
+        Match {
+            path: PathBuf::from(format!("/repo/{name}.go")),
+            line,
+            text: format!("func {name}() {{}}"),
+            is_definition: true,
+            exact: true,
+            file_lines: 40,
+            mtime: SystemTime::now(),
+            def_range: Some((line, line + 1)),
+            def_name: Some(name.to_string()),
+            def_weight: 80,
+            impl_target: None,
+            base_target: None,
+            in_comment: false,
+        }
+    }
+
+    fn tuple_of(m: &[&Match], cache: &OutlineCache) -> Option<String> {
+        pick_definition_provenance_default(m, cache)
+    }
+
+    #[test]
+    fn uniform_ast_definitions_produce_ast_tuple() {
+        let cache = OutlineCache::default();
+        let a = def_match("A", 1);
+        let b = def_match("B", 5);
+        let c = def_match("C", 9);
+        let got = tuple_of(&[&a, &b, &c], &cache).unwrap();
+        assert_eq!(
+            got,
+            "source: ast · kind: definition · confidence: structural syntax"
+        );
+    }
+
+    #[test]
+    fn most_frequent_tuple_wins_and_ties_by_first_occurrence() {
+        let cache = OutlineCache::default();
+        let ast_a = def_match("A", 1);
+        let ast_b = def_match("B", 5);
+        // A deviation: a plain (non-definition) name occurrence in a code file
+        // yields a text tuple different from the AST definition tuple.
+        let dev = Match {
+            path: PathBuf::from("/repo/usage.go"),
+            line: 3,
+            text: "A()".to_string(),
+            is_definition: false,
+            exact: true,
+            file_lines: 40,
+            mtime: SystemTime::now(),
+            def_range: None,
+            def_name: None,
+            def_weight: 0,
+            impl_target: None,
+            base_target: None,
+            in_comment: false,
+        };
+        // 3 AST defs vs 2 deviations -> AST wins (most frequent).
+        let ast_c = def_match("C", 9);
+        let got = tuple_of(&[&ast_a, &ast_b, &ast_c, &dev, &dev], &cache).unwrap();
+        assert_eq!(
+            got,
+            "source: ast · kind: definition · confidence: structural syntax"
+        );
+        // Single deviation only -> the deviation tuple is the default (honest).
+        let dev_only = tuple_of(&[&dev], &cache).unwrap();
+        assert_eq!(
+            dev_only,
+            "source: text · kind: name occurrence · confidence: text evidence"
+        );
+    }
+
+    #[test]
+    fn impl_base_entries_are_excluded_from_default() {
+        let cache = OutlineCache::default();
+        let a = def_match("A", 1);
+        let impl_match = Match {
+            impl_target: Some("Trait".to_string()),
+            ..def_match("B", 5)
+        };
+        let got = tuple_of(&[&a, &impl_match], &cache).unwrap();
+        assert_eq!(
+            got,
+            "source: ast · kind: definition · confidence: structural syntax"
+        );
+    }
+
+    fn name_occurrence_match(path: &str, line: u32) -> Match {
+        Match {
+            path: PathBuf::from(path),
+            line,
+            text: "a.A()".to_string(),
+            is_definition: false,
+            exact: true,
+            file_lines: 40,
+            mtime: SystemTime::now(),
+            def_range: None,
+            def_name: None,
+            def_weight: 0,
+            impl_target: None,
+            base_target: None,
+            in_comment: false,
+        }
+    }
+
+    #[test]
+    fn non_definition_default_picks_most_frequent_usage_tuple() {
+        // usages_local provenance hoist: uniform name occurrences pick the
+        // text/name-occurrence tuple as the default.
+        let a = name_occurrence_match("/repo/x.go", 1);
+        let b = name_occurrence_match("/repo/y.go", 5);
+        let c = name_occurrence_match("/repo/z.go", 9);
+        let got = pick_non_definition_provenance_default(&[&a, &b, &c]).unwrap();
+        assert_eq!(
+            got,
+            "source: text · kind: name occurrence · confidence: text evidence"
+        );
+    }
+
+    #[test]
+    fn non_definition_deviation_keeps_own_tuple() {
+        // A document/text deviation (different tuple) among usages_local is not
+        // folded into the default; the majority name-occurrence tuple wins.
+        let a = name_occurrence_match("/repo/x.go", 1);
+        let b = name_occurrence_match("/repo/y.go", 5);
+        // Deviation: a comment occurrence (kind differs).
+        let dev = Match {
+            in_comment: true,
+            ..name_occurrence_match("/repo/x.go", 3)
+        };
+        let got = pick_non_definition_provenance_default(&[&a, &b, &dev]).unwrap();
+        assert_eq!(
+            got,
+            "source: text · kind: name occurrence · confidence: text evidence"
+        );
+        // Single deviation only -> the deviation tuple is the (honest) default.
+        let dev_only = pick_non_definition_provenance_default(&[&dev]).unwrap();
+        assert_eq!(
+            dev_only,
+            "source: text · kind: comment occurrence · confidence: text evidence"
+        );
+    }
+
+    #[test]
+    fn conditional_grouping_tie_keeps_ungrouped() {
+        // A 2-hit short-path group is a tie/no-gain: the inline shape is chosen.
+        let out = "";
+        let _ = out;
+        // Compare the two candidate byte lengths directly for a short path.
+        let path = std::path::Path::new("/repo/a.go");
+        let scope = std::path::Path::new("/repo");
+        let mut grouped = String::new();
+        let mut ungrouped = String::new();
+        let m1 = name_occurrence_match("/repo/a.go", 1);
+        let m2 = name_occurrence_match("/repo/a.go", 2);
+        let group: Vec<&Match> = vec![&m1, &m2];
+        let _ = write!(
+            grouped,
+            "\n  {} [{} matches]\n    :1 — t\n    :2 — t",
+            crate::format::rel_nonempty(path, scope),
+            2
+        );
+        for m in &group {
+            let atom = m.to_evidence_atom();
+            let _ = write!(
+                ungrouped,
+                "\n  {} — {}",
+                atom.anchor().display_relative_to(scope),
+                atom.snippet().trim()
+            );
+        }
+        // Short path: grouped is not strictly smaller, so ungrouped wins.
+        assert!(
+            grouped.len() >= ungrouped.len(),
+            "short-path 2-hit group should not be strictly smaller"
+        );
+    }
+
+    fn artifact_anchor_match(name: &str, line: u32) -> Match {
+        Match {
+            path: PathBuf::from(format!("/repo/bundle.min.js")),
+            line,
+            text: format!("artifact anchor export {name}"),
+            is_definition: true,
+            exact: true,
+            file_lines: 40,
+            mtime: SystemTime::now(),
+            def_range: Some((line, line + 1)),
+            def_name: Some(name.to_string()),
+            def_weight: 80,
+            impl_target: None,
+            base_target: None,
+            in_comment: false,
+        }
+    }
+
+    #[test]
+    fn artifact_anchor_default_hoisted_once() {
+        // Blocker fix: an artifact anchor's definition provenance tuple is
+        // `source: artifact · kind: anchor ...`, so when it is the section
+        // default it must be suppressed per-entry (printed once as the default).
+        let cache = OutlineCache::default();
+        let a1 = artifact_anchor_match("A1", 1);
+        let a2 = artifact_anchor_match("A2", 1);
+        let a3 = artifact_anchor_match("A3", 1);
+        let a4 = artifact_anchor_match("A4", 1);
+        let a5 = artifact_anchor_match("A5", 1);
+        let a6 = artifact_anchor_match("A6", 1);
+        // All artifact anchors share one provenance tuple -> it is the default.
+        let default = tuple_of(&[&a1, &a2, &a3, &a4, &a5, &a6], &cache).unwrap();
+        assert_eq!(
+            default,
+            "source: artifact · kind: anchor · confidence: artifact-level"
+        );
+        // Rendering the compact Definitions facet must not repeat the default
+        // after every anchor entry.
+        let mut map: IndexMap<&Path, Vec<&Match>> = IndexMap::new();
+        map.insert(a1.path.as_path(), vec![&a1, &a2, &a3, &a4, &a5, &a6]);
+        let scope = Path::new("/repo");
+        let mut out = String::new();
+        render_compact_definitions(&map, scope, &cache, &mut out);
+        assert_eq!(
+            out.matches("kind: anchor · confidence: artifact-level")
+                .count(),
+            1,
+            "artifact anchor default must be printed once (hoisted), got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn artifact_anchor_mixed_keeps_deviation_tuple() {
+        // Blocker fix: when the section default is an artifact-anchor tuple, a
+        // non-anchor definition deviation must still print its own tuple.
+        let cache = OutlineCache::default();
+        let a1 = artifact_anchor_match("A1", 1);
+        let a2 = artifact_anchor_match("A2", 1);
+        let a3 = artifact_anchor_match("A3", 1);
+        let a4 = artifact_anchor_match("A4", 1);
+        let a5 = artifact_anchor_match("A5", 1);
+        // Deviation: a Go AST definition (different provenance tuple).
+        let go = Match {
+            path: PathBuf::from("/repo/lib.go"),
+            line: 5,
+            text: "func Lib() {}".to_string(),
+            is_definition: true,
+            exact: true,
+            file_lines: 40,
+            mtime: SystemTime::now(),
+            def_range: Some((5, 6)),
+            def_name: Some("Lib".to_string()),
+            def_weight: 80,
+            impl_target: None,
+            base_target: None,
+            in_comment: false,
+        };
+        // 5 anchors > 1 AST -> anchor tuple is the default.
+        let mut map: IndexMap<&Path, Vec<&Match>> = IndexMap::new();
+        map.insert(a1.path.as_path(), vec![&a1, &a2, &a3, &a4, &a5]);
+        map.insert(go.path.as_path(), vec![&go]);
+        let scope = Path::new("/repo");
+        let mut out = String::new();
+        render_compact_definitions(&map, scope, &cache, &mut out);
+        // The hoisted default (anchor) appears once as the section default.
+        assert_eq!(
+            out.matches("kind: anchor · confidence: artifact-level")
+                .count(),
+            1,
+            "anchor default should be printed once, got:\n{out}"
+        );
+        // The Go definition deviation keeps its own tuple.
+        assert!(
+            out.contains("source: ast · kind: definition · confidence: structural syntax"),
+            "AST deviation must keep its own provenance tuple, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn usages_local_default_uses_carriers_not_child_count() {
+        // Blocker fix: the usages_local default is chosen from the actual
+        // rendered provenance carriers (one `group[0]` per path group), NOT
+        // weighted by the number of child hits. Here one path group has many
+        // name-occurrence children but there are two comment-only singleton
+        // carriers: the comment tuple wins as the default even though the
+        // child count favors name occurrences.
+        let cache = OutlineCache::default();
+        // Carrier A: a path group with 6 name-occurrence children (only its
+        // `group[0]` is a carrier).
+        let mut group_a = Vec::new();
+        for i in 0..6 {
+            group_a.push(name_occurrence_match("/repo/a.go", i + 1));
+        }
+        // Carriers B and C: two comment-occurrence singletons (each a carrier).
+        let b = Match {
+            in_comment: true,
+            path: PathBuf::from("/repo/b.go"),
+            ..name_occurrence_match("/repo/b.go", 1)
+        };
+        let c = Match {
+            in_comment: true,
+            path: PathBuf::from("/repo/c.go"),
+            ..name_occurrence_match("/repo/c.go", 1)
+        };
+        // Carriers = [a.go -> name, b.go -> comment, c.go -> comment].
+        // The comment tuple wins 2 vs 1 (carrier-based).
+        let mut map: IndexMap<&Path, Vec<&Match>> = IndexMap::new();
+        map.insert(
+            group_a.first().unwrap().path.as_path(),
+            group_a.iter().collect(),
+        );
+        map.insert(b.path.as_path(), vec![&b]);
+        map.insert(c.path.as_path(), vec![&c]);
+        let carriers: Vec<&Match> = map.values().map(|g| g[0]).collect();
+        let default = pick_non_definition_provenance_default(&carriers).unwrap();
+        assert_eq!(
+            default, "source: text · kind: comment occurrence · confidence: text evidence",
+            "carrier-majority default should be the comment tuple"
+        );
+        // The name-occurrence group (deviation) keeps its own tuple.
+        let non_def_default = pick_non_definition_provenance_default(&[&group_a[0]]).unwrap();
+        assert_eq!(
+            non_def_default,
+            "source: text · kind: name occurrence · confidence: text evidence"
+        );
+    }
+
+    #[test]
+    fn interleaved_ungrouped_rows_preserve_original_order() {
+        // Blocker fix: when a multi-hit file's group ISN'T profitable, its rows
+        // must stay at their original positions in the visible slice rather than
+        // being clustered together. Order A1, B1, A2 (A unprofitable short path)
+        // must render A1, B1, A2 — not A1, A2, B1.
+        let scope = Path::new("/repo");
+        // A is a short-path 2-hit group (grouping ties -> stays inline).
+        let a1 = name_occurrence_match("/repo/a.go", 1);
+        let a2 = name_occurrence_match("/repo/a.go", 3);
+        // B is an unrelated single-hit file.
+        let b1 = name_occurrence_match("/repo/b.go", 2);
+        // Visible slice order: A1, B1, A2.
+        let matches = vec![a1, b1, a2];
+        let mut out = String::new();
+        append_facet_grouped_rows(&mut out, &matches, scope);
+        // a.go is short (2 chars) -> grouping is a tie/loss, so its rows stay
+        // inline at their original positions: a.go:1, b.go:2, a.go:3.
+        let a1_pos = out.find("a.go:1").unwrap();
+        let b1_pos = out.find("b.go:2").unwrap();
+        let a2_pos = out.find("a.go:3").unwrap();
+        assert!(
+            a1_pos < b1_pos && b1_pos < a2_pos,
+            "ungrouped rows must keep original interleaved order A1,B1,A2, got:\n{out}"
+        );
+        assert!(
+            !out.contains("a.go [2 matches]"),
+            "short-path 2-hit group must not be grouped, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn interleaved_profitable_group_emits_at_first_occurrence() {
+        // Blocker fix: a PROFITABLE group emits its whole group at the first
+        // occurrence of its path, consuming later matches. Order A1, B1, A2 where
+        // A is a long-path multi-hit profitable group renders A[2], B1 — the A
+        // group at A1's position, B1 after.
+        let scope = Path::new("/repo");
+        // A uses a long path so grouping is strictly smaller.
+        let a1 = name_occurrence_match(
+            "/repo/very/long/path/that/makes/grouping/profitable/a.go",
+            1,
+        );
+        let a2 = name_occurrence_match(
+            "/repo/very/long/path/that/makes/grouping/profitable/a.go",
+            3,
+        );
+        let b1 = name_occurrence_match("/repo/b.go", 2);
+        let matches = vec![a1, b1, a2];
+        let mut out = String::new();
+        append_facet_grouped_rows(&mut out, &matches, scope);
+        // The A group is emitted at A1's position (before B1); A2 is consumed.
+        let group_pos = out.find("[2 matches]").unwrap();
+        let b1_pos = out.find("b.go:2").unwrap();
+        assert!(
+            group_pos < b1_pos,
+            "profitable group must emit at first occurrence before B1, got:\n{out}"
+        );
+        assert!(
+            out.contains(":1") && out.contains(":3"),
+            "profitable group must contain both child rows, got:\n{out}"
+        );
     }
 }

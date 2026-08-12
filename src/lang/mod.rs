@@ -4,6 +4,7 @@ pub mod detection;
 pub(crate) mod document;
 pub(crate) mod js_imports;
 pub mod outline;
+pub(crate) mod qualified;
 pub(crate) mod ruby;
 pub(crate) mod scoped_occurrences;
 pub mod treesitter;

@@ -13,6 +13,7 @@
 //! (`python.rs`, `rust.rs`, `js_ts.rs`); this module owns only the shared region
 //! model, the unique-narrowest selection, and local-`ERROR` primitives.
 
+pub(crate) mod java;
 pub(crate) mod js_ts;
 pub(crate) mod python;
 pub(crate) mod rust;

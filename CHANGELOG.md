@@ -2,7 +2,7 @@
 
 All notable changes to srcwalk are documented here.
 
-## Unreleased
+## [1.6.0] - 2026-08-12
 
 ### Added
 - Default-on Go structural owner attribution and bounded mechanical call evidence for `discover --match any --as text`: compact file rollups include a narrowest-owner rollup (`owners (#N=Nth query term; *K=hits)`) and a `## Mechanical Go calls` appendix with capped (≤10), deterministically ordered, same-file `@:`-elided direct-call edges.

@@ -2216,16 +2216,27 @@ mod tests {
         let bullets: Vec<&str> = out.lines().filter(|l| l.starts_with("- ")).collect();
         assert_eq!(bullets.len(), 2, "{out}");
 
+        let expected_call_file = if cfg!(windows) {
+            "C:/repo/pkg/a.go"
+        } else {
+            r"C:\repo\pkg\a.go"
+        };
+        let expected_candidate_file = if cfg!(windows) {
+            "C:/repo/pkg/sub.go"
+        } else {
+            r"C:\repo\pkg\sub.go"
+        };
+
         let e0 = parse_edge(bullets[0]).unwrap();
-        assert_eq!(e0.call_file, r"C:\repo\pkg\a.go");
+        assert_eq!(e0.call_file, expected_call_file);
         assert_eq!(e0.call_line, 22);
-        assert_eq!(e0.cand_file, r"C:\repo\pkg\a.go");
+        assert_eq!(e0.cand_file, expected_call_file);
         assert_eq!(e0.def_range, "30-60");
 
         let e1 = parse_edge(bullets[1]).unwrap();
-        assert_eq!(e1.call_file, r"C:\repo\pkg\a.go");
+        assert_eq!(e1.call_file, expected_call_file);
         assert_eq!(e1.call_line, 12);
-        assert_eq!(e1.cand_file, r"C:\repo\pkg\sub.go");
+        assert_eq!(e1.cand_file, expected_candidate_file);
         assert_eq!(e1.def_range, "7-20");
     }
 

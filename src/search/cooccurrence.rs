@@ -108,6 +108,7 @@ pub fn search_same_line_ordered(
         scope: scope.to_path_buf(),
         matches: all_matches,
         total_found: total,
+        eligible_files: 0,
         definition_candidates: 0,
         name_occurrence_candidates: 0,
         definitions: 0,

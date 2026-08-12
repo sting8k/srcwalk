@@ -3621,3 +3621,147 @@ fn discover_text_or_wave2a_compact_rollup_attributes_all_languages() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// US-069: low-signal term advisory for literal text Search and Text OR.
+const LOW_SIGNAL_ADVISORY: &str = "> Note: 450 matches across 150 of 1,000 eligible files for `frobnicate`; if this spread is not intentional, consider `overview`, a narrower term or scope, or a structural route.";
+
+/// Build a deterministic repo: `a/` and `b/` each hold 500 eligible source files.
+/// 150 of the 1,000 files (75 per dir) carry 3 `frobnicate` matches each
+/// (450 matches total), comfortably above the 400/150/1.5% advisory boundary.
+fn build_low_signal_repo(name: &str) -> PathBuf {
+    let dir = temp_repo(name);
+    for sub in ["a", "b"] {
+        let sub = dir.join(sub);
+        fs::create_dir_all(&sub).unwrap();
+        for i in 0..75 {
+            fs::write(
+                sub.join(format!("m{i:03}.rs")),
+                "fn a() { frobnicate }\nfn b() { frobnicate }\nfn c() { frobnicate }\n",
+            )
+            .unwrap();
+        }
+        for i in 75..500 {
+            fs::write(sub.join(format!("g{i:03}.rs")), "fn x() {}\n").unwrap();
+        }
+    }
+    dir
+}
+
+#[test]
+fn discover_low_signal_route_coverage_and_guard() {
+    let dir = build_low_signal_repo("low_signal_route_guard");
+
+    // Explicit single-term text Search emits the exact shared advisory.
+    let single = srcwalk()
+        .args(["discover", "frobnicate", "--as", "text", "--scope"])
+        .arg(&dir)
+        .arg("--no-budget")
+        .output()
+        .unwrap();
+    assert!(single.status.success());
+    let single_out = String::from_utf8_lossy(&single.stdout);
+    assert!(single_out.contains(LOW_SIGNAL_ADVISORY), "{single_out}");
+
+    // Text OR emits the same line for the triggering term.
+    let or = srcwalk()
+        .args([
+            "discover",
+            "frobnicate,unrelated",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .arg("--no-budget")
+        .output()
+        .unwrap();
+    assert!(or.status.success());
+    let or_out = String::from_utf8_lossy(&or.stdout);
+    assert!(or_out.contains(LOW_SIGNAL_ADVISORY), "{or_out}");
+
+    // Multi-scope inferred/mixed routes abstain: no explicit literal-text route
+    // exists, so the advisory must never appear even for a high-spread term.
+    let multi = srcwalk()
+        .args(["discover", "frobnicate", "--scope"])
+        .arg(dir.join("a"))
+        .arg("--scope")
+        .arg(dir.join("b"))
+        .arg("--no-budget")
+        .output()
+        .unwrap();
+    assert!(multi.status.success());
+    let multi_out = String::from_utf8_lossy(&multi.stdout);
+    assert!(!multi_out.contains("eligible files"), "{multi_out}");
+
+    // Below-threshold term emits no advisory.
+    fs::write(dir.join("a/one.rs"), "fn tiny() { frobnicate }\n").unwrap();
+    let below = srcwalk()
+        .args(["discover", "tiny", "--as", "text", "--scope"])
+        .arg(&dir)
+        .arg("--no-budget")
+        .output()
+        .unwrap();
+    let below_out = String::from_utf8_lossy(&below.stdout);
+    assert!(!below_out.contains("eligible files"), "{below_out}");
+
+    // File, access, and co-occurrence routes never emit the advisory.
+    for (args, scope) in [
+        (vec!["discover", "*.rs", "--as", "file"], &dir),
+        (vec!["discover", "frobnicate", "--as", "access"], &dir),
+        (
+            vec!["discover", "frobnicate,frobnicate", "--match", "all"],
+            &dir,
+        ),
+    ] {
+        let output = srcwalk()
+            .args(&args)
+            .arg("--scope")
+            .arg(scope)
+            .arg("--no-budget")
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&output.stdout);
+        assert!(!out.contains("eligible files"), "{args:?}\n{out}");
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn discover_low_signal_budget_survives_and_replays() {
+    let dir = build_low_signal_repo("low_signal_budget_replay");
+
+    // Enough output plus a tiny budget forces body truncation; the advisory
+    // must survive once and stay before the final `> Next:`.
+    let first = srcwalk()
+        .args(["discover", "frobnicate", "--as", "text", "--scope"])
+        .arg(&dir)
+        .arg("--budget")
+        .arg("80")
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    let first_out = String::from_utf8_lossy(&first.stdout);
+    assert_eq!(
+        first_out.matches(LOW_SIGNAL_ADVISORY).count(),
+        1,
+        "advisory must appear exactly once under budget:\n{first_out}"
+    );
+    let note_idx = first_out.find(LOW_SIGNAL_ADVISORY).unwrap();
+    let next_idx = first_out.rfind("> Next:").unwrap();
+    assert!(note_idx < next_idx, "advisory must precede final `> Next:`");
+
+    // Identical command replays byte-identically.
+    let second = srcwalk()
+        .args(["discover", "frobnicate", "--as", "text", "--scope"])
+        .arg(&dir)
+        .arg("--budget")
+        .arg("80")
+        .output()
+        .unwrap();
+    assert_eq!(first_out, String::from_utf8_lossy(&second.stdout));
+
+    let _ = fs::remove_dir_all(&dir);
+}

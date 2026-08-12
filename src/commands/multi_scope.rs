@@ -385,7 +385,8 @@ fn search_result_content(
     glob: Option<&str>,
     filter: Option<&str>,
 ) -> Result<types::SearchResult, SrcwalkError> {
-    let mut result = search::search_content_raw(query, scope, glob)?;
+    let mut result =
+        search::search_content_raw_with_artifact(query, scope, glob, crate::ArtifactMode::Source)?;
     search::apply_general_filter(&mut result, scope, cache, filter)?;
     Ok(result)
 }
@@ -427,10 +428,14 @@ fn merge_scope_results(
     let definitions = matches.iter().filter(|m| m.is_definition).count();
     let comments = matches.iter().filter(|m| m.in_comment).count();
     let total_found = matches.len();
+    // Multi-scope finds have no explicit literal-text route, so they abstain
+    // from the low-signal advisory: no eligible-file denominator is reported.
+    let eligible_files = 0;
     Ok(types::SearchResult {
         query: query.to_string(),
         scope: common_scope(scopes),
         total_found,
+        eligible_files,
         definition_candidates: definitions,
         name_occurrence_candidates: matches
             .iter()
@@ -526,4 +531,65 @@ fn scopes_overlap(scopes: &[PathBuf]) -> bool {
             .enumerate()
             .any(|(j, b)| i != j && (a.starts_with(b) || b.starts_with(a)))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+
+    use crate::types::{Match, SearchResult};
+
+    use super::merge_scope_results;
+
+    fn hit(path: &str, line: u32) -> Match {
+        Match {
+            path: PathBuf::from(path),
+            line,
+            text: "hit".to_string(),
+            is_definition: false,
+            exact: true,
+            file_lines: 3,
+            mtime: SystemTime::UNIX_EPOCH,
+            def_range: None,
+            def_name: None,
+            def_weight: 0,
+            impl_target: None,
+            base_target: None,
+            in_comment: false,
+        }
+    }
+
+    #[test]
+    fn merge_abstains_from_eligible_files_and_dedups_matches() {
+        // Multi-scope has no explicit literal-text route, so the merged result
+        // reports no eligible-file denominator (abstains) while still
+        // deduplicating matches across overlapping scopes.
+        let scopes = vec![PathBuf::from("a"), PathBuf::from("b")];
+        let a = symbol_result(vec![hit("a/f1.rs", 1), hit("shared/f.rs", 1)], "term");
+        let b = symbol_result(vec![hit("b/f1.rs", 1), hit("shared/f.rs", 1)], "term");
+
+        let merged = merge_scope_results("term", &scopes, vec![a, b]).unwrap();
+
+        assert_eq!(merged.matches.len(), 3, "3 unique matches after dedup");
+        assert_eq!(merged.eligible_files, 0, "multi-scope abstains");
+    }
+
+    fn symbol_result(matches: Vec<Match>, query: &str) -> SearchResult {
+        let total = matches.len();
+        SearchResult {
+            query: query.to_string(),
+            scope: PathBuf::from("."),
+            matches,
+            total_found: total,
+            eligible_files: 0,
+            definition_candidates: 0,
+            name_occurrence_candidates: 0,
+            definitions: 0,
+            usages: total,
+            comments: 0,
+            has_more: false,
+            offset: 0,
+        }
+    }
 }

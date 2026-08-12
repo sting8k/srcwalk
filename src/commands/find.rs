@@ -158,8 +158,10 @@ pub(crate) fn run_text_filtered_with_artifact_and_hint(
     literal_comma_hint: bool,
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
-    let mut result = search::search_content_raw_with_artifact(query, scope, glob, artifact)?;
+    let mut result =
+        search::search_content_raw_with_artifact_counting(query, scope, glob, artifact)?;
     search::apply_general_filter(&mut result, scope, cache, filter)?;
+    let advisory = search::low_signal_term_advisory(&search::low_signal_term_stats(query, &result));
     search::pagination::paginate(&mut result, limit, offset);
     search::compact_artifact_snippets(&mut result, artifact);
     let mut output = search::format_raw_result(&result, cache)?;
@@ -168,6 +170,10 @@ pub(crate) fn run_text_filtered_with_artifact_and_hint(
             "\n\n> Hint: treated as one literal text query. Use `--match any --as text` for comma-separated literal OR, or `--match all --as text` for same-file co-occurrence.",
         );
     }
+    let output = match advisory {
+        Some(note) => search::insert_low_signal_advisories(output, std::slice::from_ref(&note)),
+        None => output,
+    };
     let output = with_artifact_note(output, artifact);
     match budget_tokens {
         Some(budget) => Ok(budget::apply_preserving_footer(&output, budget)),
@@ -206,10 +212,17 @@ pub(crate) fn run_text_or_filtered_with_artifact(
     let mut total_found = 0usize;
     let mut total_files = BTreeSet::new();
     let mut term_results = Vec::with_capacity(terms.len());
+    let mut advisories = Vec::new();
 
     for (query_term_index, term) in &indexed_terms {
-        let mut result = search::search_content_raw_with_artifact(term, scope, glob, artifact)?;
+        let mut result =
+            search::search_content_raw_with_artifact_counting(term, scope, glob, artifact)?;
         search::apply_general_filter(&mut result, scope, cache, filter)?;
+        if let Some(note) =
+            search::low_signal_term_advisory(&search::low_signal_term_stats(term, &result))
+        {
+            advisories.push(note);
+        }
         total_found += result.total_found;
         let file_count = result
             .matches
@@ -274,6 +287,9 @@ pub(crate) fn run_text_or_filtered_with_artifact(
         rendered
     );
     output.push_str(&render_owner_link_appendix(&owner_links, scope));
+    if !advisories.is_empty() {
+        output = search::insert_low_signal_advisories(output, &advisories);
+    }
     if total_found > 0 && (!has_specific_next || artifact.enabled()) {
         let rendered = render_next_actions(&[NextAction::guidance(
             "read raw hit evidence with `srcwalk show <path>:<line> -C 10`.",
@@ -1053,6 +1069,7 @@ pub(crate) fn run_cooccurrence_filtered_with_artifact(
         query: query.to_string(),
         scope: scope.to_path_buf(),
         total_found: matches.len(),
+        eligible_files: 0,
         definition_candidates: definitions,
         name_occurrence_candidates: matches
             .iter()

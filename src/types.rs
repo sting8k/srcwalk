@@ -317,6 +317,9 @@ pub struct SearchResult {
     pub scope: PathBuf,
     pub matches: Vec<Match>,
     pub total_found: usize,
+    /// Number of files that survived content-search eligibility guards before matching.
+    /// This denominator is unpaginated and remains stable through filtering and pagination.
+    pub(crate) eligible_files: usize,
     /// Definition candidates before pagination; retained so ambiguity stays visible on every page.
     pub definition_candidates: usize,
     /// Text-matched name occurrences before pagination; excludes literal text-search matches.

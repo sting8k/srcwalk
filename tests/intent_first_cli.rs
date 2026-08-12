@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const OWNER_LINK_ZERO_EDGE: &str = "No direct name-level call evidence among hit owners. Dynamic dispatch, DI, callbacks, and protocol wiring are not ruled out.";
@@ -2957,6 +2957,214 @@ fn trace_callers_path_symbol_success_path_remains_without_new_hint() {
         "{stdout}"
     );
     assert!(output.stderr.is_empty());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-067 cross-language orchestration fixture: one temp scope with a Go
+/// owner pair + valid Go->Go edge, named owners in Python/Rust/JS/TS/TSX, one
+/// malformed supported file, and one unsupported `.txt`.
+fn write_mixed_owner_scope(dir: &Path) {
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha */ }\nfunc Second() { /* beta */ First() }\n",
+    )
+    .unwrap();
+    fs::write(dir.join("app.py"), "def load():\n    return \"alpha\"\n").unwrap();
+    fs::write(
+        dir.join("lib.rs"),
+        "fn load() {\n    let _ = \"alpha\";\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app.js"),
+        "function greet() {\n    return \"alpha\";\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app.ts"),
+        "function greet(): string {\n    return \"alpha\";\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("App.tsx"),
+        "function App() {\n  return <div>alpha</div>;\n}\n",
+    )
+    .unwrap();
+    // Malformed supported-language file: has a raw alpha hit but must abstain.
+    fs::write(dir.join("broken.py"), "def broken(\n    return \"alpha\"\n").unwrap();
+    // Unsupported raw file: preserved by search, absent from owner evidence.
+    fs::write(dir.join("notes.txt"), "line with alpha here\n").unwrap();
+}
+
+/// US-067 orchestration + determinism (tasks 1+2): one mixed Go/Python/Rust/JS/
+/// TS/TSX scope with a malformed supported file and an unsupported `.txt`. The
+/// Go mechanical-call appendix renders Go-only, every clean file carries exact
+/// per-file owner evidence, the malformed + unsupported raw hits stay visible
+/// WITHOUT an owner, the non-Go honesty caveat holds, and no non-Go zero-edge/
+/// call claim is made. The exact command runs twice with byte-identical stdout
+/// AND stderr.
+#[test]
+fn discover_text_or_mixed_owner_orchestration_and_determinism() {
+    let dir = temp_repo("discover_mixed_owner_orchestration");
+    write_mixed_owner_scope(&dir);
+
+    let run = || {
+        srcwalk()
+            .args([
+                "discover",
+                "alpha,beta",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(&dir)
+            .output()
+            .unwrap()
+    };
+
+    let first = run();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    // Determinism: run twice, byte-compare stdout AND stderr.
+    let second = run();
+    assert_eq!(
+        first.stdout, second.stdout,
+        "stdout bytes changed between runs"
+    );
+    assert_eq!(
+        first.stderr, second.stderr,
+        "stderr bytes changed between runs"
+    );
+
+    let stdout = String::from_utf8_lossy(&first.stdout);
+
+    // Header: 2-term Text OR, 9 matches across 8 files (detail path, <=30 hits).
+    assert!(stdout.contains("— 2 terms, 9 matches, 8 files"), "{stdout}");
+
+    // Every supported clean file carries exact per-file owner evidence.
+    for tag in [
+        "feature.go:2 [owner First@2-2]",
+        "feature.go:3 [owner Second@3-3]",
+        "app.py:2 [owner load@1-2]",
+        "lib.rs:2 [owner load@1-3]",
+        "app.js:2 [owner greet@1-3]",
+        "app.ts:2 [owner greet@1-3]",
+        "App.tsx:2 [owner App@1-3]",
+    ] {
+        assert!(stdout.contains(tag), "missing {tag}:\n{stdout}");
+    }
+
+    // Malformed supported file + unsupported .txt: raw hit rows remain visible
+    // but carry NO owner tag.
+    assert!(
+        stdout.contains("broken.py:2 — return \"alpha\""),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("notes.txt:1 — line with alpha here"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("broken.py:2 [owner"), "{stdout}");
+    assert!(!stdout.contains("notes.txt:1 [owner"), "{stdout}");
+
+    // Go mechanical-call appendix exists and the single rendered edge is Go-only.
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("- [bare] Second calls First@feature.go:3; candidate First@:2-2",),
+        "{stdout}"
+    );
+    let go_edge_rows = stdout
+        .lines()
+        .filter(|l| l.starts_with("- [") && l.contains(" calls "))
+        .count();
+    assert_eq!(go_edge_rows, 1, "{stdout}");
+
+    // No non-Go zero-edge/call claim: not the zero-edge sentence, and no non-Go
+    // edge candidate appears.
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+    assert!(!stdout.contains("candidate app."), "{stdout}");
+    assert!(!stdout.contains("candidate lib."), "{stdout}");
+
+    // Go mechanical caveat + non-Go honesty caveat both present.
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-067 Go isolation (task 5): adding non-matching non-Go files to a Go-only
+/// scope leaves the Go query's stdout AND stderr byte-identical.
+#[test]
+fn discover_text_or_go_only_bytes_unchanged_by_non_matching_non_go_files() {
+    let dir = temp_repo("discover_go_isolation");
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha */ }\nfunc Second() { /* beta */ First() }\n",
+    )
+    .unwrap();
+
+    let run = || {
+        srcwalk()
+            .args([
+                "discover",
+                "alpha,beta",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(&dir)
+            .output()
+            .unwrap()
+    };
+
+    let before = run();
+    assert!(
+        before.status.success(),
+        "{}",
+        String::from_utf8_lossy(&before.stderr)
+    );
+
+    // Add non-matching non-Go files (no alpha/beta anywhere) to the SAME dir so
+    // the scope path is unchanged.
+    fs::write(dir.join("app.py"), "def load():\n    return 1\n").unwrap();
+    fs::write(dir.join("lib.rs"), "fn load() {\n    let _ = 1;\n}\n").unwrap();
+    fs::write(dir.join("app.js"), "function greet() {\n    return 1;\n}\n").unwrap();
+    fs::write(
+        dir.join("App.tsx"),
+        "function App() {\n  return <div>plain</div>;\n}\n",
+    )
+    .unwrap();
+    fs::write(dir.join("notes.txt"), "just a plain text note\n").unwrap();
+
+    let after = run();
+    assert!(
+        after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert_eq!(
+        before.stdout, after.stdout,
+        "Go stdout changed when non-Go files added"
+    );
+    assert_eq!(
+        before.stderr, after.stderr,
+        "Go stderr changed when non-Go files added"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

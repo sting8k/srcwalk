@@ -1891,4 +1891,74 @@ mod tests {
         assert_eq!(rendered_count, 10);
         fs::remove_dir_all(dir).unwrap();
     }
+
+    // US-067 permutation determinism: the owner aggregation seam must be
+    // invariant to hit input order (CLI traversal order is not injectable).
+    #[test]
+    fn mixed_owner_evidence_is_permutation_invariant() {
+        let dir = temp_dir("permutation");
+        let go = dir.join("feature.go");
+        let py = dir.join("app.py");
+        let rs = dir.join("lib.rs");
+        fs::write(
+            &go,
+            "package feature\nfunc First() { /* alpha */ }\nfunc Second() { /* beta */ First() }\n",
+        )
+        .unwrap();
+        fs::write(&py, "def load():\n    return \"alpha\"\n").unwrap();
+        fs::write(&rs, "fn load() {\n    let _ = \"alpha\";\n}\n").unwrap();
+
+        // File-group permutation: Go internal order [2,3] is preserved in both
+        // inputs; only the file-group order is reversed (Go/Rust/Python →
+        // Python/Rust/Go).
+        let forward = vec![
+            OwnerLinkHitInput { path: &go, line: 2 },
+            OwnerLinkHitInput { path: &go, line: 3 },
+            OwnerLinkHitInput { path: &rs, line: 2 },
+            OwnerLinkHitInput { path: &py, line: 2 },
+        ];
+        let reversed = vec![
+            OwnerLinkHitInput { path: &py, line: 2 },
+            OwnerLinkHitInput { path: &rs, line: 2 },
+            OwnerLinkHitInput { path: &go, line: 2 },
+            OwnerLinkHitInput { path: &go, line: 3 },
+        ];
+
+        let fwd = build_owner_link_evidence(&forward);
+        let rev = build_owner_link_evidence(&reversed);
+
+        // Direct projection (NO sort): if the pipeline output order were
+        // nondeterministic this would catch it, not mask it.
+        let project = |ev: &OwnerLinkEvidence| -> Vec<(PathBuf, u32, String)> {
+            ev.hits
+                .iter()
+                .map(|h| (h.path.clone(), h.line, h.owner.display_name.clone()))
+                .collect()
+        };
+        assert_eq!(
+            project(&fwd),
+            project(&rev),
+            "hits differ under file-group permutation"
+        );
+        assert_eq!(fwd.edges, rev.edges, "edges differ under permutation");
+        assert_eq!(
+            fwd.go_call_analysis_attempted, rev.go_call_analysis_attempted,
+            "go-analysis flag differs under permutation"
+        );
+
+        // BTreeMap ordering yields app.py, feature.go, lib.rs regardless of
+        // input order.
+        let owners = project(&fwd);
+        assert_eq!(
+            owners,
+            vec![
+                (py.clone(), 2, "load".to_string()),
+                (go.clone(), 2, "First".to_string()),
+                (go.clone(), 3, "Second".to_string()),
+                (rs.clone(), 2, "load".to_string()),
+            ]
+        );
+        assert_eq!(fwd.edges.len(), 1, "{:#?}", fwd.edges);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

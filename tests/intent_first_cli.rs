@@ -3168,3 +3168,456 @@ fn discover_text_or_go_only_bytes_unchanged_by_non_matching_non_go_files() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Wave 2A full mixed-language scope: Go + TSX/TS/JS + Python + Rust + Java +
+/// Kotlin + C# + PHP, each with a named owner over a matching hit. Only Go has
+/// a name-level call edge (`Second -> First`).
+fn write_wave2a_full_mixed_scope(dir: &Path) {
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha */ }\nfunc Second() { /* beta */ First() }\n",
+    )
+    .unwrap();
+    fs::write(dir.join("app.py"), "def load():\n    return \"alpha\"\n").unwrap();
+    fs::write(
+        dir.join("lib.rs"),
+        "fn load() {\n    let _ = \"alpha\";\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app.js"),
+        "function greet() {\n    return \"alpha\";\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app.ts"),
+        "function greet(): string {\n    return \"alpha\";\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("App.tsx"),
+        "function App() {\n  return <div>alpha</div>;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("Service.java"),
+        "class Service {\n    void handle() {\n        int x = 1; // alpha\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("App.kt"),
+        "class App {\n    fun load() {\n        val s = \"alpha\"\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("Program.cs"),
+        "class Service {\n    void Load() {\n        // alpha\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("page.php"),
+        "<?php\nfunction load() {\n    return \"alpha\";\n}\n",
+    )
+    .unwrap();
+}
+
+/// US-068 integration task 1: one Text OR query spans Go + TSX/TS/JS + Python +
+/// Rust + Java + Kotlin + C# + PHP. Every supported language carries exact owner
+/// evidence; the only mechanical-call edge rendered is the Go `Second -> First`;
+/// no non-Go edge or zero-edge sentence appears.
+#[test]
+fn discover_text_or_wave2a_full_mixed_owner_orchestration() {
+    let dir = temp_repo("discover_wave2a_full_mixed_owner");
+    write_wave2a_full_mixed_scope(&dir);
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Header: 2 terms, 11 matches across 10 files (detail path, <=30 hits).
+    assert!(
+        stdout.contains("— 2 terms, 11 matches, 10 files"),
+        "{stdout}"
+    );
+
+    // Every supported language carries exact per-file owner evidence.
+    for tag in [
+        "feature.go:2 [owner First@2-2]",
+        "feature.go:3 [owner Second@3-3]",
+        "app.py:2 [owner load@1-2]",
+        "lib.rs:2 [owner load@1-3]",
+        "app.js:2 [owner greet@1-3]",
+        "app.ts:2 [owner greet@1-3]",
+        "App.tsx:2 [owner App@1-3]",
+        "Service.java:3 [owner Service.handle@2-4]",
+        "App.kt:3 [owner App.load@2-4]",
+        "Program.cs:3 [owner Service.Load@2-4]",
+        "page.php:3 [owner load@2-4]",
+    ] {
+        assert!(stdout.contains(tag), "missing {tag}:\n{stdout}");
+    }
+
+    // Go mechanical-call appendix exists and the single rendered edge is Go-only.
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("- [bare] Second calls First@feature.go:3; candidate First@:2-2"),
+        "{stdout}"
+    );
+    let go_edge_rows = stdout
+        .lines()
+        .filter(|l| l.starts_with("- [") && l.contains(" calls "))
+        .count();
+    assert_eq!(go_edge_rows, 1, "{stdout}");
+
+    // No non-Go edge/zero-edge claim.
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+    assert!(!stdout.contains("candidate app."), "{stdout}");
+    assert!(!stdout.contains("candidate Service."), "{stdout}");
+    assert!(!stdout.contains("candidate App."), "{stdout}");
+
+    // Both honesty caveats present.
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-068 integration task 2: same mixed scope run under several file-creation
+/// orders must yield byte-identical stdout AND stderr (owner rollups, term
+/// indices, ranges, caveats, and the Go appendix).
+#[test]
+fn discover_text_or_wave2a_determinism_across_file_creation_orders() {
+    let dir = temp_repo("discover_wave2a_determinism");
+    write_wave2a_full_mixed_scope(&dir);
+
+    let run = |d: &Path| {
+        srcwalk()
+            .args([
+                "discover",
+                "alpha,beta",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(d)
+            .output()
+            .unwrap()
+    };
+    let first = run(&dir);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    // Recreate the same files in reverse lexical order in the same directory.
+    // This changes file-creation order without changing the rendered scope path.
+    let mut files = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|(left, _), (right, _)| left.cmp(right));
+    for (path, _) in &files {
+        fs::remove_file(path).unwrap();
+    }
+    for (path, bytes) in files.iter().rev() {
+        fs::write(path, bytes).unwrap();
+    }
+
+    let second = run(&dir);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "stdout differs across creation orders"
+    );
+    assert_eq!(
+        first.stderr, second.stderr,
+        "stderr differs across creation orders"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-068 integration task 3: one malformed file per Wave 2A language. Raw hits
+/// remain visible; the error-overlapping region abstains; a valid region in the
+/// same partially-parsed file stays eligible; no outer owner leakage occurs.
+#[test]
+fn discover_text_or_wave2a_malformed_files_abstain_without_outer_leakage() {
+    let dir = temp_repo("discover_wave2a_malformed");
+    // Java: valid method + malformed method (unclosed param list) in one class.
+    fs::write(
+        dir.join("Bad.java"),
+        "class Service {\n    void good() {\n        // alpha\n    }\n    void bad( {\n        // beta\n    }\n}\n",
+    )
+    .unwrap();
+    // Kotlin: malformed statement inside a function body leaves the valid region
+    // eligible while the error-overlapping region abstains.
+    fs::write(
+        dir.join("Bad.kt"),
+        "class App {\n    fun good() {\n        val a = \"alpha\"\n    }\n    fun bad() {\n        val b = \"beta\"\n        if ( {\n            val c = \"gamma\"\n        }\n    }\n}\n",
+    )
+    .unwrap();
+    // C#: valid method + malformed method in one class.
+    fs::write(
+        dir.join("Bad.cs"),
+        "class Service {\n    void Good() {\n        // alpha\n    }\n    void Bad( {\n        // beta\n    }\n}\n",
+    )
+    .unwrap();
+    // PHP: valid function + malformed function in one file.
+    fs::write(
+        dir.join("Bad.php"),
+        "<?php\nfunction good() {\n    return \"alpha\";\n}\nfunction bad( {\n    return \"beta\";\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Valid regions in partially-parsed files stay eligible.
+    for tag in [
+        "Bad.java:3 [owner Service.good@2-4]",
+        "Bad.kt:3 [owner App.good@2-4]",
+        "Bad.cs:3 [owner Service.Good@2-4]",
+        "Bad.php:3 [owner good@2-4]",
+    ] {
+        assert!(stdout.contains(tag), "missing {tag}:\n{stdout}");
+    }
+
+    // Malformed regions keep raw hits but carry NO owner (abstain, no leakage).
+    for file in ["Bad.java:6", "Bad.kt:6", "Bad.cs:6", "Bad.php:6"] {
+        assert!(
+            stdout.contains(&format!("{file} —")),
+            "raw hit missing {file}:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains(&format!("{file} [owner")),
+            "malformed region leaked owner at {file}:\n{stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-068 integration task 4: nonmatching Wave 2A files must not change the byte
+/// output of Go-only or US-067-language-only queries. Go rollups/edges stay
+/// byte-identical after adding non-matching Java/Kotlin/C#/PHP files.
+#[test]
+fn discover_text_or_wave2a_nonmatching_files_do_not_change_go_and_us067_bytes() {
+    let run = |dir: &Path, query: &str| {
+        srcwalk()
+            .args([
+                "discover", query, "--match", "any", "--as", "text", "--scope",
+            ])
+            .arg(dir)
+            .output()
+            .unwrap()
+    };
+
+    // Go-only baseline: adding nonmatching Wave 2A files cannot alter bytes.
+    let go_dir = temp_repo("discover_wave2a_go_isolation");
+    fs::write(
+        go_dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha */ }\nfunc Second() { /* beta */ First() }\n",
+    )
+    .unwrap();
+    let go_before = run(&go_dir, "alpha,beta");
+    assert!(
+        go_before.status.success(),
+        "{}",
+        String::from_utf8_lossy(&go_before.stderr)
+    );
+
+    for (name, source) in [
+        ("NonMatch.java", "class N { void m() { int x = 1; } }\n"),
+        ("NonMatch.kt", "class N { fun m() { val x = 1 } }\n"),
+        ("NonMatch.cs", "class N { void M() { int x = 1; } }\n"),
+        ("NonMatch.php", "<?php\nfunction m() { return 1; }\n"),
+    ] {
+        fs::write(go_dir.join(name), source).unwrap();
+    }
+    let go_after = run(&go_dir, "alpha,beta");
+    assert!(
+        go_after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&go_after.stderr)
+    );
+    assert_eq!(go_before.stdout, go_after.stdout, "Go-only stdout changed");
+    assert_eq!(go_before.stderr, go_after.stderr, "Go-only stderr changed");
+
+    // US-067-only baseline: adding the same nonmatching Wave 2A files cannot
+    // alter the earlier Python/Rust/JS/TS/TSX output either.
+    let us067_dir = temp_repo("discover_wave2a_us067_isolation");
+    fs::write(
+        us067_dir.join("app.py"),
+        "def load():\n    return \"alpha\"\n",
+    )
+    .unwrap();
+    fs::write(
+        us067_dir.join("lib.rs"),
+        "fn load() {\n    let _ = \"alpha\";\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        us067_dir.join("app.js"),
+        "function greet() {\n    return \"alpha\";\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        us067_dir.join("app.ts"),
+        "function greet(): string {\n    return \"alpha\";\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        us067_dir.join("App.tsx"),
+        "function App() {\n  return <div>alpha</div>;\n}\n",
+    )
+    .unwrap();
+    let us067_before = run(&us067_dir, "alpha");
+    assert!(
+        us067_before.status.success(),
+        "{}",
+        String::from_utf8_lossy(&us067_before.stderr)
+    );
+    for (name, source) in [
+        ("NonMatch.java", "class N { void m() { int x = 1; } }\n"),
+        ("NonMatch.kt", "class N { fun m() { val x = 1 } }\n"),
+        ("NonMatch.cs", "class N { void M() { int x = 1; } }\n"),
+        ("NonMatch.php", "<?php\nfunction m() { return 1; }\n"),
+    ] {
+        fs::write(us067_dir.join(name), source).unwrap();
+    }
+    let us067_after = run(&us067_dir, "alpha");
+    assert!(
+        us067_after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&us067_after.stderr)
+    );
+    assert_eq!(
+        us067_before.stdout, us067_after.stdout,
+        "US-067 stdout changed"
+    );
+    assert_eq!(
+        us067_before.stderr, us067_after.stderr,
+        "US-067 stderr changed"
+    );
+
+    let _ = fs::remove_dir_all(&go_dir);
+    let _ = fs::remove_dir_all(&us067_dir);
+}
+
+/// US-068 integration task 5: compact rollup shape (>=3 terms) renders owner
+/// evidence for every language with no non-Go edge/zero-edge sentence.
+#[test]
+fn discover_text_or_wave2a_compact_rollup_attributes_all_languages() {
+    let dir = temp_repo("discover_wave2a_compact");
+    write_wave2a_full_mixed_scope(&dir);
+    // Compact rendering intentionally ranks at most eight files. Keep one
+    // representative JS file here; the inline mixed test covers TS and TSX.
+    fs::remove_file(dir.join("app.ts")).unwrap();
+    fs::remove_file(dir.join("App.tsx")).unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta,gamma",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .args(["--budget", "20000", "--limit", "20"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Compact rollup owner line header present.
+    assert!(
+        stdout.contains("owners (#N=Nth query term; *K=hits)"),
+        "{stdout}"
+    );
+    // Compact owner anchors for every language.
+    for (file, owner) in [
+        ("feature.go —", "First:2-2[#1]"),
+        ("app.py —", "load:1-2[#1]"),
+        ("lib.rs —", "load:1-3[#1]"),
+        ("app.js —", "greet:1-3[#1]"),
+        ("Service.java —", "Service.handle:2-4[#1]"),
+        ("App.kt —", "App.load:2-4[#1]"),
+        ("Program.cs —", "Service.Load:2-4[#1]"),
+        ("page.php —", "load:2-4[#1]"),
+    ] {
+        assert!(stdout.contains(file), "missing {file}:\n{stdout}");
+        assert!(stdout.contains(owner), "missing {owner}:\n{stdout}");
+    }
+    // Go mechanical appendix still present and Go-only edge.
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("Second calls First@feature.go:3"),
+        "{stdout}"
+    );
+    // No non-Go zero-edge sentence.
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+    // Non-Go honesty caveat retained.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

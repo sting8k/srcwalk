@@ -828,7 +828,7 @@ fn callers_count_by_zero_matches_uses_no_callers_diagnostic() {
 }
 
 #[test]
-fn callers_path_symbol_zero_matches_recovers_with_bare_symbol() {
+fn callers_path_symbol_zero_matches_keeps_canonical_root_and_lookup_key() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("lib.rs"), "fn target() {}\n").unwrap();
 
@@ -843,17 +843,20 @@ fn callers_path_symbol_zero_matches_recovers_with_bare_symbol() {
     assert!(
         stdout.starts_with("# Callers of \"lib.rs:target\"")
             && stdout.contains("> Caveat: direct by-name search only;"),
-        "header and caveat must remain present:\n{stdout}"
+        "canonical root and caveat must remain present:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("the path identifies the requested definition of `target`")
+            && stdout.contains("matched by name"),
+        "exact root must be labeled as by-name evidence:\n{stdout}"
     );
     let next = stdout
         .lines()
         .find(|line| line.starts_with("> Next:"))
         .expect("no-callers output must retain recovery guidance");
     assert!(
-        next.contains("use `srcwalk discover target`")
-            && next.contains("trace accepts bare symbols")
-            && next.contains("`path:symbol` is `context` grammar"),
-        "resolved path-symbol recovery must name the bare symbol:\n{stdout}"
+        next.contains("use `srcwalk discover target`"),
+        "recovery must name the looked-up terminal key:\n{stdout}"
     );
     assert!(
         !next.contains("`srcwalk discover lib.rs:target`"),
@@ -862,7 +865,7 @@ fn callers_path_symbol_zero_matches_recovers_with_bare_symbol() {
 }
 
 #[test]
-fn callers_unresolved_path_symbol_zero_matches_recovery_is_unchanged() {
+fn callers_missing_named_file_abstains_instead_of_broadening_to_bare() {
     let dir = tempfile::tempdir().unwrap();
 
     let out = srcwalk()
@@ -870,15 +873,15 @@ fn callers_unresolved_path_symbol_zero_matches_recovery_is_unchanged() {
         .arg(dir.path())
         .output()
         .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
 
-    assert!(out.status.success(), "unresolved miss must remain exit 0");
-    assert_eq!(
-        stdout
-            .lines()
-            .find(|line| line.starts_with("> Next:")),
-        Some("> Next: use `srcwalk discover nosuch.go:Nothing` or search interface/trait/implementor names."),
-        "unresolved path-symbol recovery must remain unchanged:\n{stdout}"
+    assert!(
+        !out.status.success(),
+        "a missing named file must abstain, not run a bare-name search"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("needs an existing named file") && stderr.contains("Nothing"),
+        "abstention must name the missing file and selector:\n{stderr}"
     );
 }
 

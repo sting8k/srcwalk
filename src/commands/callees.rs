@@ -12,6 +12,7 @@ use crate::commands::call_format::{
     format_call_site, format_direct_call_edge, format_direct_call_unknown,
 };
 use crate::commands::find::symbol_or_file_suggestion;
+use crate::commands::pathsymbol::{self, PathSymbolOutcome};
 
 /// Show what a symbol calls (forward call graph).
 pub(crate) fn run_callees(
@@ -55,89 +56,48 @@ pub(crate) fn run_callees_with_artifact(
         });
     }
     let bloom = index::bloom::BloomFilterCache::new();
-    let path_target = crate::read::resolve_path_symbol_target(target, scope)
-        .filter(|resolved| resolved.range.is_some());
-    let lookup_target = path_target
-        .as_ref()
-        .map_or(target, |resolved| resolved.symbol.as_str());
 
-    // A path-qualified target is only rewritten when its symbol is unique in the
-    // named file and in the whole scope; otherwise do not suggest a risky command.
-    let raw = search::search_symbol_raw_with_artifact(lookup_target, scope, None, artifact)?;
-    let definitions: Vec<_> = raw
-        .matches
-        .iter()
-        .filter(|m| m.is_definition && m.def_range.is_some())
-        .collect();
-    if let Some(resolved) = &path_target {
-        if definitions.len() == 1 && definitions[0].path == resolved.path {
-            let symbol =
-                format::shell_quote_arg(&resolved.symbol).unwrap_or_else(|| "<symbol>".to_string());
-            let scope_arg = format::shell_quote_arg(&format::display_path(scope))
-                .unwrap_or_else(|| "<scope>".to_string());
-            let mut command = format!("srcwalk trace callees {symbol}");
-            if detailed {
-                command.push_str(" --detailed");
-            }
-            if let Some(depth) = depth {
-                let _ = write!(command, " --depth {depth}");
-            }
-            if let Some(filter) = filter {
-                let filter =
-                    format::shell_quote_arg(filter).unwrap_or_else(|| "<filter>".to_string());
-                let _ = write!(command, " --filter {filter}");
-            }
-            let _ = write!(command, " --scope {scope_arg}");
-            return Err(SrcwalkError::NoMatches {
+    // A canonical `path:symbol` root names its own definition, so use that exact
+    // path/range directly. Global uniqueness is NOT required: a same-name definition
+    // in another file no longer blocks the exact root. Missing / unreadable /
+    // unresolved / ambiguous / `::` roots surface the shared explicit intent instead
+    // of silently broadening to a bare-name search.
+    let exact_root = match pathsymbol::resolve_path_symbol_outcome(target, scope) {
+        PathSymbolOutcome::Error(err) | PathSymbolOutcome::UnresolvedInNamedFile(err) => {
+            return Err(err)
+        }
+        PathSymbolOutcome::Unique {
+            path,
+            symbol,
+            start_line,
+            end_line,
+        } => Some((path, symbol, (start_line as u32, end_line as u32))),
+        PathSymbolOutcome::FallThrough => None,
+    };
+
+    let (def_path, def_range, lookup_target) = if let Some((path, symbol, range)) = exact_root {
+        (path, Some(range), symbol)
+    } else {
+        let raw = search::search_symbol_raw_with_artifact(target, scope, None, artifact)?;
+        let def_match = raw
+            .matches
+            .into_iter()
+            .find(|m| m.is_definition && m.def_range.is_some())
+            .ok_or_else(|| SrcwalkError::NoMatches {
                 query: target.to_string(),
                 scope: scope.to_path_buf(),
-                suggestion: Some(resolved.symbol.clone()),
-                guidance: Some(format!(
-                    "`path:symbol` targets are accepted by `context`, not `trace`. For this symbol: {command}"
-                )),
-            });
-        }
+                suggestion: symbol_or_file_suggestion(scope, target, None),
+                guidance: None,
+            })?;
+        (def_match.path, def_match.def_range, target.to_string())
+    };
 
-        let candidates = definitions
-            .iter()
-            .take(5)
-            .map(|m| {
-                let range = m
-                    .def_range
-                    .map(|(start, end)| format!(":{start}-{end}"))
-                    .unwrap_or_default();
-                format!("{}{}", crate::format::display_path(&m.path), range)
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(SrcwalkError::NoMatches {
-            query: target.to_string(),
-            scope: scope.to_path_buf(),
-            suggestion: None,
-            guidance: Some(format!(
-                "`path:symbol` targets are accepted by `context`, not `trace`.{}",
-                if candidates.is_empty() {
-                    String::new()
-                } else {
-                    format!(" Candidates: {candidates}")
-                }
-            )),
-        });
-    }
-
-    let def_match = definitions.first().ok_or_else(|| SrcwalkError::NoMatches {
-        query: target.to_string(),
-        scope: scope.to_path_buf(),
-        suggestion: symbol_or_file_suggestion(scope, target, None),
-        guidance: None,
-    })?;
-
-    let content = std::fs::read_to_string(&def_match.path).map_err(|e| SrcwalkError::IoError {
-        path: def_match.path.clone(),
+    let content = std::fs::read_to_string(&def_path).map_err(|e| SrcwalkError::IoError {
+        path: def_path.clone(),
         source: e,
     })?;
 
-    let file_type = lang::detect_file_type(&def_match.path);
+    let file_type = lang::detect_file_type(&def_path);
     let types::FileType::Code(lang) = file_type else {
         return Ok(format!("# Callees: {target}\n\n(not a code file)"));
     };
@@ -155,14 +115,14 @@ pub(crate) fn run_callees_with_artifact(
         None
     } else {
         Some(crate::read::js_alias::classify_js_imports(
-            &def_match.path,
+            &def_path,
             &logical_sources,
             scope,
             &config_cache,
         ))
     };
 
-    let rel = format::rel_nonempty(&def_match.path, scope);
+    let rel = format::rel_nonempty(&def_path, scope);
 
     // Detailed mode: ordered call sites with args + assignment context.
     if detailed {
@@ -170,21 +130,17 @@ pub(crate) fn run_callees_with_artifact(
             search::callees::extract_call_sites_for_artifact_target(
                 &content,
                 lang,
-                target,
-                def_match.def_range,
+                &lookup_target,
+                def_range,
             )
         } else {
-            search::callees::extract_call_sites(&content, lang, def_match.def_range)
+            search::callees::extract_call_sites(&content, lang, def_range)
         };
         let total_sites = sites.len();
         let sites = search::callees::filter_call_sites(sites, filter)?;
         let direct_calls = (!artifact.enabled()).then(|| {
             crate::evidence::direct_call::build_direct_call_evidence_index(
-                &def_match.path,
-                &content,
-                lang,
-                def_match.def_range,
-                &sites,
+                &def_path, &content, lang, def_range, &sites,
             )
         });
         if sites.is_empty() {
@@ -268,11 +224,11 @@ pub(crate) fn run_callees_with_artifact(
         search::callees::extract_callee_names_for_artifact_target(
             &content,
             lang,
-            target,
-            def_match.def_range,
+            &lookup_target,
+            def_range,
         )
     } else {
-        search::callees::extract_callee_names(&content, lang, def_match.def_range)
+        search::callees::extract_callee_names(&content, lang, def_range)
     };
     if callee_names.is_empty() {
         return Ok(format!(
@@ -283,19 +239,14 @@ pub(crate) fn run_callees_with_artifact(
     let depth_limit = depth.map_or(1, |d| d.min(5) as u32);
     let nodes = if artifact.enabled() {
         search::callees::resolve_callees_same_file_artifact(
-            target,
-            &def_match.path,
+            &lookup_target,
+            &def_path,
             &content,
             lang,
             &callee_names,
         )
         .unwrap_or_else(|| {
-            search::callees::resolve_callees_same_file(
-                &callee_names,
-                &def_match.path,
-                &content,
-                lang,
-            )
+            search::callees::resolve_callees_same_file(&callee_names, &def_path, &content, lang)
         })
         .into_iter()
         .map(|callee| search::callees::ResolvedCalleeNode {
@@ -306,7 +257,7 @@ pub(crate) fn run_callees_with_artifact(
     } else {
         search::callees::resolve_callees_transitive_with_stream(
             &callee_names,
-            &def_match.path,
+            &def_path,
             &content,
             &logical_sources,
             decisions.as_deref(),
@@ -359,11 +310,11 @@ pub(crate) fn run_callees_with_artifact(
             search::callees::extract_call_sites_for_artifact_target(
                 &content,
                 lang,
-                target,
-                def_match.def_range,
+                &lookup_target,
+                def_range,
             )
         } else {
-            search::callees::extract_call_sites(&content, lang, def_match.def_range)
+            search::callees::extract_call_sites(&content, lang, def_range)
         };
         append_unresolved_call_site_evidence(&mut out, &unresolved, &sites);
     }

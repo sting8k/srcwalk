@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::OutlineCache;
 use crate::commands::find::symbol_or_file_suggestion;
+use crate::commands::pathsymbol::{self, PathSymbolOutcome};
 use crate::error::SrcwalkError;
 use crate::lang::{self, decision_flow, decision_flow::FlowTarget, decision_flow::TargetSelector};
 use crate::search;
@@ -53,6 +54,34 @@ pub(crate) fn resolve_decision_flow_target(
 }
 
 fn resolve_path_target(target: &str, scope: &Path) -> Result<Option<FlowTarget>, SrcwalkError> {
+    // Consume the shared `path:symbol` grammar first so context reports the same
+    // explicit intent as show/callees/callers for a raw `::` selector, and refuses
+    // to silently first-pick one of several same-name definitions.
+    // A unique selector becomes its exact owning range. Other states fall through
+    // to the named-file semantics below (file-level), never to a bare-name search.
+    match pathsymbol::resolve_path_symbol_outcome(target, scope) {
+        PathSymbolOutcome::Unique {
+            path,
+            symbol,
+            start_line,
+            end_line,
+        } => {
+            return Ok(Some(FlowTarget {
+                path,
+                display_target: target.to_string(),
+                resolved_symbol: Some(symbol),
+                selector: TargetSelector::LineRange {
+                    start: start_line as u32,
+                    end: end_line as u32,
+                },
+            }));
+        }
+        PathSymbolOutcome::Error(err) => return Err(err),
+        // Named file exists but has no such selector: keep the existing
+        // named-file (file-level) semantics rather than abstaining hard.
+        PathSymbolOutcome::UnresolvedInNamedFile(_) | PathSymbolOutcome::FallThrough => {}
+    }
+
     if let Some((path_part, selector)) = target.rsplit_once(':') {
         if path_part.is_empty() {
             return Ok(None);

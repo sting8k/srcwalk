@@ -2795,93 +2795,156 @@ func Beta() {}
 }
 
 #[test]
-fn path_symbol_rejections_preserve_command_intent() {
-    let dir = temp_repo("path_symbol_rejections");
+fn path_symbol_exact_target_is_consumed_by_show_and_trace() {
+    let dir = temp_repo("path_symbol_exact_target");
     fs::write(
         dir.join("lib.rs"),
         "fn target() {\n    helper();\n}\nfn helper() {}\n",
     )
     .unwrap();
 
+    // `trace callees` roots on the exact definition named by the path.
     let trace = srcwalk()
         .args(["trace", "callees", "lib.rs:target", "--detailed", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
-    assert!(!trace.status.success());
     let trace_stderr = String::from_utf8_lossy(&trace.stderr);
     assert!(
-        trace_stderr.contains("> Did you mean: target"),
-        "{trace_stderr}"
+        trace.status.success(),
+        "exact path:symbol root should be consumed, stderr:\n{trace_stderr}"
     );
+    let trace_stdout = String::from_utf8_lossy(&trace.stdout);
+    assert!(trace_stdout.contains("helper"), "{trace_stdout}");
     assert!(
-        trace_stderr.contains("`path:symbol` targets are accepted by `context`, not `trace`."),
-        "{trace_stderr}"
-    );
-    assert!(
-        trace_stderr.contains("srcwalk trace callees target --detailed --scope"),
-        "{trace_stderr}"
+        !trace_stderr.contains("`path:symbol` targets are accepted by `context`, not `trace`."),
+        "path:symbol must no longer be rejected by trace:\n{trace_stderr}"
     );
 
+    // `show` reads the exact owning body, i.e. `show <path> --section <symbol>`.
     let show = srcwalk()
         .args(["show", "lib.rs:target", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
-    assert!(!show.status.success());
     let show_stderr = String::from_utf8_lossy(&show.stderr);
     assert!(
-        show_stderr.contains("did you mean: lib.rs:1-3"),
-        "{show_stderr}"
+        show.status.success(),
+        "exact path:symbol should read the owning body, stderr:\n{show_stderr}"
     );
+    let show_stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(show_stdout.contains("fn target()"), "{show_stdout}");
+    assert!(show_stdout.contains("helper();"), "{show_stdout}");
     assert!(
-        show_stderr.contains("`show` takes line ranges; `path:symbol` is `context` grammar."),
-        "{show_stderr}"
+        !show_stdout.contains("fn helper() {}"),
+        "show must read only the owning range, not the whole file:\n{show_stdout}"
     );
-    assert!(!show_stderr.contains("trace callees"), "{show_stderr}");
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn ambiguous_path_symbol_trace_names_candidates_without_runnable_command() {
-    let dir = temp_repo("path_symbol_trace_ambiguous");
-    fs::write(dir.join("a.rs"), "fn target() {}\n").unwrap();
-    fs::write(dir.join("b.rs"), "fn target() {}\n").unwrap();
+fn path_symbol_states_never_broaden_to_a_bare_search() {
+    let dir = temp_repo("path_symbol_states");
+    fs::write(dir.join("lib.rs"), "fn target() {}\n").unwrap();
+    fs::write(dir.join("plain.txt"), "target text\n").unwrap();
+    // Two same-name definitions in ONE file: ambiguity is per named file.
+    fs::write(
+        dir.join("dup.rs"),
+        "fn dup() {}\nfn other() {}\nfn dup() {}\n",
+    )
+    .unwrap();
 
-    let output = srcwalk()
-        .args(["trace", "callees", "a.rs:target", "--scope"])
+    // Missing named file.
+    for cmd in [
+        vec!["show"],
+        vec!["context"],
+        vec!["trace", "callers"],
+        vec!["trace", "callees"],
+    ] {
+        let out = srcwalk()
+            .args(&cmd)
+            .args(["missing.rs:target", "--scope"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{cmd:?} should abstain on missing path"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("needs an existing named file"),
+            "{cmd:?}:\n{stderr}"
+        );
+    }
+
+    // Ambiguous within the named file: bounded candidates, no silent first-pick.
+    let ambiguous = srcwalk()
+        .args(["show", "dup.rs:dup", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!ambiguous.status.success());
+    let stderr = String::from_utf8_lossy(&ambiguous.stderr);
     assert!(stderr.contains("Candidates:"), "{stderr}");
-    assert!(stderr.contains("a.rs:1-1"), "{stderr}");
-    assert!(stderr.contains("b.rs:1-1"), "{stderr}");
-    assert!(!stderr.contains("For this symbol:"), "{stderr}");
-    assert!(!stderr.contains("Did you mean: target"), "{stderr}");
+    assert!(stderr.contains("dup.rs:1-1"), "{stderr}");
+    assert!(stderr.contains("dup.rs:3-3"), "{stderr}");
 
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn unsupported_path_symbol_show_explains_grammar_without_guessing_range() {
-    let dir = temp_repo("path_symbol_unsupported");
-    fs::write(dir.join("plain.txt"), "target text\n").unwrap();
-
-    let output = srcwalk()
+    // Existing file with no structural outline: honest abstention, not a bare read.
+    let unresolvable = srcwalk()
         .args(["show", "plain.txt:target", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("`show` takes line ranges; `path:symbol` is `context` grammar."),
-        "{stderr}"
-    );
+    assert!(!unresolvable.status.success());
+    let stderr = String::from_utf8_lossy(&unresolvable.stderr);
+    assert!(stderr.contains("was not resolved"), "{stderr}");
     assert!(!stderr.contains("did you mean:"), "{stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn raw_colon_selector_reports_one_shared_intent_across_all_four_commands() {
+    let dir = temp_repo("path_symbol_colon_intent");
+    fs::write(dir.join("lib.rs"), "fn target() {}\n").unwrap();
+
+    let mut intents = Vec::new();
+    for cmd in [
+        vec!["show"],
+        vec!["context"],
+        vec!["trace", "callers"],
+        vec!["trace", "callees"],
+    ] {
+        let out = srcwalk()
+            .args(&cmd)
+            .args(["lib.rs:A::target", "--scope"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{cmd:?} should reject a raw `::` selector"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("`path:symbol` takes a plain selector")
+                && stderr.contains("contains `::`"),
+            "{cmd:?}:\n{stderr}"
+        );
+        intents.push(
+            stderr
+                .split("takes a plain selector")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string(),
+        );
+    }
+    assert!(
+        intents.windows(2).all(|w| w[0] == w[1]),
+        "all four commands must surface the SAME colon intent: {intents:?}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -3762,6 +3825,153 @@ fn discover_low_signal_budget_survives_and_replays() {
         .output()
         .unwrap();
     assert_eq!(first_out, String::from_utf8_lossy(&second.stdout));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn path_symbol_exact_root_resolves_across_adjacent_language_forms() {
+    let dir = temp_repo("path_symbol_adjacent_langs");
+    fs::write(
+        dir.join("Svc.cs"),
+        "namespace N {\n  class Svc {\n    public void Run() { Helper(); }\n    public void Helper() {}\n  }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("svc.go"),
+        "package main\n\nfunc Run() {\n\tHelper()\n}\n\nfunc Helper() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("svc.rs"),
+        "impl Svc {\n    fn run(&self) {\n        self.helper();\n    }\n    fn helper(&self) {}\n}\n",
+    )
+    .unwrap();
+
+    for (target, want) in [
+        ("Svc.cs:Run", "Helper"),
+        ("svc.go:Run", "Helper"),
+        ("svc.rs:run", "helper"),
+    ] {
+        let out = srcwalk()
+            .args(["trace", "callees", target, "--scope"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{target} should resolve:\n{stderr}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains(want), "{target} callees:\n{stdout}");
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callers_exact_root_outside_scope_is_readable_but_search_stays_scoped() {
+    let dir = temp_repo("path_symbol_outside_scope");
+    let inside = dir.join("inside");
+    fs::create_dir_all(&inside).unwrap();
+    // Root definition lives OUTSIDE the --scope directory.
+    fs::write(dir.join("root.rs"), "fn target() {}\n").unwrap();
+    fs::write(inside.join("use.rs"), "fn caller() { target(); }\n").unwrap();
+
+    let out = srcwalk()
+        .args(["trace", "callers"])
+        .arg(dir.join("root.rs:target"))
+        .args(["--scope"])
+        .arg(&inside)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "an exact root outside --scope must still be readable:\n{stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("caller"),
+        "scoped call site missing:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("lies outside --scope") && stdout.contains("searched inside --scope only"),
+        "outside-scope root must be labeled:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callees_exact_root_does_not_require_global_uniqueness() {
+    let dir = temp_repo("path_symbol_same_name_defs");
+    fs::write(
+        dir.join("a.rs"),
+        "fn target() {\n    from_a();\n}\nfn from_a() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("b.rs"),
+        "fn target() {\n    from_b();\n}\nfn from_b() {}\n",
+    )
+    .unwrap();
+
+    for (target, want, unwanted) in [
+        ("a.rs:target", "from_a", "from_b"),
+        ("b.rs:target", "from_b", "from_a"),
+    ] {
+        let out = srcwalk()
+            .args(["trace", "callees", target, "--scope"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "a same-name definition elsewhere must not block {target}:\n{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains(want), "{target}:\n{stdout}");
+        assert!(
+            !stdout.contains(unwanted),
+            "{target} leaked the other def:\n{stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callers_depth_two_marks_only_the_root_as_exact() {
+    let dir = temp_repo("path_symbol_depth_two");
+    fs::write(
+        dir.join("lib.rs"),
+        "fn target() {}\nfn mid() { target(); }\nfn top() { mid(); }\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args([
+            "trace",
+            "callers",
+            "lib.rs:target",
+            "--depth",
+            "2",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("# BFS callers of \"lib.rs:target\""),
+        "canonical root must be preserved in the BFS header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("only the root is exact") && stdout.contains("later hop expands by name"),
+        "depth>=2 must caveat that later hops are by-name:\n{stdout}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

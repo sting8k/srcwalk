@@ -11,5 +11,6 @@ pub(crate) mod flow;
 pub(crate) mod impact;
 pub(crate) mod multi_scope;
 pub(crate) mod path;
+pub(crate) mod pathsymbol;
 pub(crate) mod review;
 pub(crate) mod section_disambiguation;

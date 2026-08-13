@@ -942,10 +942,44 @@ fn find_enclosing_function(
     ("<top-level>".to_string(), None)
 }
 
+/// The by-name key actually searched, plus the canonical target string echoed
+/// back to the agent.
+///
+/// These differ when the root came from an exact `path:symbol` selector: the
+/// path pins *which* definition the agent asked about, while the terminal
+/// callable key is what call sites can actually be matched against. Keeping
+/// them separate stops the report from claiming path-scoped caller evidence
+/// that a by-name search cannot support.
+#[derive(Debug, Clone, Copy)]
+pub struct CallerRoot<'a> {
+    /// Terminal callable key used for the direct by-name search.
+    pub lookup: &'a str,
+    /// Canonical root string preserved in headers, counts, and recovery.
+    pub display: &'a str,
+    /// True when `display` came from an exact `path:symbol` selector, so the
+    /// report must state that matches remain by-name.
+    pub from_exact_path: bool,
+}
+
+/// Caveat emitted when the root came from an exact `path:symbol` selector.
+///
+/// The path pins which definition was requested, but the call sites below are
+/// still found by a direct by-name search, so same-name definitions elsewhere
+/// may appear. Say so rather than implying path-scoped caller evidence.
+fn exact_root_caveat(root: CallerRoot<'_>) -> String {
+    if !root.from_exact_path {
+        return String::new();
+    }
+    format!(
+        "> Caveat: the path identifies the requested definition of `{}`; call sites are still matched by name, so same-name definitions elsewhere may be included.\n",
+        root.lookup
+    )
+}
+
 /// Format and rank caller search results with optional expand.
 #[allow(dead_code)]
 pub fn search_callers_expanded(
-    target: &str,
+    root: CallerRoot<'_>,
     scope: &Path,
     cache: &OutlineCache,
     session: &Session,
@@ -959,7 +993,7 @@ pub fn search_callers_expanded(
     count_by: Option<&str>,
 ) -> Result<String, SrcwalkError> {
     search_callers_expanded_with_artifact(
-        target,
+        root,
         scope,
         cache,
         session,
@@ -977,7 +1011,7 @@ pub fn search_callers_expanded(
 
 #[allow(clippy::too_many_arguments)]
 pub fn search_callers_expanded_with_artifact(
-    target: &str,
+    root: CallerRoot<'_>,
     scope: &Path,
     cache: &OutlineCache,
     _session: &Session,
@@ -991,10 +1025,13 @@ pub fn search_callers_expanded_with_artifact(
     count_by: Option<&str>,
     artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
+    // `lookup` drives the by-name search; `target` stays the canonical root that
+    // headers, counts, pagination, and recovery echo back unchanged.
+    let target = root.display;
     let max_matches = limit.unwrap_or(usize::MAX);
     let group_limit = limit.unwrap_or(50);
     let mut callers =
-        find_callers_with_artifact(target, scope, bloom, glob, Some(cache), artifact)?;
+        find_callers_with_artifact(root.lookup, scope, bloom, glob, Some(cache), artifact)?;
     let filters = parse_callsite_filters(filter)?;
     let unfiltered_total = callers.len();
     if !filters.is_empty() {
@@ -1002,25 +1039,21 @@ pub fn search_callers_expanded_with_artifact(
     }
 
     if callers.is_empty() {
-        let recovery = crate::read::resolve_path_symbol_target(target, scope)
-            .filter(|resolved| resolved.range.is_some())
-            .map_or_else(
-                || format!("use `srcwalk discover {target}` or search interface/trait/implementor names."),
-                |resolved| {
-                    format!(
-                        "use `srcwalk discover {}` or search interface/trait/implementor names; trace accepts bare symbols; `path:symbol` is `context` grammar.",
-                        resolved.symbol
-                    )
-                },
-            );
+        // Recovery searches the key that was actually looked up, and keeps the
+        // canonical root in the header so the agent can retry the same target.
+        let recovery = format!(
+            "use `srcwalk discover {}` or search interface/trait/implementor names.",
+            root.lookup
+        );
         let next =
             render_next_actions(&[NextAction::guidance(recovery, "caller miss recovery", 40)]);
         return Ok(format!(
             "# Callers of \"{}\" in {} — no call sites found\n\n\
              > Caveat: direct by-name search only; misses dynamic dispatch, reflection, macros.\n\
-             {next}",
+             {}{next}",
             target,
             crate::format::display_path(scope),
+            exact_root_caveat(root),
         ));
     }
 
@@ -1055,8 +1088,9 @@ pub fn search_callers_expanded_with_artifact(
             .any(|caller| crate::artifact::is_artifact_js_ts_file(&caller.path));
     // Format the output as semantic-compact call edges.
     let mut output = format!(
-        "# Trace callers: {target} — {total} call site{}\n\n[symbol] {target}\n<- calls\n",
-        if total == 1 { "" } else { "s" }
+        "# Trace callers: {target} — {total} call site{}\n{}\n[symbol] {target}\n<- calls\n",
+        if total == 1 { "" } else { "s" },
+        exact_root_caveat(root),
     );
 
     if js_ts_artifact_callers {

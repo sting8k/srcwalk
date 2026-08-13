@@ -120,13 +120,16 @@ fn ambiguous_bare_name_falls_back_to_numeric_for_unresolvable_target() {
         )],
     );
     let out = fx.discover(&["discover", "helper", "--scope", "."]);
-    // The first `helper` round-trips via the bare symbol; the second same-name
-    // `helper` cannot round-trip (the bare selector reads the first), so it
-    // must fall back to a numeric range rather than point at the wrong body.
+    // With two same-file top-level `helper` definitions, the bare selector is
+    // ambiguous for BOTH bodies (unique-cardinality check resolves to two
+    // distinct ranges). No body may be advertised via the canonical symbol
+    // command (no silent first-match), so every one must fall back to a
+    // numeric range pointing at its own body.
     assert!(
-        out.contains("> Next: srcwalk show lib.rs --section helper"),
-        "{out}"
+        !out.contains("> Next: srcwalk show lib.rs --section helper"),
+        "ambiguous same-name bodies must not emit a canonical symbol command:\n{out}"
     );
+    assert!(out.contains("> Next: srcwalk show lib.rs:1-1"), "{out}");
     assert!(out.contains("> Next: srcwalk show lib.rs:3-3"), "{out}");
 }
 

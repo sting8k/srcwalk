@@ -1058,7 +1058,7 @@ pub fn search_callers_expanded_with_artifact(
     }
 
     if let Some(field) = count_by {
-        return format_callsite_counts(target, scope, &callers, field, filter, group_limit, offset);
+        return format_callsite_counts(root, scope, &callers, field, filter, group_limit, offset);
     }
 
     // Sort by relevance (context file first, then by proximity)
@@ -1549,8 +1549,11 @@ fn ceil_char_boundary(text: &str, mut idx: usize) -> usize {
     idx
 }
 
+/// Grouped counts are still a by-name caller view, so they carry the same
+/// canonical display root and the same exact-root caveat as the row output.
+/// Both live in the header, which every `--offset`/`--limit` page reprints.
 fn format_callsite_counts(
-    target: &str,
+    root: CallerRoot<'_>,
     scope: &Path,
     callers: &[CallerMatch],
     field: &str,
@@ -1567,10 +1570,12 @@ fn format_callsite_counts(
 
     let total = callers.len();
     let filter_suffix = filter.map_or(String::new(), |f| format!(" matching `{f}`"));
+    let target = root.display;
     let mut output = format!(
-        "# Trace callers: {target} — {total} call site{} grouped by {field}{}\n\n[symbol] {target}\n<- calls\n",
+        "# Trace callers: {target} — {total} call site{} grouped by {field}{}\n{}\n[symbol] {target}\n<- calls\n",
         if total == 1 { "" } else { "s" },
         filter_suffix,
+        exact_root_caveat(root),
     );
 
     let mut rows: Vec<_> = counts.into_iter().collect();

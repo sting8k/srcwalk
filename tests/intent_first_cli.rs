@@ -3830,7 +3830,84 @@ fn discover_low_signal_budget_survives_and_replays() {
 }
 
 #[test]
-fn path_symbol_exact_root_resolves_across_adjacent_language_forms() {
+fn path_symbol_exact_root_resolves_qualified_language_forms() {
+    let dir = temp_repo("path_symbol_qualified_langs");
+    // Every file pairs a qualified definition with a same-named sibling that must
+    // never leak into the exact root: a C# namespaced method, a Go receiver method
+    // shadowed by a top-level func, and a Rust impl method shadowed by a free fn.
+    fs::write(
+        dir.join("Svc.cs"),
+        "namespace N {\n  class Svc {\n    public void Run() { Helper(); }\n    public void Helper() { Leaf(); }\n    public void Leaf() {}\n  }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("batch.go"),
+        "package main\n\ntype Batch struct{}\n\nfunc (b *Batch) Set() {\n\tb.flush()\n}\n\nfunc (b *Batch) flush() {}\n\nfunc Set() {\n\tunrelatedTopLevel()\n}\n\nfunc unrelatedTopLevel() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("svc.rs"),
+        "struct Svc;\nimpl Svc {\n    fn run(&self) {\n        self.helper();\n    }\n    fn helper(&self) {}\n}\nfn run() {\n    bare_only();\n}\nfn bare_only() {}\n",
+    )
+    .unwrap();
+
+    for (target, frame, want, unwanted) in [
+        (
+            "Svc.cs:Svc.Run",
+            "requested 3; displayed 3",
+            "Helper",
+            "Leaf",
+        ),
+        (
+            "batch.go:Batch.Set",
+            "requested 5-7; displayed 5-7",
+            "flush",
+            "unrelatedTopLevel",
+        ),
+        (
+            "svc.rs:Svc.run",
+            "requested 3-5; displayed 3-5",
+            "helper",
+            "bare_only",
+        ),
+    ] {
+        // The qualified selector must pin the exact range, not the sibling body.
+        let shown = srcwalk()
+            .args(["show", target, "--scope"])
+            .arg(&dir)
+            .arg("--no-budget")
+            .output()
+            .unwrap();
+        let shown_err = String::from_utf8_lossy(&shown.stderr);
+        assert!(shown.status.success(), "{target} should show:\n{shown_err}");
+        let shown_out = String::from_utf8_lossy(&shown.stdout);
+        assert!(
+            shown_out.contains(frame),
+            "{target} must resolve the exact body frame `{frame}`:\n{shown_out}"
+        );
+
+        // ... and the callee view must be built from that body alone.
+        let out = srcwalk()
+            .args(["trace", "callees", target, "--scope"])
+            .arg(&dir)
+            .arg("--no-budget")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{target} should resolve:\n{stderr}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains(want), "{target} callees:\n{stdout}");
+        assert!(
+            !stdout.contains(unwanted),
+            "{target} leaked a sibling body's callee:\n{stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn path_symbol_exact_root_still_accepts_bare_selectors() {
     let dir = temp_repo("path_symbol_adjacent_langs");
     fs::write(
         dir.join("Svc.cs"),
@@ -3972,6 +4049,141 @@ fn callers_depth_two_marks_only_the_root_as_exact() {
         stdout.contains("only the root is exact") && stdout.contains("later hop expands by name"),
         "depth>=2 must caveat that later hops are by-name:\n{stdout}"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callers_exact_count_by_keeps_canonical_root_and_by_name_caveat() {
+    let dir = temp_repo("path_symbol_count_by_caveat");
+    fs::write(
+        dir.join("lib.rs"),
+        "fn target() {}\nfn mid() { target(); }\nfn other() { target(); }\n",
+    )
+    .unwrap();
+
+    // Counts are a grouped view of the SAME by-name search, so the canonical root
+    // and the exact-root caveat must survive --count-by, --filter, and every page.
+    for extra in [
+        vec!["--count-by", "caller"],
+        vec!["--count-by", "caller", "--filter", "args:0"],
+        vec![
+            "--count-by",
+            "caller",
+            "--filter",
+            "args:0",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+        ],
+    ] {
+        let out = srcwalk()
+            .args(["trace", "callers", "lib.rs:target"])
+            .args(&extra)
+            .arg("--scope")
+            .arg(&dir)
+            .arg("--no-budget")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{extra:?}:\n{stderr}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("[symbol] lib.rs:target"),
+            "{extra:?} must echo the canonical root:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("the path identifies the requested definition of `target`")
+                && stdout.contains("call sites are still matched by name"),
+            "{extra:?} must keep the exact-root by-name caveat:\n{stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callees_exact_depth_two_marks_only_the_root_as_exact() {
+    let dir = temp_repo("path_symbol_callee_depth_two");
+    fs::write(
+        dir.join("lib.rs"),
+        "fn leaf() {}\nfn mid() { leaf(); }\nfn top() { mid(); }\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["trace", "callees", "lib.rs:top", "--depth", "2", "--scope"])
+        .arg(&dir)
+        .arg("--no-budget")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("leaf"),
+        "depth 2 should expand a transitive hop:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("only the root is exact") && stdout.contains("later hop resolves by name"),
+        "depth>=2 callees must caveat that later hops are by-name:\n{stdout}"
+    );
+
+    // Depth 1 renders no later hop, so it must not claim one.
+    let direct = srcwalk()
+        .args(["trace", "callees", "lib.rs:top", "--scope"])
+        .arg(&dir)
+        .arg("--no-budget")
+        .output()
+        .unwrap();
+    let direct_out = String::from_utf8_lossy(&direct.stdout);
+    assert!(
+        !direct_out.contains("only the root is exact"),
+        "direct callees have no later hop to caveat:\n{direct_out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callees_exact_root_outside_scope_is_labeled_on_every_output_shape() {
+    let dir = temp_repo("path_symbol_callee_outside_scope");
+    let inside = dir.join("inside");
+    fs::create_dir_all(&inside).unwrap();
+    // Both roots live OUTSIDE --scope; only the boundary label is shared.
+    fs::write(dir.join("root.rs"), "fn seed() { inside_helper(); }\n").unwrap();
+    fs::write(dir.join("quiet.rs"), "fn quiet() { let _x = 1; }\n").unwrap();
+    fs::write(inside.join("use.rs"), "fn inside_helper() {}\n").unwrap();
+
+    // Transitive, detailed, and no-call returns are separate exits; each must
+    // still say the root sits outside --scope.
+    for (file, symbol, extra) in [
+        ("root.rs", "seed", vec!["--depth", "2"]),
+        ("root.rs", "seed", vec!["--detailed"]),
+        ("quiet.rs", "quiet", vec![]),
+    ] {
+        let out = srcwalk()
+            .args(["trace", "callees"])
+            .arg(dir.join(format!("{file}:{symbol}")))
+            .args(&extra)
+            .arg("--scope")
+            .arg(&inside)
+            .arg("--no-budget")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "an exact root outside --scope must still be readable ({file} {extra:?}):\n{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("lies outside --scope")
+                && stdout.contains("traversal stay inside --scope only"),
+            "{file} {extra:?} must label the scope boundary:\n{stdout}"
+        );
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }

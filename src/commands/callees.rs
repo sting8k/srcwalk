@@ -1,5 +1,5 @@
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::cache::OutlineCache;
 use crate::commands::context::ArtifactMode;
@@ -47,7 +47,6 @@ pub(crate) fn run_callees_with_artifact(
     filter: Option<&str>,
     artifact: ArtifactMode,
 ) -> Result<String, SrcwalkError> {
-    use std::fmt::Write;
     if artifact.enabled() && matches!(depth, Some(d) if d >= 2) {
         return Err(SrcwalkError::InvalidQuery {
             query: target.to_string(),
@@ -55,7 +54,6 @@ pub(crate) fn run_callees_with_artifact(
                 .to_string(),
         });
     }
-    let bloom = index::bloom::BloomFilterCache::new();
 
     // A canonical `path:symbol` root names its own definition, so use that exact
     // path/range directly. Global uniqueness is NOT required: a same-name definition
@@ -74,6 +72,51 @@ pub(crate) fn run_callees_with_artifact(
         } => Some((path, symbol, (start_line as u32, end_line as u32))),
         PathSymbolOutcome::FallThrough => None,
     };
+
+    // The path only IDENTIFIES the root, so it may name a definition outside
+    // --scope. Callee resolution and traversal stay bounded by --scope, so label
+    // the boundary rather than implicitly widening it. Applying the note at this
+    // single exit is what stops any render shape (detailed, no-call, direct, or
+    // transitive) from dropping it on an early return.
+    let outside_scope_note = exact_root
+        .as_ref()
+        .filter(|(path, _, _)| !path.starts_with(scope))
+        .map(|(path, _, _)| {
+            format!(
+                "\n> Note: the exact root {} lies outside --scope {}; callee resolution and traversal stay inside --scope only.",
+                format::display_path(path),
+                format::display_path(scope)
+            )
+        });
+
+    let body = render_callees(
+        target, scope, cache, depth, detailed, filter, artifact, exact_root,
+    )?;
+    let output = match outside_scope_note {
+        Some(note) => format!("{body}{note}"),
+        None => body,
+    };
+    match budget_tokens {
+        Some(b) => Ok(budget::apply_preserving_footer(&output, b)),
+        None => Ok(output),
+    }
+}
+
+/// Render the callee report body for an already-resolved root.
+#[allow(clippy::too_many_arguments)]
+fn render_callees(
+    target: &str,
+    scope: &Path,
+    cache: &OutlineCache,
+    depth: Option<usize>,
+    detailed: bool,
+    filter: Option<&str>,
+    artifact: ArtifactMode,
+    exact_root: Option<(PathBuf, String, (u32, u32))>,
+) -> Result<String, SrcwalkError> {
+    use std::fmt::Write;
+    let bloom = index::bloom::BloomFilterCache::new();
+    let from_exact_path = exact_root.is_some();
 
     let (def_path, def_range, lookup_target) = if let Some((path, symbol, range)) = exact_root {
         (path, Some(range), symbol)
@@ -212,11 +255,7 @@ pub(crate) fn run_callees_with_artifact(
             out.push_str("\n> ");
             out.push_str(note);
         }
-        let output = match budget_tokens {
-            Some(b) => budget::apply_preserving_footer(&out, b),
-            None => out,
-        };
-        return Ok(output);
+        return Ok(out);
     }
 
     // Default mode: resolved callees with transitive expansion.
@@ -271,6 +310,14 @@ pub(crate) fn run_callees_with_artifact(
     };
 
     let mut out = format!("# Callees: {target} (in {rel})\n");
+    // Only the root body came from the named file; every deeper hop is resolved
+    // from a callee name, so say that before rendering transitive children.
+    if from_exact_path && depth_limit >= 2 {
+        let _ = writeln!(
+            out,
+            "> Caveat: only the root is exact (`{lookup_target}` in the named file); every later hop resolves by name."
+        );
+    }
 
     // Unresolved callees
     let resolved_names: std::collections::HashSet<&str> =
@@ -332,11 +379,7 @@ pub(crate) fn run_callees_with_artifact(
         out.push_str(note);
     }
 
-    let output = match budget_tokens {
-        Some(b) => budget::apply_preserving_footer(&out, b),
-        None => out,
-    };
-    Ok(output)
+    Ok(out)
 }
 
 fn append_unresolved_call_site_evidence(

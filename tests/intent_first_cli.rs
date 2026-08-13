@@ -4185,3 +4185,366 @@ fn callees_exact_root_outside_scope_is_labeled_on_every_output_shape() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ------------------------------------------------------------------ US-071 Step 4
+
+/// Multi-symbol Discover emits the same confirmed structural targets the
+/// single-symbol route would, once per per-query section, without touching the
+/// numeric fallback for ambiguous names or deduplicating across sections.
+#[test]
+fn multi_symbol_discover_emits_canonical_targets_per_section() {
+    let dir = temp_repo("multi_symbol_emit");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    // One-unique `run` (canonical), plus two same-name `helper` bodies (ambiguous).
+    fs::write(
+        dir.join("src/alpha.rs"),
+        "pub struct Alpha;\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src/helper.rs"),
+        "fn helper() -> i32 {\n    let x = 1;\n    let y = 2;\n    x + y\n}\nfn other() -> i32 { 2 }\nfn helper() -> i32 {\n    let a = 3;\n    let b = 4;\n    a + b\n}\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "run,helper",
+            "--as",
+            "symbol",
+            "--scope",
+            "src",
+            "--expand=0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // Canonical target in the `run` section, and it addresses the unique method.
+    assert!(
+        stdout.contains("> Next: srcwalk show src/alpha.rs:Alpha.run"),
+        "multi-symbol run section must emit the canonical target:\n{stdout}"
+    );
+
+    // The ambiguous `helper` section never advertises a canonical `helper`
+    // selector. With the body rendered inline it abstains ("already shown"
+    // caveat); without inline rendering it would fall back to a numeric range.
+    // Either way it must never claim a canonical symbol.
+    assert!(
+        !stdout.contains("srcwalk show src/helper.rs:helper"),
+        "ambiguous bare name must not be advertised canonical:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("already shown in full above") || stdout.contains("numeric fallback"),
+        "ambiguous multi-symbol term must abstain or fall back honestly:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A canonical target resolved by two different query terms is kept once in each
+/// section — sections stay independently auditable against their own query.
+#[test]
+fn multi_symbol_duplicate_selector_kept_once_per_section() {
+    let dir = temp_repo("multi_symbol_duplicate");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src/a.rs"),
+        "pub struct Alpha;\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+    )
+    .unwrap();
+
+    // `run` and `Alpha` are different terms, but only `run` is a function name;
+    // to force a real cross-section duplicate, query the same bare name twice.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run,run", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let occurrences = stdout.matches("srcwalk show src/a.rs:Alpha.run").count();
+    assert_eq!(
+        occurrences, 2,
+        "a canonical selector must appear once per section, not be globally deduped:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// -------------------------------------------------- US-071 Step 4 dispatch (amendment)
+
+/// Helper: run `discover` in a fresh repo with two uniquely-named Rust methods,
+/// returning stdout so the caller can assert routing (multi-symbol section vs glob).
+fn dotted_multi_symbol_repo(name: &str) -> PathBuf {
+    let dir = temp_repo(name);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src/alpha.rs"),
+        "pub struct Alpha;\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src/beta.rs"),
+        "pub struct Beta;\nimpl Beta {\n    pub fn stop(&self) {}\n}\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn dotted_multi_symbol_dispatches_before_auto_classify() {
+    let dir = dotted_multi_symbol_repo("dotted_routes");
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "Alpha.run,Beta.stop",
+            "--as",
+            "symbol",
+            "--scope",
+            "src",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // A dotted part must not turn the whole query into a `**/...` file glob.
+    assert!(
+        !stdout.contains("# Files:") && !stdout.contains("**/Alpha.run"),
+        "dotted multi-symbol must not be a file glob:\n{stdout}"
+    );
+    // Each term is its own section.
+    assert!(stdout.contains("# Search: \"Alpha.run\""), "{stdout}");
+    assert!(stdout.contains("# Search: \"Beta.stop\""), "{stdout}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bare_multi_symbol_still_dispatches() {
+    let dir = dotted_multi_symbol_repo("bare_still");
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run,stop", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Search: \"run\""), "{stdout}");
+    assert!(stdout.contains("# Search: \"stop\""), "{stdout}");
+    assert!(
+        stdout.contains("srcwalk show src/alpha.rs:Alpha.run"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("srcwalk show src/beta.rs:Beta.stop"),
+        "{stdout}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn comma_filename_shapes_are_multi_symbol_in_auto_mode() {
+    let dir = dotted_multi_symbol_repo("comma_filename");
+    // `a,b.txt` and `foo.rs,bar.rs` become symbols `a`/`b.txt` per the pinned
+    // amendment decision; they route multi-symbol (ID sections), never a glob.
+    for query in ["a,b.txt", "foo.rs,bar.rs"] {
+        let out = srcwalk()
+            .current_dir(&dir)
+            .args(["discover", query, "--as", "symbol", "--scope", "src"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains("# Files:") && !stdout.contains("**/"),
+            "`{query}` must be multi-symbol, not a glob:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("# Search:"),
+            "`{query}` must emit sections:\n{stdout}"
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn multi_symbol_whitespace_and_degenerate_shapes() {
+    let dir = dotted_multi_symbol_repo("ws_degenerate");
+    // `foo, bar` trims and dispatches two symbols.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run, stop", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Search: \"run\""), "{stdout}");
+    assert!(stdout.contains("# Search: \"stop\""), "{stdout}");
+
+    // `,a,b` drops the empty leading slot.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", ",run,stop", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Search: \"run\""), "{stdout}");
+    assert!(stdout.contains("# Search: \"stop\""), "{stdout}");
+
+    // `foo,` drops the trailing slot, leaves one part -> None -> old flow
+    // (single term, not multi-symbol sections).
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run,", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"run\"\n"),
+        "`run,` must fall back to the old single-term flow, not multi-symbol:\n{stdout}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn multi_symbol_over_five_keeps_explicit_error() {
+    let dir = dotted_multi_symbol_repo("over_five");
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "a,b,c,d,e,f",
+            "--as",
+            "symbol",
+            "--scope",
+            "src",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "6 symbols must error");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("multi-symbol search supports 2-5 symbols"),
+        "{stderr}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn multi_symbol_does_not_hijack_glob_regex_path_or_section() {
+    let dir = dotted_multi_symbol_repo("no_hijack");
+    // Real glob: `*?{[` must keep the glob/file route, never multi-symbol sections.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "*.{rs,ts}", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"*."),
+        "glob must not become multi-symbol:\n{stdout}"
+    );
+
+    // Regex delimiters (leading `/`) must not be split into symbols.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "/foo,bar/", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"/foo\""),
+        "regex must not be hijacked to multi-symbol:\n{stdout}"
+    );
+
+    // Path separator must keep the path/file route.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "src/alpha.rs,beta.rs", "--scope", "."])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"src\""),
+        "path-like query must not be hijacked:\n{stdout}"
+    );
+
+    // Section colon must keep the path/section route, not multi-symbol.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "alpha.rs:1,2",
+            "--as",
+            "symbol",
+            "--scope",
+            "src",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"alpha.rs:1\""),
+        "section query must not be hijacked to multi-symbol:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explicit_as_text_and_file_are_not_intercepted() {
+    let dir = dotted_multi_symbol_repo("explicit_as");
+    // `--as text` treats the whole comma string as ONE literal text query.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run,stop", "--as", "text", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("# Search: \"run,stop\""),
+        "--as text must not split the comma into symbols:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("# Search: \"run\"\n# Search: \"stop\""),
+        "--as text must stay one literal query:\n{stdout}"
+    );
+
+    // `--as file` keeps the file route.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "a.rs,b.rs", "--as", "file", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("# Files:") && !stdout.contains("# Search:"),
+        "--as file must stay the file route, not multi-symbol:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

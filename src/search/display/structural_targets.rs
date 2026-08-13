@@ -97,7 +97,7 @@ pub(in crate::search) fn has_confirmed_structural_targets(
         .any(|m| semantic::context_target_for_match(m, cache).is_some())
 }
 
-pub(super) fn append_structural_next_targets(
+pub(in crate::search) fn append_structural_next_targets(
     out: &mut String,
     result: &SearchResult,
     cache: &OutlineCache,
@@ -199,10 +199,16 @@ fn show_actions_for_targets(
     let kept_targets = bounded_line_range_indices(&ranges)
         .into_iter()
         .map(|index| &targets[index])
-        // US-063: drop any target whose full range was already rendered
-        // verbatim in this packet — offering it again is pure redundancy. The
-        // whole range must be covered; a partial render keeps the offer.
-        .filter(|target| !rendered.contains_range(&target.path, target.start_line, target.end_line))
+        // US-063: a fully-rendered NUMERIC read is pure redundancy (the body is
+        // already inline), so it stays suppressed. A fully-rendered CANONICAL
+        // `<path>:<symbol>` is kept: the same exact target remains reusable for
+        // context, callers, and callees even though its body is already shown.
+        // A partial render always keeps the offer.
+        .filter(|target| {
+            let fully_rendered =
+                rendered.contains_range(&target.path, target.start_line, target.end_line);
+            !fully_rendered || target.canonical_target(scope).is_some()
+        })
         .collect::<Vec<_>>();
 
     if kept_targets.is_empty() {
@@ -750,6 +756,49 @@ mod tests {
         let TargetActions { actions: none, .. } =
             show_actions_for_targets(&[target("p.rs", 20, 25)], scope, &rendered);
         assert_eq!(none.len(), 1);
+    }
+
+    #[test]
+    fn fully_rendered_canonical_target_is_kept_as_reusable_evidence() {
+        let scope = Path::new("");
+        let mut rendered = RenderedSourceLines::default();
+        rendered.record_code_block(
+            Path::new("p.rs"),
+            "   1 │ a\n   2 │ b\n   3 │ c\n   4 │ d\n   5 │ e\n   6 │ f\n",
+        );
+
+        // A canonical <path>:<symbol> target whose body is already shown inline
+        // is retained: the same exact string remains reusable for context,
+        // callers, and callees even though the body is already visible.
+        let TargetActions {
+            actions,
+            canonical_count,
+            fallback_count,
+        } = show_actions_for_targets(&[symbol_target("p.rs", 1, 6, "helper")], scope, &rendered);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].command(), "srcwalk show p.rs:helper");
+        assert_eq!(canonical_count, 1);
+        assert_eq!(fallback_count, 0);
+    }
+
+    #[test]
+    fn fully_rendered_comma_path_symbol_target_is_suppressed() {
+        let scope = Path::new("");
+        let mut rendered = RenderedSourceLines::default();
+        rendered.record_code_block(Path::new("p,file.rs"), "   1 │ a\n   2 │ b\n   3 │ c\n");
+
+        // A symbol-backed target whose path holds a comma renders via
+        // `--section` (never canonical), so a fully-rendered body is still a
+        // redundant read and stays suppressed.
+        let TargetActions { actions, .. } = show_actions_for_targets(
+            &[symbol_target("p,file.rs", 1, 3, "helper")],
+            scope,
+            &rendered,
+        );
+        assert!(
+            actions.is_empty(),
+            "comma-path section read must be suppressed: {actions:?}"
+        );
     }
 
     #[test]

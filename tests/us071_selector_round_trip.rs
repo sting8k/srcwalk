@@ -70,16 +70,10 @@ impl Drop for Fixture {
     }
 }
 
-/// The printed `> Next: srcwalk show ...` command, split into argv with the
+/// Split the argument string after `> Next: srcwalk ` into argv with the
 /// footer's single-quote shell quoting undone. Fixture names never contain an
 /// apostrophe, so plain single-quote toggling is sufficient here.
-fn emitted_show_argv(output: &str) -> Vec<String> {
-    let line = output
-        .lines()
-        .find(|l| l.starts_with("> Next: srcwalk show "))
-        .unwrap_or_else(|| panic!("no `> Next: srcwalk show` line in:\n{output}"));
-    let rest = line.trim_start_matches("> Next: srcwalk ").trim();
-
+fn parse_argv(rest: &str) -> Vec<String> {
     let mut argv = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
@@ -102,8 +96,38 @@ fn emitted_show_argv(output: &str) -> Vec<String> {
     if open || !current.is_empty() {
         argv.push(current);
     }
+    argv
+}
+
+/// The printed `> Next: srcwalk show ...` command, split into argv.
+fn emitted_show_argv(output: &str) -> Vec<String> {
+    let line = output
+        .lines()
+        .find(|l| l.starts_with("> Next: srcwalk show "))
+        .unwrap_or_else(|| panic!("no `> Next: srcwalk show` line in:\n{output}"));
+    let rest = line.trim_start_matches("> Next: srcwalk ").trim();
+    let argv = parse_argv(rest);
     assert_eq!(argv.first().map(String::as_str), Some("show"), "{output}");
     argv
+}
+
+/// Every `> Next: srcwalk show ...` line, each parsed into `(target, flags)`.
+/// Used for multi-symbol output where each per-query section prints its own
+/// canonical target. `--section` is never canonical, so its presence fails.
+fn emitted_targets_and_flags_all(output: &str) -> Vec<(String, Vec<String>)> {
+    output
+        .lines()
+        .filter(|l| l.starts_with("> Next: srcwalk show "))
+        .map(|line| {
+            let rest = line.trim_start_matches("> Next: srcwalk ").trim();
+            let argv = parse_argv(rest);
+            assert!(
+                !argv.iter().any(|a| a == "--section"),
+                "canonical target must be one argument, got {argv:?}:\n{line}"
+            );
+            (argv[1].clone(), argv[2..].to_vec())
+        })
+        .collect()
 }
 
 /// The single copyable target plus the trailing flags the footer says to keep
@@ -369,4 +393,76 @@ fn nested_path_target_round_trips_on_the_host_path_separator() {
         &["--scope".into(), "src".into()],
     ));
     assert!(callees.contains("helper"), "{callees}");
+}
+
+/// Multi-symbol Discover has one section per term, and each section must emit the
+/// same canonical target the single-symbol route would. Every emitted target is
+/// copied unchanged through all four exact-target commands.
+#[test]
+fn multi_symbol_discover_round_trips_each_section_target() {
+    let fx = Fixture::new(
+        "multi_symbol",
+        &[
+            (
+                "src/alpha.rs",
+                "pub struct Alpha;\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+            ),
+            (
+                "src/beta.rs",
+                "pub struct Beta;\nimpl Beta {\n    pub fn stop(&self) {}\n}\n",
+            ),
+        ],
+    );
+
+    let discovered = fx.ok(&["discover", "run,stop", "--as", "symbol", "--scope", "src"]);
+    // Exactly two per-query sections, each with a canonical target.
+    let emitted = emitted_targets_and_flags_all(&discovered);
+    assert_eq!(
+        emitted.len(),
+        2,
+        "expected one target per term:\n{discovered}"
+    );
+    let targets: Vec<&str> = emitted.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(
+        targets.iter().any(|t| t.ends_with(":Alpha.run")),
+        "expected Alpha.run among {targets:?}:\n{discovered}"
+    );
+    assert!(
+        targets.iter().any(|t| t.ends_with(":Beta.stop")),
+        "expected Beta.stop among {targets:?}:\n{discovered}"
+    );
+    // No `--section`, no scope suffix for a CWD-relative display.
+    for (target, flags) in &emitted {
+        assert!(flags.is_empty(), "{target} flags {flags:?}:\n{discovered}");
+    }
+
+    // Copy each emitted target unchanged through all four commands.
+    for (target, flags) in &emitted {
+        let shown = fx.ok(&with_flags(&["show"], target, flags));
+        assert!(shown.contains("pub fn"), "show {target}:\n{shown}");
+
+        let context = fx.ok(&with_flags(
+            &["context"],
+            target,
+            &["--scope".into(), "src".into()],
+        ));
+        assert!(
+            context.contains(target.rsplit(':').next().unwrap()),
+            "{context}"
+        );
+
+        let callers = fx.ok(&with_flags(
+            &["trace", "callers"],
+            target,
+            &["--scope".into(), "src".into()],
+        ));
+        assert!(!callers.contains("error"), "callers {target}:\n{callers}");
+
+        let callees = fx.ok(&with_flags(
+            &["trace", "callees"],
+            target,
+            &["--scope".into(), "src".into()],
+        ));
+        assert!(!callees.contains("error"), "callees {target}:\n{callees}");
+    }
 }

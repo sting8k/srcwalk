@@ -27,7 +27,9 @@ mod semantic;
 mod structural_targets;
 
 pub(super) use expand::{append_expand_budget_note, ExpandBudget};
-pub(super) use structural_targets::has_confirmed_structural_targets;
+pub(super) use structural_targets::{
+    append_structural_next_targets, has_confirmed_structural_targets,
+};
 
 #[derive(Default)]
 pub(super) struct RenderedSourceLines {

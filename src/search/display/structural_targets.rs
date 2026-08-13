@@ -73,14 +73,14 @@ impl StructuralTarget {
     /// - the displayed path holds no comma, because `show`/`context` read a
     ///   comma as a multi-target separator, so the inline form could not be
     ///   copied as a single target;
-    /// - the displayed path actually addresses the file (CWD- or scope-relative,
-    ///   not the shortened `dir/file` display `rel_nonempty` falls back to).
+    /// - the display addresses a file at all (`Unaddressable` is the shortened
+    ///   `dir/file` label `rel_nonempty` falls back to).
     fn canonical_target(&self, scope: &Path) -> Option<String> {
         if !self.symbol_backed || self.requires_section_form(scope) {
             return None;
         }
-        let displayed = self.path_arg_relative_to(scope);
-        if displayed != format::rel(&self.path, scope) {
+        let (displayed, basis) = format::rel_with_basis(&self.path, scope);
+        if basis == format::DisplayBasis::Unaddressable {
             return None;
         }
         Some(format!("{displayed}:{}", self.selector))
@@ -328,18 +328,16 @@ fn show_command_for_target(target: &StructuralTarget, scope: &Path) -> String {
 
 /// The `--scope <dir>` a printed command needs to resolve its target.
 ///
-/// Paths are displayed relative to the process CWD whenever the file lives
-/// under it, so the usual command runs verbatim with no suffix. When `--scope`
-/// points outside the CWD the display is scope-relative, and the printed
-/// command must carry the same `--scope` or the copied target addresses nothing.
+/// Driven by the SAME `rel_with_basis` result that produced the displayed path,
+/// so the suffix can never disagree with what the display is relative to. Only
+/// a scope-relative display needs it; a CWD-relative or full path runs verbatim.
 fn scope_suffix(target: &StructuralTarget, scope: &Path) -> String {
-    if format::is_cwd_relative(&target.path) {
+    if format::rel_with_basis(&target.path, scope).1 != format::DisplayBasis::Scope {
         return String::new();
     }
     let scope = format::display_path(scope);
-    // A CWD or empty scope adds no resolution information; printing it would
-    // only produce a flag that cannot help.
-    if scope.is_empty() || scope == "." {
+    // An empty scope display cannot be turned into a usable flag.
+    if scope.is_empty() {
         return String::new();
     }
     format!(" --scope {}", quote_or_placeholder(&scope))
@@ -661,25 +659,42 @@ mod tests {
 
     #[test]
     fn scope_suffix_is_printed_only_when_the_display_needs_it() {
-        // A path under the process CWD is displayed CWD-relative, so the
-        // printed command runs verbatim with no suffix.
+        // Search results carry canonicalized paths, so the CWD case must be
+        // built the same way the path cache builds it (a raw `current_dir()`
+        // join is a representation production never produces, and on Windows a
+        // non-verbatim path never matches the canonical CWD prefix).
         let cwd = std::env::current_dir().unwrap();
+        let cwd = cwd.canonicalize().unwrap_or(cwd);
         let under_cwd = symbol_target(
             cwd.join("src").join("lib.rs").to_str().unwrap(),
             1,
             3,
             "helper",
         );
-        assert_eq!(scope_suffix(&under_cwd, &cwd), "");
-
-        // A path outside the CWD is displayed scope-relative, so the command
-        // must carry the scope that makes the copied target resolve.
-        let outside = symbol_target("/elsewhere/pkg/lib.rs", 1, 3, "helper");
-        let scope = Path::new("/elsewhere/pkg");
-        assert_eq!(scope_suffix(&outside, scope), " --scope /elsewhere/pkg");
         assert_eq!(
-            show_command_for_target(&outside, scope),
-            "srcwalk show lib.rs:helper --scope /elsewhere/pkg"
+            format::rel_with_basis(&under_cwd.path, &cwd).1,
+            format::DisplayBasis::SelfContained
+        );
+        assert_eq!(scope_suffix(&under_cwd, &cwd), "");
+        assert_eq!(
+            show_command_for_target(&under_cwd, &cwd),
+            "srcwalk show src/lib.rs:helper"
+        );
+
+        // A scope outside the CWD is displayed scope-relative, so the command
+        // must carry the scope that makes the copied target resolve. Use a
+        // host-native absolute path rather than Unix-only `/elsewhere`.
+        let scope = std::env::temp_dir().join("us071_scope_suffix_pkg");
+        let outside = symbol_target(scope.join("lib.rs").to_str().unwrap(), 1, 3, "helper");
+        assert_eq!(
+            format::rel_with_basis(&outside.path, &scope).1,
+            format::DisplayBasis::Scope
+        );
+        let suffix = scope_suffix(&outside, &scope);
+        assert!(suffix.starts_with(" --scope "), "{suffix}");
+        assert_eq!(
+            show_command_for_target(&outside, &scope),
+            format!("srcwalk show lib.rs:helper{suffix}")
         );
     }
 

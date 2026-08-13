@@ -170,6 +170,12 @@ fn discover_selector_round_trips_unchanged_through_all_four_commands() {
             && discovered.contains("by-name"),
         "the reuse note must name all four commands and keep the caller bound:\n{discovered}"
     );
+    // `src` is under the discover CWD, so the display addresses the file on its
+    // own and no `--scope` may be appended.
+    assert!(
+        flags.is_empty(),
+        "a CWD-relative display must not repeat --scope, got {flags:?}:\n{discovered}"
+    );
 
     // 1/4 show: the exact body only.
     let shown = fx.ok(&with_flags(&["show"], &target, &flags));
@@ -347,6 +353,12 @@ fn nested_path_target_round_trips_on_the_host_path_separator() {
     assert!(
         target.contains("deep"),
         "target must carry the nested path, got `{target}`:\n{discovered}"
+    );
+    // The file lives under the discover CWD, so the display already addresses
+    // it: no redundant `--scope` may be printed on any platform.
+    assert!(
+        flags.is_empty(),
+        "a CWD-relative display must not repeat --scope, got {flags:?}:\n{discovered}"
     );
 
     let shown = fx.ok(&with_flags(&["show"], &target, &flags));

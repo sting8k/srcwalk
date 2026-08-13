@@ -136,7 +136,7 @@ fn parse_hubs(skip_hubs: Option<&str>) -> HashSet<String> {
 /// - Unsupported-lang files become leaf nodes (inherited from `find_callers_batch`).
 #[allow(clippy::too_many_arguments)]
 pub fn search_callers_bfs(
-    target: &str,
+    root: crate::search::callers::CallerRoot<'_>,
     scope: &Path,
     cache: &OutlineCache,
     bloom: &crate::index::bloom::BloomFilterCache,
@@ -159,7 +159,9 @@ pub fn search_callers_bfs(
     let mut visited: HashSet<(String, PathBuf)> = HashSet::new();
 
     // Frontier at hop k: set of symbol names whose callers we want next.
-    let mut frontier: HashSet<String> = HashSet::from([target.to_string()]);
+    // Only the root hop is exact: it is the terminal key of the resolved
+    // definition. Every later hop is a plain by-name expansion.
+    let mut frontier: HashSet<String> = HashSet::from([root.lookup.to_string()]);
 
     'outer: for hop in 1..=max_depth {
         if frontier.is_empty() {
@@ -228,12 +230,10 @@ pub fn search_callers_bfs(
             } else if visited.insert(key) {
                 // calling_function is qualified ("Class.method" / "mod::func").
                 // Frontier needs the bare name since find_callers_batch matches
-                // by-name call sites, not qualified references.
-                let bare = m
-                    .calling_function
-                    .rsplit_once('.')
-                    .or_else(|| m.calling_function.rsplit_once("::"))
-                    .map_or(m.calling_function.as_str(), |(_, name)| name);
+                // by-name call sites, not qualified references. US-071 Step 2:
+                // the terminal key comes from the shared helper, never a local
+                // ad-hoc split.
+                let bare = crate::lang::qualified::terminal_callable_key(&m.calling_function);
                 next_frontier.insert(bare.to_string());
             }
 
@@ -290,12 +290,12 @@ pub fn search_callers_bfs(
             .then_with(|| a.from.cmp(&b.from))
     });
 
-    Ok(format_bfs(target, scope, &edges, &stats, max_depth))
+    Ok(format_bfs(root, scope, &edges, &stats, max_depth))
 }
 
 /// Deterministic sort + pretty-print BFS edges grouped by hop.
 fn format_bfs(
-    target: &str,
+    root: crate::search::callers::CallerRoot<'_>,
     scope: &Path,
     edges: &[BfsEdge],
     stats: &BfsStats,
@@ -305,7 +305,7 @@ fn format_bfs(
     let _ = writeln!(
         out,
         "# BFS callers of \"{}\" in {} — depth={}/{}, {} edge{}, {} ms",
-        target,
+        root.display,
         crate::format::display_path(scope),
         stats.depth_reached,
         max_depth,
@@ -313,6 +313,13 @@ fn format_bfs(
         if stats.edges_total == 1 { "" } else { "s" },
         stats.elapsed_ms
     );
+    if root.from_exact_path {
+        let _ = writeln!(
+            out,
+            "> Caveat: only the root is exact (`{}` in the named file); every later hop expands by name.",
+            root.lookup
+        );
+    }
 
     if edges.is_empty() {
         let _ = writeln!(
@@ -432,7 +439,7 @@ fn format_bfs(
             s.total_edges,
             s.related_edges,
             s.hop - 1,
-            target
+            root.lookup
         ));
     }
     let has_budget_notes = !notes.is_empty();

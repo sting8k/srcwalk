@@ -88,7 +88,7 @@ fn discover_offers_no_bare_range_wider_than_forty() {
     // metadata (a bounded START-line preview), never a competing `> expand:`
     // or an action-shaped `> anchor:` line repeating the full body range.
     assert!(
-        stdout.contains("> Next: srcwalk show target.js --section target"),
+        stdout.contains("> Next: srcwalk show target.js:target"),
         "wide range should be symbol-addressed as the primary next action, got:\n{stdout}"
     );
     assert!(

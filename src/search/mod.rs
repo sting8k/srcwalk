@@ -47,9 +47,9 @@ pub(crate) use self::low_signal::{
 use self::pagination::paginate;
 
 use self::display::{
-    append_expand_budget_note, append_symbol_ambiguity_caveat, format_matches,
-    format_search_result, format_search_result_with_header, has_confirmed_structural_targets,
-    ExpandBudget, RenderedSourceLines,
+    append_expand_budget_note, append_structural_next_targets, append_symbol_ambiguity_caveat,
+    format_matches, format_search_result, format_search_result_with_header,
+    has_confirmed_structural_targets, ExpandBudget, RenderedSourceLines,
 };
 
 const DEFAULT_MULTI_SYMBOL_MATCH_LIMIT: usize = 3;
@@ -430,6 +430,12 @@ pub fn search_multi_symbol_expanded(
             &mut smart_truncated,
             &mut out,
         );
+        // US-071 Step 4: invoke the same structural target planner the
+        // single-symbol formatter uses, once per paginated per-query section,
+        // after format_matches and before pagination/truncation footer actions.
+        // Targets derive only from this query's retained matches.
+        append_structural_next_targets(&mut out, &result, cache, &rendered_source_lines);
+
         let next_offset = result.offset + result.matches.len();
         let omitted = result.total_found.saturating_sub(next_offset);
         if omitted > 0 {

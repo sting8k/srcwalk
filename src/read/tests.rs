@@ -1,4 +1,5 @@
 use super::*;
+use crate::read::section::{resolve_path_symbol_resolution, PathSymbolResolution};
 use std::fmt::Write as _;
 
 #[test]
@@ -1031,6 +1032,148 @@ fn path_symbol_target_reuses_section_resolution_and_rejects_drive_prefix() {
     );
     assert_eq!(resolve_path_symbol_target(r"C:\a", &dir), None);
     assert_eq!(resolve_path_symbol_target("lib.rs:1-3", &dir), None);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn typed_path_symbol_resolution_states() {
+    let dir = std::env::temp_dir().join(format!(
+        "srcwalk_psr_unit_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.rs"), "fn target() {\n    let x = 1;\n}\n").unwrap();
+    std::fs::write(dir.join("C"), "fn a() {}\n").unwrap();
+
+    // NotForm: no separating colon, range form, naked drive path.
+    assert_eq!(
+        resolve_path_symbol_resolution("target", &dir),
+        PathSymbolResolution::NotForm
+    );
+    assert_eq!(
+        resolve_path_symbol_resolution("lib.rs:1-3", &dir),
+        PathSymbolResolution::NotForm
+    );
+    assert_eq!(
+        resolve_path_symbol_resolution(r"C:\a", &dir),
+        PathSymbolResolution::NotForm
+    );
+
+    // Unique.
+    match resolve_path_symbol_resolution("lib.rs:target", &dir) {
+        PathSymbolResolution::Unique { symbol, .. } => {
+            assert_eq!(symbol, "target");
+        }
+        other => panic!("expected Unique, got {other:?}"),
+    }
+
+    // NamedFileUnresolved (file exists, zero matches).
+    assert!(matches!(
+        resolve_path_symbol_resolution("lib.rs:missing", &dir),
+        PathSymbolResolution::NamedFileUnresolved { .. }
+    ));
+    // Legacy wrapper preserves Some(range=None) for the existing-file, zero-match
+    // case only.
+    assert_eq!(
+        resolve_path_symbol_target("lib.rs:missing", &dir)
+            .unwrap()
+            .range,
+        None
+    );
+
+    // NamedPathMissing: non-existent file is NOT NamedFileUnresolved and the
+    // legacy wrapper returns None (prior behavior from resolve_existing_file()?).
+    assert!(matches!(
+        resolve_path_symbol_resolution("missing.rs:target", &dir),
+        PathSymbolResolution::NamedPathMissing { .. }
+    ));
+    assert_eq!(resolve_path_symbol_target("missing.rs:target", &dir), None);
+
+    // Colon-bearing Rust selector => explicit unsupported, not NotForm/dotted.
+    assert_eq!(
+        resolve_path_symbol_resolution("lib.rs:A::target", &dir),
+        PathSymbolResolution::UnsupportedColonSymbol {
+            symbol: "A::target".to_string()
+        }
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn typed_path_symbol_ambiguous_cardinality() {
+    let dir = std::env::temp_dir().join(format!(
+        "srcwalk_psr_amb_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("ctx.rs"),
+        "fn Get() -> i32 { 1 }\nfn Get() -> i32 { 2 }\n",
+    )
+    .unwrap();
+
+    match resolve_path_symbol_resolution("ctx.rs:Get", &dir) {
+        PathSymbolResolution::Ambiguous { symbol, ranges, .. } => {
+            assert_eq!(symbol, "Get");
+            assert_eq!(ranges.len(), 2);
+            // Distinct (start,end) ranges, deduped + sorted.
+            assert_eq!(ranges, vec![(1, 1), (2, 2)]);
+        }
+        other => panic!("expected Ambiguous, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn windows_drive_path_symbol_splits_after_path_not_drive() {
+    // Drive colon must not be consumed as the path-symbol separator; these are
+    // ideal inputs (file does not exist on this host) so the split still lands
+    // on the canonical dotted symbol, and an existing-file miss is unresolved,
+    // NOT NotForm (drive-only) — proving the drive colon stayed in the path.
+    let dir = std::env::temp_dir().join(format!(
+        "srcwalk_winpsr_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    match resolve_path_symbol_resolution(
+        r"C:\repo\file.cs:JsonSerializerOptions.GetTypeInfoInternal",
+        &dir,
+    ) {
+        PathSymbolResolution::NamedPathMissing { path, symbol } => {
+            // Confirm the drive colon stayed in the path, not split at "C:".
+            assert!(
+                path.as_os_str()
+                    .to_string_lossy()
+                    .contains(r"C:\repo\file.cs"),
+                "{path:?}"
+            );
+            assert_eq!(symbol, "JsonSerializerOptions.GetTypeInfoInternal");
+        }
+        other => panic!("expected NamedPathMissing, got {other:?}"),
+    }
+
+    // Same for the forward-slash drive spelling.
+    assert!(matches!(
+        resolve_path_symbol_resolution(
+            "C:/repo/file.cs:JsonSerializerOptions.GetTypeInfoInternal",
+            &dir,
+        ),
+        PathSymbolResolution::NamedPathMissing { symbol, .. }
+            if symbol == "JsonSerializerOptions.GetTypeInfoInternal"
+    ));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

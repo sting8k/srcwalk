@@ -1330,6 +1330,41 @@ fn run_inner(
         return Err(err);
     }
 
+    // US-071 Step 4 (amendment): pre-parse comma-separated multi-symbol
+    // candidates BEFORE automatic classification. A dotted part can make the
+    // whole string look like a filename (QueryType::Glob), which the old
+    // classify-first gate then wrongly excluded. `parse_multi_symbol_query`
+    // already rejects real globs (`*?{[`), regexes, paths, and section syntax
+    // because it requires every part to be a bare/dotted identifier, so a real
+    // file/glob/regex/path/section query falls through to `classify` unchanged.
+    // Explicit `--as text|glob|regex|path` modes are dispatched before
+    // `run_inner` and never reach this route.
+    if let Some(parts) = parse_multi_symbol_query(query)? {
+        let session = session::Session::new();
+        let sym_index = index::SymbolIndex::new();
+        let bloom = index::bloom::BloomFilterCache::new();
+        let expand = if expand > 0 { expand } else { 2 };
+        let output = search::search_multi_symbol_expanded(
+            &parts,
+            scope,
+            cache,
+            &session,
+            &sym_index,
+            &bloom,
+            expand,
+            None,
+            limit,
+            offset,
+            glob,
+            filter,
+            budget_tokens,
+        )?;
+        return match budget_tokens {
+            Some(b) => Ok(budget::apply_preserving_footer(&output, b)),
+            None => Ok(output),
+        };
+    }
+
     let config_cache = crate::lang::tsconfig::ConfigCache::new();
 
     let query_type = classify(query, scope);
@@ -1363,45 +1398,6 @@ fn run_inner(
                 | QueryType::Glob(_)
         );
 
-    // Multi-symbol: comma-separated identifiers, 2..=5 items.
-    // Check before main dispatch. Only activate when all parts look like identifiers
-    // to avoid hijacking regex (/foo,bar/) or glob (*.{rs,ts}) queries.
-    if !matches!(
-        query_type,
-        QueryType::Glob(_)
-            | QueryType::SymbolGlob(_)
-            | QueryType::FilePath(_)
-            | QueryType::FilePathLine(_, _)
-            | QueryType::FilePathSection(_, _)
-    ) {
-        if let Some(parts) = parse_multi_symbol_query(query)? {
-            let session = session::Session::new();
-            let sym_index = index::SymbolIndex::new();
-            let bloom = index::bloom::BloomFilterCache::new();
-            let expand = if expand > 0 { expand } else { 2 };
-            let output = search::search_multi_symbol_expanded(
-                &parts,
-                scope,
-                cache,
-                &session,
-                &sym_index,
-                &bloom,
-                expand,
-                None,
-                limit,
-                offset,
-                glob,
-                filter,
-                budget_tokens,
-            )?;
-            return match budget_tokens {
-                Some(b) => Ok(budget::apply_preserving_footer(&output, b)),
-                None => Ok(output),
-            };
-        }
-    }
-
-    // FilePath and Glob are read operations, not search — handle before expanded dispatch
     let output_result = match query_type {
         QueryType::FilePath(_) | QueryType::FilePathLine(_, _) | QueryType::Glob(_)
             if filter.is_some() =>

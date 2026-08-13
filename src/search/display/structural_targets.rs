@@ -15,16 +15,24 @@ use super::semantic;
 use super::RenderedSourceLines;
 
 /// Header line for the confirmed-target block. It teaches the classification
-/// (run the printed `Next` command; symbol when stable, numeric as a safe
-/// fallback) instead of claiming every target is symbol-addressed.
+/// (run the printed `Next` command; the canonical `<path>:<symbol>` target when
+/// stable, numeric as a safe fallback) instead of claiming every target is
+/// symbol-addressed.
 const CONFIRMED_TARGETS_HEADER: &str =
-    "## Confirmed structural targets - run the printed Next command (symbol when stable; numeric as fallback)";
+    "## Confirmed structural targets - run the printed Next command (exact <path>:<symbol> when stable; numeric range as fallback)";
 
 /// Single line emitted after any numeric-fallback targets. Kept at block level
 /// so several fallbacks in one output share one explanation instead of
 /// repeating it after every target.
 const NUMERIC_FALLBACK_NOTE: &str =
     "> Note: numeric fallback - no unique symbol selector resolves to the exact body, so the printed range is the safe read.";
+
+/// Single block-level line emitted when at least one canonical `<path>:<symbol>`
+/// target was printed. It states the reuse contract (the same string is
+/// accepted unchanged by all four exact-target commands) and keeps the caller
+/// evidence bound honest.
+const CANONICAL_TARGET_NOTE: &str =
+    "> Note: <path>:<symbol> is the exact target; the same string is accepted unchanged by show, context, trace callers, and trace callees (keep any --scope printed with it). Caller matches remain by-name, so same-name definitions elsewhere may be included.";
 
 struct StructuralTarget {
     path: PathBuf,
@@ -58,6 +66,25 @@ impl StructuralTarget {
     fn requires_section_form(&self, scope: &Path) -> bool {
         self.path_arg_relative_to(scope).contains(',')
     }
+
+    /// Canonical exact target `<path>:<symbol>` — the one string every
+    /// exact-target command accepts unchanged. Emitted only when:
+    /// - the selector is parser-backed;
+    /// - the displayed path holds no comma, because `show`/`context` read a
+    ///   comma as a multi-target separator, so the inline form could not be
+    ///   copied as a single target;
+    /// - the display addresses a file at all (`Unaddressable` is the shortened
+    ///   `dir/file` label `rel_nonempty` falls back to).
+    fn canonical_target(&self, scope: &Path) -> Option<String> {
+        if !self.symbol_backed || self.requires_section_form(scope) {
+            return None;
+        }
+        let (displayed, basis) = format::rel_with_basis(&self.path, scope);
+        if basis == format::DisplayBasis::Unaddressable {
+            return None;
+        }
+        Some(format!("{displayed}:{}", self.selector))
+    }
 }
 
 pub(in crate::search) fn has_confirmed_structural_targets(
@@ -70,7 +97,7 @@ pub(in crate::search) fn has_confirmed_structural_targets(
         .any(|m| semantic::context_target_for_match(m, cache).is_some())
 }
 
-pub(super) fn append_structural_next_targets(
+pub(in crate::search) fn append_structural_next_targets(
     out: &mut String,
     result: &SearchResult,
     cache: &OutlineCache,
@@ -81,8 +108,8 @@ pub(super) fn append_structural_next_targets(
         return false;
     }
 
-    let (actions, fallback_count) =
-        show_actions_for_targets(&targets, &result.scope, rendered_lines);
+    let plan = show_actions_for_targets(&targets, &result.scope, rendered_lines);
+    let actions = plan.actions;
     let rendered = render_next_actions(&actions);
     if rendered.is_empty() {
         let target = &targets[0];
@@ -110,7 +137,11 @@ pub(super) fn append_structural_next_targets(
     out.push_str(CONFIRMED_TARGETS_HEADER);
     out.push('\n');
     out.push_str(&rendered);
-    if fallback_count > 0 {
+    if plan.canonical_count > 0 {
+        out.push('\n');
+        out.push_str(CANONICAL_TARGET_NOTE);
+    }
+    if plan.fallback_count > 0 {
         out.push('\n');
         out.push_str(NUMERIC_FALLBACK_NOTE);
     }
@@ -146,13 +177,21 @@ fn collect_structural_targets(
     targets
 }
 
-/// Build the confirmed-target actions plus how many of them are numeric
-/// fallbacks (used to emit a single block-level explanation).
+/// Confirmed-target actions plus the block-level counts that decide which
+/// single explanation lines follow them.
+struct TargetActions {
+    actions: Vec<NextAction>,
+    /// Targets printed as a numeric `<path>:<start-end>` fallback.
+    fallback_count: usize,
+    /// Targets printed as a canonical `<path>:<symbol>` exact target.
+    canonical_count: usize,
+}
+
 fn show_actions_for_targets(
     targets: &[StructuralTarget],
     scope: &Path,
     rendered: &RenderedSourceLines,
-) -> (Vec<NextAction>, usize) {
+) -> TargetActions {
     let ranges = targets
         .iter()
         .map(|target| (target.start_line, target.end_line))
@@ -160,14 +199,24 @@ fn show_actions_for_targets(
     let kept_targets = bounded_line_range_indices(&ranges)
         .into_iter()
         .map(|index| &targets[index])
-        // US-063: drop any target whose full range was already rendered
-        // verbatim in this packet — offering it again is pure redundancy. The
-        // whole range must be covered; a partial render keeps the offer.
-        .filter(|target| !rendered.contains_range(&target.path, target.start_line, target.end_line))
+        // US-063: a fully-rendered NUMERIC read is pure redundancy (the body is
+        // already inline), so it stays suppressed. A fully-rendered CANONICAL
+        // `<path>:<symbol>` is kept: the same exact target remains reusable for
+        // context, callers, and callees even though its body is already shown.
+        // A partial render always keeps the offer.
+        .filter(|target| {
+            let fully_rendered =
+                rendered.contains_range(&target.path, target.start_line, target.end_line);
+            !fully_rendered || target.canonical_target(scope).is_some()
+        })
         .collect::<Vec<_>>();
 
     if kept_targets.is_empty() {
-        return (Vec::new(), 0);
+        return TargetActions {
+            actions: Vec::new(),
+            fallback_count: 0,
+            canonical_count: 0,
+        };
     }
 
     // US-060b: split wide (>W-line) targets out so their numeric range anchors
@@ -204,8 +253,8 @@ fn show_actions_for_targets(
     }
 
     // Each narrow target is offered as its own read command. Symbol-backed
-    // targets use `show <path> --section <selector>`; the rest fall back to a
-    // numeric range and are labeled at block level.
+    // targets use the canonical `<path>:<symbol>` exact target; the rest fall
+    // back to a numeric range and are labeled at block level.
     for (index, target) in narrow.iter().enumerate() {
         if !target.symbol_backed {
             fallback_count += 1;
@@ -218,7 +267,19 @@ fn show_actions_for_targets(
             target.anchor(),
         ));
     }
-    (actions, fallback_count)
+
+    // The reuse note only holds for targets actually printed in canonical form.
+    let canonical_count = wide
+        .iter()
+        .chain(narrow.iter())
+        .filter(|target| target.canonical_target(scope).is_some())
+        .count();
+
+    TargetActions {
+        actions,
+        fallback_count,
+        canonical_count,
+    }
 }
 
 /// US-060b: keep the numeric range of a wide target visible as evidence while
@@ -234,12 +295,23 @@ fn anchor_line(target: &StructuralTarget, scope: &Path) -> String {
 }
 
 fn show_command_for_target(target: &StructuralTarget, scope: &Path) -> String {
-    // Symbol form: `show <path> --section <selector>` for a round-tripping
-    // parser-backed selector. The path is quoted separately so a comma inside
-    // a quoted path never becomes a multi-target command.
+    let scope_suffix = scope_suffix(target, scope);
+
+    // Canonical exact target: one `<path>:<symbol>` string that show, context,
+    // trace callers, and trace callees all accept unchanged.
+    if let Some(canonical) = target.canonical_target(scope) {
+        return format!(
+            "srcwalk show {}{scope_suffix}",
+            quote_or_placeholder(&canonical)
+        );
+    }
+
+    // Parser-backed selector inside a comma-bearing path: the inline form would
+    // be split into multiple targets, so keep the separately quoted `--section`
+    // command. It reads the same body but is not the canonical reusable target.
     if target.symbol_backed {
         return format!(
-            "srcwalk show {} --section {}",
+            "srcwalk show {} --section {}{scope_suffix}",
             quote_or_placeholder(&target.path_arg_relative_to(scope)),
             quote_or_placeholder(&target.selector)
         );
@@ -248,16 +320,33 @@ fn show_command_for_target(target: &StructuralTarget, scope: &Path) -> String {
     // Numeric fallback for exceptional targets with no stable symbol selector.
     if target.requires_section_form(scope) {
         return format!(
-            "srcwalk show {} --section {}",
+            "srcwalk show {} --section {}{scope_suffix}",
             quote_or_placeholder(&target.path_arg_relative_to(scope)),
             quote_or_placeholder(&target.range_arg())
         );
     }
 
     format!(
-        "srcwalk show {}",
+        "srcwalk show {}{scope_suffix}",
         quote_or_placeholder(&target.location_arg_relative_to(scope))
     )
+}
+
+/// The `--scope <dir>` a printed command needs to resolve its target.
+///
+/// Driven by the SAME `rel_with_basis` result that produced the displayed path,
+/// so the suffix can never disagree with what the display is relative to. Only
+/// a scope-relative display needs it; a CWD-relative or full path runs verbatim.
+fn scope_suffix(target: &StructuralTarget, scope: &Path) -> String {
+    if format::rel_with_basis(&target.path, scope).1 != format::DisplayBasis::Scope {
+        return String::new();
+    }
+    let scope = format::display_path(scope);
+    // An empty scope display cannot be turned into a usable flag.
+    if scope.is_empty() {
+        return String::new();
+    }
+    format!(" --scope {}", quote_or_placeholder(&scope))
 }
 
 fn quote_or_placeholder(value: &str) -> String {
@@ -310,7 +399,7 @@ mod tests {
     #[test]
     fn batched_show_quotes_combined_space_targets() {
         let scope = Path::new("");
-        let (actions, _) = show_actions_for_targets(
+        let TargetActions { actions, .. } = show_actions_for_targets(
             &[target("a file.rs", 1, 1), target("b file.rs", 2, 2)],
             scope,
             &RenderedSourceLines::default(),
@@ -322,24 +411,24 @@ mod tests {
     }
 
     #[test]
-    fn symbol_target_renders_symbol_section_command() {
+    fn symbol_target_renders_canonical_path_symbol_command() {
         let scope = Path::new("");
         let command = show_command_for_target(&symbol_target("lib.rs", 1, 3, "target"), scope);
-        assert_eq!(command, "srcwalk show lib.rs --section target");
+        assert_eq!(command, "srcwalk show lib.rs:target");
     }
 
     #[test]
     fn symbol_target_preserves_qualified_selector() {
         let scope = Path::new("");
         let command = show_command_for_target(&symbol_target("batch.go", 3, 3, "Batch.Set"), scope);
-        assert_eq!(command, "srcwalk show batch.go --section Batch.Set");
+        assert_eq!(command, "srcwalk show batch.go:Batch.Set");
     }
 
     #[test]
     fn symbol_target_quotes_space_path_and_selector() {
         let scope = Path::new("");
         let command = show_command_for_target(&symbol_target("a file.rs", 1, 3, "my fn"), scope);
-        assert_eq!(command, "srcwalk show 'a file.rs' --section 'my fn'");
+        assert_eq!(command, "srcwalk show 'a file.rs:my fn'");
     }
 
     #[test]
@@ -352,7 +441,7 @@ mod tests {
     #[test]
     fn batched_show_splits_comma_paths() {
         let scope = Path::new("");
-        let (actions, _) = show_actions_for_targets(
+        let TargetActions { actions, .. } = show_actions_for_targets(
             &[target("a,file.rs", 1, 1), target("b.rs", 2, 2)],
             scope,
             &RenderedSourceLines::default(),
@@ -367,7 +456,7 @@ mod tests {
 
     #[test]
     fn over_cap_singleton_emits_no_action() {
-        let (actions, _) = show_actions_for_targets(
+        let TargetActions { actions, .. } = show_actions_for_targets(
             &[target("large.rs", 1, 201)],
             Path::new(""),
             &RenderedSourceLines::default(),
@@ -378,7 +467,11 @@ mod tests {
     #[test]
     fn over_cap_ranges_skip_and_keep_contiguous_priorities() {
         let scope = Path::new("");
-        let (actions, fallbacks) = show_actions_for_targets(
+        let TargetActions {
+            actions,
+            fallback_count: fallbacks,
+            ..
+        } = show_actions_for_targets(
             &[
                 target("a,file.rs", 1, 150),
                 target("b,file.rs", 1, 51),
@@ -409,7 +502,11 @@ mod tests {
     fn wide_boundary_stays_plain_offer() {
         let scope = Path::new("");
         // Width W (40) is the boundary: exactly 40 lines stays a plain offer.
-        let (actions, fallbacks) = show_actions_for_targets(
+        let TargetActions {
+            actions,
+            fallback_count: fallbacks,
+            ..
+        } = show_actions_for_targets(
             &[target("p.rs", 1, 40)],
             scope,
             &RenderedSourceLines::default(),
@@ -424,7 +521,11 @@ mod tests {
         let scope = Path::new("");
         // Width W+1 (41) >W, non-symbol-backed: numeric command is the primary
         // action (no separate anchor, no `> expand:`).
-        let (actions, fallbacks) = show_actions_for_targets(
+        let TargetActions {
+            actions,
+            fallback_count: fallbacks,
+            ..
+        } = show_actions_for_targets(
             &[target("p.rs", 1, 41)],
             scope,
             &RenderedSourceLines::default(),
@@ -444,7 +545,11 @@ mod tests {
         let scope = Path::new("");
         // Wide symbol-backed target: the symbol command is the primary action
         // and the numeric range is non-action evidence metadata.
-        let (actions, fallbacks) = show_actions_for_targets(
+        let TargetActions {
+            actions,
+            fallback_count: fallbacks,
+            ..
+        } = show_actions_for_targets(
             &[symbol_target(
                 "semantic.rs",
                 156,
@@ -458,7 +563,7 @@ mod tests {
         assert_eq!(fallbacks, 0);
         assert_eq!(
             actions[0].command(),
-            "srcwalk show semantic.rs --section format_definition_semantic_match_with_path"
+            "srcwalk show semantic.rs:format_definition_semantic_match_with_path"
         );
         assert_eq!(
             actions[0].reason(),
@@ -469,7 +574,7 @@ mod tests {
     #[test]
     fn wide_symbol_backed_anchor_is_non_action_metadata() {
         let scope = Path::new("");
-        let (actions, _) = show_actions_for_targets(
+        let TargetActions { actions, .. } = show_actions_for_targets(
             &[symbol_target("semantic.rs", 156, 272, "Type.method")],
             scope,
             &RenderedSourceLines::default(),
@@ -478,14 +583,11 @@ mod tests {
         // The action's command is the symbol command; the anchor is plain
         // metadata using the START line only, never a competing action or a
         // repeat of the full body range.
-        assert_eq!(
-            preamble.command(),
-            "srcwalk show semantic.rs --section Type.method"
-        );
+        assert_eq!(preamble.command(), "srcwalk show semantic.rs:Type.method");
         let rendered = render_next_actions(std::slice::from_ref(preamble));
         assert_eq!(
             rendered,
-            "  evidence anchor: semantic.rs:156 (bounded preview; not the body address)\n> Next: srcwalk show semantic.rs --section Type.method"
+            "  evidence anchor: semantic.rs:156 (bounded preview; not the body address)\n> Next: srcwalk show semantic.rs:Type.method"
         );
         assert!(!rendered.contains("expand:"), "{rendered}");
         assert!(!rendered.contains("> Next: semantic.rs"), "{rendered}");
@@ -502,7 +604,11 @@ mod tests {
     #[test]
     fn narrow_symbol_backed_has_exactly_one_symbol_next() {
         let scope = Path::new("");
-        let (actions, fallbacks) = show_actions_for_targets(
+        let TargetActions {
+            actions,
+            fallback_count: fallbacks,
+            ..
+        } = show_actions_for_targets(
             &[symbol_target("lib.rs", 1, 3, "helper")],
             scope,
             &RenderedSourceLines::default(),
@@ -510,7 +616,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert_eq!(fallbacks, 0);
         let rendered = render_next_actions(&actions);
-        assert_eq!(rendered, "> Next: srcwalk show lib.rs --section helper");
+        assert_eq!(rendered, "> Next: srcwalk show lib.rs:helper");
         assert!(!rendered.contains("expand:"), "{rendered}");
         assert!(!rendered.contains(":1-3"), "{rendered}");
     }
@@ -518,15 +624,95 @@ mod tests {
     #[test]
     fn header_teaches_classification() {
         assert!(CONFIRMED_TARGETS_HEADER.contains("run the printed Next command"));
-        assert!(CONFIRMED_TARGETS_HEADER.contains("symbol when stable"));
-        assert!(CONFIRMED_TARGETS_HEADER.contains("numeric as fallback"));
+        assert!(CONFIRMED_TARGETS_HEADER.contains("exact <path>:<symbol> when stable"));
+        assert!(CONFIRMED_TARGETS_HEADER.contains("numeric range as fallback"));
+    }
+
+    #[test]
+    fn canonical_note_names_all_four_commands_and_keeps_caller_bound() {
+        for command in ["show", "context", "trace callers", "trace callees"] {
+            assert!(CANONICAL_TARGET_NOTE.contains(command), "{command}");
+        }
+        // The reuse claim must not upgrade caller evidence.
+        assert!(CANONICAL_TARGET_NOTE.contains("by-name"));
+        assert!(CANONICAL_TARGET_NOTE.contains("same-name definitions"));
+    }
+
+    #[test]
+    fn canonical_count_covers_only_targets_printed_as_path_symbol() {
+        let scope = Path::new("");
+        let plan = show_actions_for_targets(
+            &[
+                // canonical: parser-backed, comma-free path
+                symbol_target("a.rs", 1, 3, "Type.method"),
+                // parser-backed but comma path -> `--section`, not canonical
+                symbol_target("b,file.rs", 1, 3, "helper"),
+                // not parser-backed -> numeric fallback
+                target("c.rs", 1, 3),
+            ],
+            scope,
+            &RenderedSourceLines::default(),
+        );
+        assert_eq!(plan.canonical_count, 1);
+        assert_eq!(plan.fallback_count, 1);
+        assert_eq!(plan.actions[0].command(), "srcwalk show a.rs:Type.method");
+        assert_eq!(
+            plan.actions[1].command(),
+            "srcwalk show 'b,file.rs' --section helper"
+        );
+        assert_eq!(plan.actions[2].command(), "srcwalk show c.rs:1-3");
+    }
+
+    #[test]
+    fn scope_suffix_is_printed_only_when_the_display_needs_it() {
+        // Search results carry canonicalized paths, so the CWD case must be
+        // built the same way the path cache builds it (a raw `current_dir()`
+        // join is a representation production never produces, and on Windows a
+        // non-verbatim path never matches the canonical CWD prefix).
+        let cwd = std::env::current_dir().unwrap();
+        let cwd = cwd.canonicalize().unwrap_or(cwd);
+        let under_cwd = symbol_target(
+            cwd.join("src").join("lib.rs").to_str().unwrap(),
+            1,
+            3,
+            "helper",
+        );
+        assert_eq!(
+            format::rel_with_basis(&under_cwd.path, &cwd).1,
+            format::DisplayBasis::SelfContained
+        );
+        assert_eq!(scope_suffix(&under_cwd, &cwd), "");
+        assert_eq!(
+            show_command_for_target(&under_cwd, &cwd),
+            "srcwalk show src/lib.rs:helper"
+        );
+
+        // A scope outside the CWD is displayed scope-relative, so the command
+        // must carry the scope that makes the copied target resolve. Use a
+        // host-native absolute path rather than Unix-only `/elsewhere`.
+        let scope = std::env::temp_dir().join("us071_scope_suffix_pkg");
+        let outside = symbol_target(scope.join("lib.rs").to_str().unwrap(), 1, 3, "helper");
+        assert_eq!(
+            format::rel_with_basis(&outside.path, &scope).1,
+            format::DisplayBasis::Scope
+        );
+        let suffix = scope_suffix(&outside, &scope);
+        assert!(suffix.starts_with(" --scope "), "{suffix}");
+        assert_eq!(
+            show_command_for_target(&outside, &scope),
+            format!("srcwalk show lib.rs:helper{suffix}")
+        );
     }
 
     #[test]
     fn numeric_fallback_note_is_single_block_level() {
         // Two non-symbol-backed wide targets -> one shared fallback note at
         // block level, not repeated per target.
-        let (actions, fallbacks) = show_actions_for_targets(
+        let TargetActions {
+            actions,
+            fallback_count: fallbacks,
+            ..
+        } = show_actions_for_targets(
             &[target("a.rs", 1, 41), target("b.rs", 1, 41)],
             Path::new(""),
             &RenderedSourceLines::default(),
@@ -548,14 +734,17 @@ mod tests {
         );
 
         // Full containment (1-6) -> offer suppressed.
-        let (full, _) = show_actions_for_targets(&[target("p.rs", 1, 6)], scope, &rendered);
+        let TargetActions { actions: full, .. } =
+            show_actions_for_targets(&[target("p.rs", 1, 6)], scope, &rendered);
         assert!(
             full.is_empty(),
             "fully-rendered target must be suppressed: {full:?}"
         );
 
         // Partial overlap (1-3 all rendered, 4-8 not) -> offer kept.
-        let (partial, _) = show_actions_for_targets(&[target("p.rs", 1, 8)], scope, &rendered);
+        let TargetActions {
+            actions: partial, ..
+        } = show_actions_for_targets(&[target("p.rs", 1, 8)], scope, &rendered);
         assert_eq!(partial.len(), 1, "partial overlap must keep the offer");
         assert!(
             partial[0].command().contains('8'),
@@ -564,14 +753,62 @@ mod tests {
         );
 
         // No overlap (20-25) -> offer kept.
-        let (none, _) = show_actions_for_targets(&[target("p.rs", 20, 25)], scope, &rendered);
+        let TargetActions { actions: none, .. } =
+            show_actions_for_targets(&[target("p.rs", 20, 25)], scope, &rendered);
         assert_eq!(none.len(), 1);
+    }
+
+    #[test]
+    fn fully_rendered_canonical_target_is_kept_as_reusable_evidence() {
+        let scope = Path::new("");
+        let mut rendered = RenderedSourceLines::default();
+        rendered.record_code_block(
+            Path::new("p.rs"),
+            "   1 │ a\n   2 │ b\n   3 │ c\n   4 │ d\n   5 │ e\n   6 │ f\n",
+        );
+
+        // A canonical <path>:<symbol> target whose body is already shown inline
+        // is retained: the same exact string remains reusable for context,
+        // callers, and callees even though the body is already visible.
+        let TargetActions {
+            actions,
+            canonical_count,
+            fallback_count,
+        } = show_actions_for_targets(&[symbol_target("p.rs", 1, 6, "helper")], scope, &rendered);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].command(), "srcwalk show p.rs:helper");
+        assert_eq!(canonical_count, 1);
+        assert_eq!(fallback_count, 0);
+    }
+
+    #[test]
+    fn fully_rendered_comma_path_symbol_target_is_suppressed() {
+        let scope = Path::new("");
+        let mut rendered = RenderedSourceLines::default();
+        rendered.record_code_block(Path::new("p,file.rs"), "   1 │ a\n   2 │ b\n   3 │ c\n");
+
+        // A symbol-backed target whose path holds a comma renders via
+        // `--section` (never canonical), so a fully-rendered body is still a
+        // redundant read and stays suppressed.
+        let TargetActions { actions, .. } = show_actions_for_targets(
+            &[symbol_target("p,file.rs", 1, 3, "helper")],
+            scope,
+            &rendered,
+        );
+        assert!(
+            actions.is_empty(),
+            "comma-path section read must be suppressed: {actions:?}"
+        );
     }
 
     #[test]
     fn mixed_symbol_and_fallback_emit_one_primary_action_each() {
         let scope = Path::new("");
-        let (actions, fallbacks) = show_actions_for_targets(
+        let TargetActions {
+            actions,
+            fallback_count: fallbacks,
+            ..
+        } = show_actions_for_targets(
             &[
                 symbol_target("a.rs", 1, 3, "stableOne"),
                 target("b.rs", 1, 41),

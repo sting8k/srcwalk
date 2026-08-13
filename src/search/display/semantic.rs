@@ -74,25 +74,24 @@ pub(super) fn context_target_for_match(m: &Match, cache: &OutlineCache) -> Optio
         let range = m.def_range.unwrap_or((m.line, m.line));
         if let Some(candidate) = best_semantic_candidate(&entries, m) {
             if candidate.kind == OutlineKind::Function {
-                // US-064: `m.def_name` retains the parser-backed `Q.N` form for
-                // qualified matches, so the footer carries the same selector
-                // the discover query used instead of reconstructing it.
-                let selector = m.def_name.clone().unwrap_or_else(|| candidate.name.clone());
+                // US-071 Step 1: build the selector from the outline member name,
+                // not the display-qualified `m.def_name`, so a C# method unter a
+                // namespace never emits `System.Text.Json.GetTypeInfoInternal`.
+                let member = candidate.name.clone();
                 return Some(build_target(
                     &m.path,
                     &entries,
                     candidate.start_line,
                     candidate.end_line,
-                    selector,
+                    &member,
                 ));
             }
         }
-        if let Some((start_line, end_line)) =
-            find_function_definition_range(&entries, range, m.def_name.as_deref())
-        {
-            let selector = m.def_name.clone().unwrap_or_else(|| start_line.to_string());
+        if let Some(member) = find_function_definition_member(&entries, range) {
+            let start_line = range.0;
+            let end_line = range.1;
             return Some(build_target(
-                &m.path, &entries, start_line, end_line, selector,
+                &m.path, &entries, start_line, end_line, &member,
             ));
         }
         return None;
@@ -103,38 +102,58 @@ pub(super) fn context_target_for_match(m: &Match, cache: &OutlineCache) -> Optio
     }
 
     let candidate = best_enclosing_function(&entries, m.line)?;
-    let selector = candidate.name.clone();
+    let member = candidate.name.clone();
     Some(build_target(
         &m.path,
         &entries,
         candidate.start_line,
         candidate.end_line,
-        selector,
+        &member,
     ))
 }
 
-/// Build a `ContextTarget` from a candidate range and parser-backed selector.
-/// `symbol_backed` is true only when the selector resolves back to exactly this
-/// range (round-trip check), so the footer never emits a symbol command that
-/// would read a different body.
+/// Build a `ContextTarget` from a candidate range and the member name. The
+/// selector is constructed from OUTLINE PRIMITIVES via `selector_from_outline`
+/// (never the display-qualified name), and `symbol_backed` requires that
+/// selector to resolve to EXACTLY this one range (unique cardinality through
+/// the shared resolver). Any ambiguity or mismatch falls back to a numeric
+/// body address (`symbol_backed` = false).
 fn build_target(
     path: &Path,
     entries: &[OutlineEntry],
     start_line: u32,
     end_line: u32,
-    selector: String,
+    member: &str,
 ) -> ContextTarget {
     let lang = crate::lang::detect_file_type(path).structural_lang();
-    let symbol_backed = crate::lang::qualified::resolve_selector_first(entries, lang, &selector)
-        == Some((start_line, end_line));
+    // Canonical owning-container selector from outline primitives (drops the
+    // namespace). `None` means no owning container resolves (a top-level
+    // non-Go function) and the bare member name is the display selector.
+    let qualified =
+        crate::lang::qualified::selector_from_outline(entries, lang, start_line, end_line, member);
+    // symbol_backed ALWAYS requires unique cardinality through the shared
+    // resolver: the candidate selector must resolve to EXACTLY this one range.
+    // A top-level bare member with N>1 distinct ranges (two same-name
+    // definitions) is ambiguous for every body, and no body is symbol-backed;
+    // all fall back to numeric. There is no first-match escape hatch for a
+    // target advertised canonical/exact.
+    let symbol_backed = match &qualified {
+        Some(q) => {
+            crate::lang::qualified::resolve_selector_matches(entries, lang, q)
+                == vec![(start_line, end_line)]
+        }
+        None => {
+            crate::lang::qualified::resolve_selector_matches(entries, lang, member)
+                == vec![(start_line, end_line)]
+        }
+    };
     ContextTarget {
         start_line,
         end_line,
-        selector,
+        selector: qualified.unwrap_or_else(|| member.to_string()),
         symbol_backed,
     }
 }
-
 pub(super) fn format_definition_semantic_match(
     m: &Match,
     scope: &Path,
@@ -520,23 +539,35 @@ fn collect_semantic_candidates(
     }
 }
 
-fn find_function_definition_range(
-    entries: &[OutlineEntry],
-    range: (u32, u32),
-    wanted: Option<&str>,
-) -> Option<(u32, u32)> {
-    for entry in entries {
-        if entry.kind == OutlineKind::Function
-            && (entry.start_line, entry.end_line) == range
-            && wanted.is_none_or(|name| entry.name == name)
-        {
-            return Some(range);
-        }
-        if let Some(found) = find_function_definition_range(&entry.children, range, wanted) {
-            return Some(found);
-        }
+/// Recover the ACTUAL outline member name of the function definition occupying
+/// `range`. This is RANGE-OWNED: it reads the outline tree at the exact range and
+/// never derives or blocks on a display-qualified name (`wanted`). A display
+/// string like `System.Text.Json.GetTypeInfoInternal` therefore cannot cause the
+/// fallback to miss the real member `GetTypeInfoInternal`, and a simple
+/// `def_name="foo"` no longer falls through to a line-number member.
+///
+/// If multiple distinct Function names share the exact same range (a
+/// contradictory fixture), the recovery is ambiguous and returns `None` rather
+/// than silently picking the first; duplicate rows carrying the same name at the
+/// same range are deduped and fine.
+fn find_function_definition_member(entries: &[OutlineEntry], range: (u32, u32)) -> Option<String> {
+    let mut distinct: Vec<&str> = Vec::new();
+    collect_range_names(entries, range, &mut distinct);
+    distinct.sort_unstable();
+    distinct.dedup();
+    match distinct.as_slice() {
+        [only] => Some((*only).to_string()),
+        _ => None, // zero, or more than one distinct name at the range
     }
-    None
+}
+
+fn collect_range_names<'a>(entries: &'a [OutlineEntry], range: (u32, u32), out: &mut Vec<&'a str>) {
+    for entry in entries {
+        if entry.kind == OutlineKind::Function && (entry.start_line, entry.end_line) == range {
+            out.push(&entry.name);
+        }
+        collect_range_names(&entry.children, range, out);
+    }
 }
 
 fn best_enclosing_function(entries: &[OutlineEntry], line: u32) -> Option<SemanticCandidate> {
@@ -618,5 +649,230 @@ pub(super) fn outline_kind_label(kind: OutlineKind) -> &'static str {
         OutlineKind::Module => "mod",
         OutlineKind::TestSuite => "test_suite",
         OutlineKind::TestCase => "test_case",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{OutlineEntry, OutlineKind};
+
+    fn path(name: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(name)
+    }
+
+    fn fn_entry(name: &str, start: u32, end: u32) -> OutlineEntry {
+        OutlineEntry {
+            kind: OutlineKind::Function,
+            name: name.to_string(),
+            start_line: start,
+            end_line: end,
+            signature: None,
+            children: Vec::new(),
+            doc: None,
+        }
+    }
+
+    fn container(
+        kind: OutlineKind,
+        name: &str,
+        start: u32,
+        end: u32,
+        children: Vec<OutlineEntry>,
+    ) -> OutlineEntry {
+        OutlineEntry {
+            kind,
+            name: name.to_string(),
+            start_line: start,
+            end_line: end,
+            signature: None,
+            children,
+            doc: None,
+        }
+    }
+
+    // BLOCKER 1 test: two same-file top-level same-name functions -> NEITHER is
+    // symbol-backed; a unique top-level function IS symbol-backed.
+    #[test]
+    fn ambiguous_top_level_member_never_symbol_backed() {
+        let entries = vec![
+            fn_entry("helper", 1, 1),
+            fn_entry("other", 2, 2),
+            fn_entry("helper", 3, 3),
+        ];
+        let first = build_target(&path("lib.rs"), &entries, 1, 1, "helper");
+        let second = build_target(&path("lib.rs"), &entries, 3, 3, "helper");
+        assert!(
+            !first.symbol_backed,
+            "first same-name body must not be symbol-backed"
+        );
+        assert!(
+            !second.symbol_backed,
+            "second same-name body must not be symbol-backed"
+        );
+        assert_eq!(first.selector, "helper");
+        assert_eq!(second.selector, "helper");
+
+        let unique = build_target(&path("lib.rs"), &entries, 2, 2, "other");
+        assert!(
+            unique.symbol_backed,
+            "unique top-level member must be symbol-backed"
+        );
+        assert_eq!(unique.selector, "other");
+    }
+
+    // BLOCKER 2: the fallback is range-owned. It recovers the ACTUAL outline
+    // member at the exact range and never derives/blocks on a display name. A
+    // simple `def_name=Some("foo")` rebuilds `foo` (not a line number), and a
+    // multi-dot `Some("System.Text.Json.GetTypeInfoInternal")` no longer trips
+    // the T21 trap — the real member `GetTypeInfoInternal` is recovered.
+    //
+    // These go through `context_target_for_match` with a real Match + a real
+    // outline file on disk (via OutlineCache), so the production fallback path
+    // (not just the helper) is exercised.
+    fn temp_outline(ext: &str, content: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "srcwalk_us071_semval_{}_{}",
+            ext,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(format!("file.{ext}"));
+        std::fs::write(&file, content).unwrap();
+        file
+    }
+
+    fn definition_match(file: &std::path::Path, def_name: Option<&str>, line: u32) -> Match {
+        Match {
+            path: file.to_path_buf(),
+            line,
+            text: String::new(),
+            is_definition: true,
+            exact: true,
+            file_lines: 1000,
+            mtime: std::time::SystemTime::now(),
+            def_range: Some((line, line)),
+            def_name: def_name.map(str::to_string),
+            def_weight: 0,
+            impl_target: None,
+            base_target: None,
+            in_comment: false,
+        }
+    }
+
+    // Simple `def_name=Some("foo")` -> rebuilds the real member "foo" and is
+    // symbol-backed. The matched body is the single `fn foo`.
+    #[test]
+    fn fallback_recovers_simple_def_name_member() {
+        let file = temp_outline(
+            "rs",
+            "fn helper() -> i32 { 0 }
+fn foo() -> i32 { 7 }
+",
+        );
+        let m = definition_match(&file, Some("foo"), 2);
+        let cache = OutlineCache::default();
+        let target = context_target_for_match(&m, &cache);
+        assert_eq!(target.as_ref().map(|t| t.selector.as_str()), Some("foo"));
+        assert_eq!(target.as_ref().map(|t| t.symbol_backed), Some(true));
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    // Multi-dot display name is the T21 trap: `best_semantic_candidate`'s wanted
+    // filter (whole multi-dot) rejects, so the FALLBACK runs and must recover the
+    // real member GetTypeInfoInternal, NOT manufacture from the display string.
+    #[test]
+    fn fallback_recovers_actual_member_for_multidot_def_name() {
+        let file = temp_outline(
+            "cs",
+            "namespace System.Text.Json {
+  class JsonSerializerOptions {
+    void GetTypeInfoInternal() { }
+  }
+}
+",
+        );
+        let m = definition_match(&file, Some("System.Text.Json.GetTypeInfoInternal"), 3);
+        let cache = OutlineCache::default();
+        let target = context_target_for_match(&m, &cache);
+        let target = target.expect("fallback must produce a context target");
+        // Owning class selector, never the display-qualified namespace chain.
+        assert_eq!(target.selector, "JsonSerializerOptions.GetTypeInfoInternal");
+        assert!(target.symbol_backed);
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    // Two distinct Function names at the SAME exact range -> ambiguous, None.
+    fn only_function_entry(name: &str, start: u32, end: u32) -> OutlineEntry {
+        fn_entry(name, start, end)
+    }
+    #[test]
+    fn contradictory_same_range_different_names_is_ambiguous() {
+        let entries = vec![container(
+            OutlineKind::Class,
+            "Thing",
+            1,
+            10,
+            vec![
+                only_function_entry("Run", 5, 5),
+                only_function_entry("Other", 5, 5),
+            ],
+        )];
+        let member = find_function_definition_member(&entries, (5, 5));
+        assert_eq!(
+            member, None,
+            "two distinct names at same range must be ambiguous"
+        );
+    }
+
+    // Qualified member: C# class under a namespace -> selector from owning
+    // class, drop namespace, symbol-backed when unique.
+    #[test]
+    fn qualified_container_selector_symbol_backed_when_unique() {
+        let entries = vec![container(
+            OutlineKind::Module,
+            "System.Text.Json",
+            1,
+            120,
+            vec![container(
+                OutlineKind::Class,
+                "JsonSerializerOptions",
+                2,
+                118,
+                vec![fn_entry("GetTypeInfoInternal", 55, 65)],
+            )],
+        )];
+        let target = build_target(
+            &path("JsonSerializerOptions.cs"),
+            &entries,
+            55,
+            65,
+            "GetTypeInfoInternal",
+        );
+        assert_eq!(target.selector, "JsonSerializerOptions.GetTypeInfoInternal");
+        assert!(
+            target.symbol_backed,
+            "unique owning-class member must be symbol-backed"
+        );
+    }
+
+    // Qualified member with N>1 distinct same-file ranges -> not symbol-backed.
+    #[test]
+    fn qualified_ambiguous_member_never_symbol_backed() {
+        let entries = vec![container(
+            OutlineKind::Class,
+            "JsonSerializerContext",
+            1,
+            120,
+            vec![
+                fn_entry("GetTypeInfo", 108, 108),
+                fn_entry("GetTypeInfo", 110, 118),
+            ],
+        )];
+        let a = build_target(&path("ctx.cs"), &entries, 108, 108, "GetTypeInfo");
+        let b = build_target(&path("ctx.cs"), &entries, 110, 118, "GetTypeInfo");
+        assert_eq!(a.selector, "JsonSerializerContext.GetTypeInfo");
+        assert!(!a.symbol_backed);
+        assert!(!b.symbol_backed);
     }
 }

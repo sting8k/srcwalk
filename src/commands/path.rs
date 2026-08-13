@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::cache::OutlineCache;
 use crate::commands::context::{with_artifact_note, with_artifact_read_label, ArtifactMode};
+use crate::commands::pathsymbol::{self, PathSymbolOutcome};
 use crate::error::SrcwalkError;
 use crate::{artifact, budget, read};
 
@@ -129,27 +130,34 @@ pub(crate) fn run_path_exact_with_artifact_and_context(
     context_lines: Option<usize>,
     cache: &OutlineCache,
 ) -> Result<String, SrcwalkError> {
-    if section.is_none() {
-        if let Some(target) = read::resolve_path_symbol_target(query, scope) {
-            let suggestion = target.range.map(|(start, end)| {
-                format!(
-                    "{}:{start}-{end}",
-                    crate::format::rel_nonempty(&target.path, scope)
-                )
-            });
-            return Err(SrcwalkError::NotFound {
-                path: scope.join(query),
-                suggestion,
-                guidance: Some(
-                    "`show` takes line ranges; `path:symbol` is `context` grammar.".to_string(),
-                ),
-            });
+    // `path:symbol` is the canonical exact-body selector: resolve it through the
+    // shared consumer and read the owning range, i.e. `show <path> --section <symbol>`.
+    // Missing / unreadable / unresolved / ambiguous / `::` targets surface the shared
+    // explicit intent instead of silently falling back to a whole-file read.
+    let exact_body = if section.is_none() {
+        match pathsymbol::resolve_path_symbol_outcome(query, scope) {
+            PathSymbolOutcome::FallThrough => None,
+            PathSymbolOutcome::Error(err) | PathSymbolOutcome::UnresolvedInNamedFile(err) => {
+                return Err(err)
+            }
+            PathSymbolOutcome::Unique {
+                path,
+                start_line,
+                end_line,
+                ..
+            } => Some((path, format!("{start_line}-{end_line}"))),
         }
-    }
+    } else {
+        None
+    };
 
-    let (query, inline_section) = split_inline_section(query, scope, section);
+    let (path, inline_section) = if let Some((path, range)) = exact_body {
+        (path, Some(range))
+    } else {
+        let (query, inline_section) = split_inline_section(query, scope, section);
+        (resolve_exact_path(&query, scope)?, inline_section)
+    };
     let section = inline_section.as_deref();
-    let path = resolve_exact_path(&query, scope)?;
     let artifact_mode = ArtifactMode::from(artifact || artifact::should_auto_artifact_file(&path));
     let output = if artifact_mode.enabled() && context_lines.is_none() {
         if let Some(symbol) = section {

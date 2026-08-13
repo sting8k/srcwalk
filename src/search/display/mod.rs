@@ -27,7 +27,9 @@ mod semantic;
 mod structural_targets;
 
 pub(super) use expand::{append_expand_budget_note, ExpandBudget};
-pub(super) use structural_targets::has_confirmed_structural_targets;
+pub(super) use structural_targets::{
+    append_structural_next_targets, has_confirmed_structural_targets,
+};
 
 #[derive(Default)]
 pub(super) struct RenderedSourceLines {
@@ -1222,7 +1224,7 @@ pub(super) fn format_search_result_with_header(
         append_next_action(
             &mut footer,
             NextAction::guidance(
-                "read omitted hits with `srcwalk show <path>:<line> -C 10` or `srcwalk show <path> --section <symbol|range>`.",
+                "read omitted hits with `srcwalk show <path>:<line> -C 10` or `srcwalk show <path>:<symbol|start-end>`.",
                 "expanded hits omitted by budget",
                 70,
             ),

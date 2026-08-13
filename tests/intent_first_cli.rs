@@ -2196,17 +2196,15 @@ fn caller() -> i32 {
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show lib.rs --section target"),
+        stdout.contains("> Next: srcwalk show lib.rs:target"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show lib.rs --section caller"),
+        stdout.contains("> Next: srcwalk show lib.rs:caller"),
         "{stdout}"
     );
     assert_eq!(
-        stdout
-            .matches("> Next: srcwalk show lib.rs --section target")
-            .count(),
+        stdout.matches("> Next: srcwalk show lib.rs:target").count(),
         1,
         "confirmed structural next action should be deduplicated:\n{stdout}"
     );
@@ -2292,16 +2290,16 @@ fn discover_multiple_structural_matches_suggest_batched_show_target() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show a/lib.rs --section target"),
+        stdout.contains("> Next: srcwalk show a/lib.rs:target"),
         "expected symbol show next action:\n{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show b/lib.rs --section target"),
+        stdout.contains("> Next: srcwalk show b/lib.rs:target"),
         "expected symbol show next action:\n{stdout}"
     );
     assert_eq!(
         stdout
-            .matches("> Next: srcwalk show a/lib.rs --section target")
+            .matches("> Next: srcwalk show a/lib.rs:target")
             .count(),
         1,
         "symbol show next action should be deduplicated:\n{stdout}"
@@ -2328,7 +2326,7 @@ fn discover_structural_show_targets_quote_spaces_and_comma_paths() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("> Next: srcwalk show 'a file.rs' --section target"),
+        stdout.contains("> Next: srcwalk show 'a file.rs:target'"),
         "space-bearing target must be shell-quoted:\n{stdout}"
     );
 
@@ -2393,11 +2391,11 @@ export function startServer() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show server.ts --section createGatewayServer"),
+        stdout.contains("> Next: srcwalk show server.ts:createGatewayServer"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show server.ts --section startServer"),
+        stdout.contains("> Next: srcwalk show server.ts:startServer"),
         "{stdout}"
     );
     assert!(
@@ -2795,93 +2793,156 @@ func Beta() {}
 }
 
 #[test]
-fn path_symbol_rejections_preserve_command_intent() {
-    let dir = temp_repo("path_symbol_rejections");
+fn path_symbol_exact_target_is_consumed_by_show_and_trace() {
+    let dir = temp_repo("path_symbol_exact_target");
     fs::write(
         dir.join("lib.rs"),
         "fn target() {\n    helper();\n}\nfn helper() {}\n",
     )
     .unwrap();
 
+    // `trace callees` roots on the exact definition named by the path.
     let trace = srcwalk()
         .args(["trace", "callees", "lib.rs:target", "--detailed", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
-    assert!(!trace.status.success());
     let trace_stderr = String::from_utf8_lossy(&trace.stderr);
     assert!(
-        trace_stderr.contains("> Did you mean: target"),
-        "{trace_stderr}"
+        trace.status.success(),
+        "exact path:symbol root should be consumed, stderr:\n{trace_stderr}"
     );
+    let trace_stdout = String::from_utf8_lossy(&trace.stdout);
+    assert!(trace_stdout.contains("helper"), "{trace_stdout}");
     assert!(
-        trace_stderr.contains("`path:symbol` targets are accepted by `context`, not `trace`."),
-        "{trace_stderr}"
-    );
-    assert!(
-        trace_stderr.contains("srcwalk trace callees target --detailed --scope"),
-        "{trace_stderr}"
+        !trace_stderr.contains("`path:symbol` targets are accepted by `context`, not `trace`."),
+        "path:symbol must no longer be rejected by trace:\n{trace_stderr}"
     );
 
+    // `show` reads the exact owning body, i.e. `show <path> --section <symbol>`.
     let show = srcwalk()
         .args(["show", "lib.rs:target", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
-    assert!(!show.status.success());
     let show_stderr = String::from_utf8_lossy(&show.stderr);
     assert!(
-        show_stderr.contains("did you mean: lib.rs:1-3"),
-        "{show_stderr}"
+        show.status.success(),
+        "exact path:symbol should read the owning body, stderr:\n{show_stderr}"
     );
+    let show_stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(show_stdout.contains("fn target()"), "{show_stdout}");
+    assert!(show_stdout.contains("helper();"), "{show_stdout}");
     assert!(
-        show_stderr.contains("`show` takes line ranges; `path:symbol` is `context` grammar."),
-        "{show_stderr}"
+        !show_stdout.contains("fn helper() {}"),
+        "show must read only the owning range, not the whole file:\n{show_stdout}"
     );
-    assert!(!show_stderr.contains("trace callees"), "{show_stderr}");
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn ambiguous_path_symbol_trace_names_candidates_without_runnable_command() {
-    let dir = temp_repo("path_symbol_trace_ambiguous");
-    fs::write(dir.join("a.rs"), "fn target() {}\n").unwrap();
-    fs::write(dir.join("b.rs"), "fn target() {}\n").unwrap();
+fn path_symbol_states_never_broaden_to_a_bare_search() {
+    let dir = temp_repo("path_symbol_states");
+    fs::write(dir.join("lib.rs"), "fn target() {}\n").unwrap();
+    fs::write(dir.join("plain.txt"), "target text\n").unwrap();
+    // Two same-name definitions in ONE file: ambiguity is per named file.
+    fs::write(
+        dir.join("dup.rs"),
+        "fn dup() {}\nfn other() {}\nfn dup() {}\n",
+    )
+    .unwrap();
 
-    let output = srcwalk()
-        .args(["trace", "callees", "a.rs:target", "--scope"])
+    // Missing named file.
+    for cmd in [
+        vec!["show"],
+        vec!["context"],
+        vec!["trace", "callers"],
+        vec!["trace", "callees"],
+    ] {
+        let out = srcwalk()
+            .args(&cmd)
+            .args(["missing.rs:target", "--scope"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{cmd:?} should abstain on missing path"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("needs an existing named file"),
+            "{cmd:?}:\n{stderr}"
+        );
+    }
+
+    // Ambiguous within the named file: bounded candidates, no silent first-pick.
+    let ambiguous = srcwalk()
+        .args(["show", "dup.rs:dup", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!ambiguous.status.success());
+    let stderr = String::from_utf8_lossy(&ambiguous.stderr);
     assert!(stderr.contains("Candidates:"), "{stderr}");
-    assert!(stderr.contains("a.rs:1-1"), "{stderr}");
-    assert!(stderr.contains("b.rs:1-1"), "{stderr}");
-    assert!(!stderr.contains("For this symbol:"), "{stderr}");
-    assert!(!stderr.contains("Did you mean: target"), "{stderr}");
+    assert!(stderr.contains("dup.rs:1-1"), "{stderr}");
+    assert!(stderr.contains("dup.rs:3-3"), "{stderr}");
 
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn unsupported_path_symbol_show_explains_grammar_without_guessing_range() {
-    let dir = temp_repo("path_symbol_unsupported");
-    fs::write(dir.join("plain.txt"), "target text\n").unwrap();
-
-    let output = srcwalk()
+    // Existing file with no structural outline: honest abstention, not a bare read.
+    let unresolvable = srcwalk()
         .args(["show", "plain.txt:target", "--scope"])
         .arg(&dir)
         .output()
         .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("`show` takes line ranges; `path:symbol` is `context` grammar."),
-        "{stderr}"
-    );
+    assert!(!unresolvable.status.success());
+    let stderr = String::from_utf8_lossy(&unresolvable.stderr);
+    assert!(stderr.contains("was not resolved"), "{stderr}");
     assert!(!stderr.contains("did you mean:"), "{stderr}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn raw_colon_selector_reports_one_shared_intent_across_all_four_commands() {
+    let dir = temp_repo("path_symbol_colon_intent");
+    fs::write(dir.join("lib.rs"), "fn target() {}\n").unwrap();
+
+    let mut intents = Vec::new();
+    for cmd in [
+        vec!["show"],
+        vec!["context"],
+        vec!["trace", "callers"],
+        vec!["trace", "callees"],
+    ] {
+        let out = srcwalk()
+            .args(&cmd)
+            .args(["lib.rs:A::target", "--scope"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{cmd:?} should reject a raw `::` selector"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("`path:symbol` takes a plain selector")
+                && stderr.contains("contains `::`"),
+            "{cmd:?}:\n{stderr}"
+        );
+        intents.push(
+            stderr
+                .split("takes a plain selector")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string(),
+        );
+    }
+    assert!(
+        intents.windows(2).all(|w| w[0] == w[1]),
+        "all four commands must surface the SAME colon intent: {intents:?}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -3762,6 +3823,728 @@ fn discover_low_signal_budget_survives_and_replays() {
         .output()
         .unwrap();
     assert_eq!(first_out, String::from_utf8_lossy(&second.stdout));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn path_symbol_exact_root_resolves_qualified_language_forms() {
+    let dir = temp_repo("path_symbol_qualified_langs");
+    // Every file pairs a qualified definition with a same-named sibling that must
+    // never leak into the exact root: a C# namespaced method, a Go receiver method
+    // shadowed by a top-level func, and a Rust impl method shadowed by a free fn.
+    fs::write(
+        dir.join("Svc.cs"),
+        "namespace N {\n  class Svc {\n    public void Run() { Helper(); }\n    public void Helper() { Leaf(); }\n    public void Leaf() {}\n  }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("batch.go"),
+        "package main\n\ntype Batch struct{}\n\nfunc (b *Batch) Set() {\n\tb.flush()\n}\n\nfunc (b *Batch) flush() {}\n\nfunc Set() {\n\tunrelatedTopLevel()\n}\n\nfunc unrelatedTopLevel() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("svc.rs"),
+        "struct Svc;\nimpl Svc {\n    fn run(&self) {\n        self.helper();\n    }\n    fn helper(&self) {}\n}\nfn run() {\n    bare_only();\n}\nfn bare_only() {}\n",
+    )
+    .unwrap();
+
+    for (target, frame, want, unwanted) in [
+        (
+            "Svc.cs:Svc.Run",
+            "requested 3; displayed 3",
+            "Helper",
+            "Leaf",
+        ),
+        (
+            "batch.go:Batch.Set",
+            "requested 5-7; displayed 5-7",
+            "flush",
+            "unrelatedTopLevel",
+        ),
+        (
+            "svc.rs:Svc.run",
+            "requested 3-5; displayed 3-5",
+            "helper",
+            "bare_only",
+        ),
+    ] {
+        // The qualified selector must pin the exact range, not the sibling body.
+        let shown = srcwalk()
+            .args(["show", target, "--scope"])
+            .arg(&dir)
+            .arg("--no-budget")
+            .output()
+            .unwrap();
+        let shown_err = String::from_utf8_lossy(&shown.stderr);
+        assert!(shown.status.success(), "{target} should show:\n{shown_err}");
+        let shown_out = String::from_utf8_lossy(&shown.stdout);
+        assert!(
+            shown_out.contains(frame),
+            "{target} must resolve the exact body frame `{frame}`:\n{shown_out}"
+        );
+
+        // ... and the callee view must be built from that body alone.
+        let out = srcwalk()
+            .args(["trace", "callees", target, "--scope"])
+            .arg(&dir)
+            .arg("--no-budget")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{target} should resolve:\n{stderr}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains(want), "{target} callees:\n{stdout}");
+        assert!(
+            !stdout.contains(unwanted),
+            "{target} leaked a sibling body's callee:\n{stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn path_symbol_exact_root_still_accepts_bare_selectors() {
+    let dir = temp_repo("path_symbol_adjacent_langs");
+    fs::write(
+        dir.join("Svc.cs"),
+        "namespace N {\n  class Svc {\n    public void Run() { Helper(); }\n    public void Helper() {}\n  }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("svc.go"),
+        "package main\n\nfunc Run() {\n\tHelper()\n}\n\nfunc Helper() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("svc.rs"),
+        "impl Svc {\n    fn run(&self) {\n        self.helper();\n    }\n    fn helper(&self) {}\n}\n",
+    )
+    .unwrap();
+
+    for (target, want) in [
+        ("Svc.cs:Run", "Helper"),
+        ("svc.go:Run", "Helper"),
+        ("svc.rs:run", "helper"),
+    ] {
+        let out = srcwalk()
+            .args(["trace", "callees", target, "--scope"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{target} should resolve:\n{stderr}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains(want), "{target} callees:\n{stdout}");
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callers_exact_root_outside_scope_is_readable_but_search_stays_scoped() {
+    let dir = temp_repo("path_symbol_outside_scope");
+    let inside = dir.join("inside");
+    fs::create_dir_all(&inside).unwrap();
+    // Root definition lives OUTSIDE the --scope directory.
+    fs::write(dir.join("root.rs"), "fn target() {}\n").unwrap();
+    fs::write(inside.join("use.rs"), "fn caller() { target(); }\n").unwrap();
+
+    let out = srcwalk()
+        .args(["trace", "callers"])
+        .arg(dir.join("root.rs:target"))
+        .args(["--scope"])
+        .arg(&inside)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "an exact root outside --scope must still be readable:\n{stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("caller"),
+        "scoped call site missing:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("lies outside --scope") && stdout.contains("searched inside --scope only"),
+        "outside-scope root must be labeled:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callees_exact_root_does_not_require_global_uniqueness() {
+    let dir = temp_repo("path_symbol_same_name_defs");
+    fs::write(
+        dir.join("a.rs"),
+        "fn target() {\n    from_a();\n}\nfn from_a() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("b.rs"),
+        "fn target() {\n    from_b();\n}\nfn from_b() {}\n",
+    )
+    .unwrap();
+
+    for (target, want, unwanted) in [
+        ("a.rs:target", "from_a", "from_b"),
+        ("b.rs:target", "from_b", "from_a"),
+    ] {
+        let out = srcwalk()
+            .args(["trace", "callees", target, "--scope"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "a same-name definition elsewhere must not block {target}:\n{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains(want), "{target}:\n{stdout}");
+        assert!(
+            !stdout.contains(unwanted),
+            "{target} leaked the other def:\n{stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callers_depth_two_marks_only_the_root_as_exact() {
+    let dir = temp_repo("path_symbol_depth_two");
+    fs::write(
+        dir.join("lib.rs"),
+        "fn target() {}\nfn mid() { target(); }\nfn top() { mid(); }\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args([
+            "trace",
+            "callers",
+            "lib.rs:target",
+            "--depth",
+            "2",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("# BFS callers of \"lib.rs:target\""),
+        "canonical root must be preserved in the BFS header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("only the root is exact") && stdout.contains("later hop expands by name"),
+        "depth>=2 must caveat that later hops are by-name:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callers_exact_count_by_keeps_canonical_root_and_by_name_caveat() {
+    let dir = temp_repo("path_symbol_count_by_caveat");
+    fs::write(
+        dir.join("lib.rs"),
+        "fn target() {}\nfn mid() { target(); }\nfn other() { target(); }\n",
+    )
+    .unwrap();
+
+    // Counts are a grouped view of the SAME by-name search, so the canonical root
+    // and the exact-root caveat must survive --count-by, --filter, and every page.
+    for extra in [
+        vec!["--count-by", "caller"],
+        vec!["--count-by", "caller", "--filter", "args:0"],
+        vec![
+            "--count-by",
+            "caller",
+            "--filter",
+            "args:0",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+        ],
+    ] {
+        let out = srcwalk()
+            .args(["trace", "callers", "lib.rs:target"])
+            .args(&extra)
+            .arg("--scope")
+            .arg(&dir)
+            .arg("--no-budget")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{extra:?}:\n{stderr}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("[symbol] lib.rs:target"),
+            "{extra:?} must echo the canonical root:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("the path identifies the requested definition of `target`")
+                && stdout.contains("call sites are still matched by name"),
+            "{extra:?} must keep the exact-root by-name caveat:\n{stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callees_exact_depth_two_marks_only_the_root_as_exact() {
+    let dir = temp_repo("path_symbol_callee_depth_two");
+    fs::write(
+        dir.join("lib.rs"),
+        "fn leaf() {}\nfn mid() { leaf(); }\nfn top() { mid(); }\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .args(["trace", "callees", "lib.rs:top", "--depth", "2", "--scope"])
+        .arg(&dir)
+        .arg("--no-budget")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("leaf"),
+        "depth 2 should expand a transitive hop:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("only the root is exact") && stdout.contains("later hop resolves by name"),
+        "depth>=2 callees must caveat that later hops are by-name:\n{stdout}"
+    );
+
+    // Depth 1 renders no later hop, so it must not claim one.
+    let direct = srcwalk()
+        .args(["trace", "callees", "lib.rs:top", "--scope"])
+        .arg(&dir)
+        .arg("--no-budget")
+        .output()
+        .unwrap();
+    let direct_out = String::from_utf8_lossy(&direct.stdout);
+    assert!(
+        !direct_out.contains("only the root is exact"),
+        "direct callees have no later hop to caveat:\n{direct_out}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn callees_exact_root_outside_scope_is_labeled_on_every_output_shape() {
+    let dir = temp_repo("path_symbol_callee_outside_scope");
+    let inside = dir.join("inside");
+    fs::create_dir_all(&inside).unwrap();
+    // Both roots live OUTSIDE --scope; only the boundary label is shared.
+    fs::write(dir.join("root.rs"), "fn seed() { inside_helper(); }\n").unwrap();
+    fs::write(dir.join("quiet.rs"), "fn quiet() { let _x = 1; }\n").unwrap();
+    fs::write(inside.join("use.rs"), "fn inside_helper() {}\n").unwrap();
+
+    // Transitive, detailed, and no-call returns are separate exits; each must
+    // still say the root sits outside --scope.
+    for (file, symbol, extra) in [
+        ("root.rs", "seed", vec!["--depth", "2"]),
+        ("root.rs", "seed", vec!["--detailed"]),
+        ("quiet.rs", "quiet", vec![]),
+    ] {
+        let out = srcwalk()
+            .args(["trace", "callees"])
+            .arg(dir.join(format!("{file}:{symbol}")))
+            .args(&extra)
+            .arg("--scope")
+            .arg(&inside)
+            .arg("--no-budget")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "an exact root outside --scope must still be readable ({file} {extra:?}):\n{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("lies outside --scope")
+                && stdout.contains("traversal stay inside --scope only"),
+            "{file} {extra:?} must label the scope boundary:\n{stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------------------------------------ US-071 Step 4
+
+/// Multi-symbol Discover emits the same confirmed structural targets the
+/// single-symbol route would, once per per-query section, without touching the
+/// numeric fallback for ambiguous names or deduplicating across sections.
+#[test]
+fn multi_symbol_discover_emits_canonical_targets_per_section() {
+    let dir = temp_repo("multi_symbol_emit");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    // One-unique `run` (canonical), plus two same-name `helper` bodies (ambiguous).
+    fs::write(
+        dir.join("src/alpha.rs"),
+        "pub struct Alpha;\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src/helper.rs"),
+        "fn helper() -> i32 {\n    let x = 1;\n    let y = 2;\n    x + y\n}\nfn other() -> i32 { 2 }\nfn helper() -> i32 {\n    let a = 3;\n    let b = 4;\n    a + b\n}\n",
+    )
+    .unwrap();
+
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "run,helper",
+            "--as",
+            "symbol",
+            "--scope",
+            "src",
+            "--expand=0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // Canonical target in the `run` section, and it addresses the unique method.
+    assert!(
+        stdout.contains("> Next: srcwalk show src/alpha.rs:Alpha.run"),
+        "multi-symbol run section must emit the canonical target:\n{stdout}"
+    );
+
+    // The ambiguous `helper` section never advertises a canonical `helper`
+    // selector. With the body rendered inline it abstains ("already shown"
+    // caveat); without inline rendering it would fall back to a numeric range.
+    // Either way it must never claim a canonical symbol.
+    assert!(
+        !stdout.contains("srcwalk show src/helper.rs:helper"),
+        "ambiguous bare name must not be advertised canonical:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("already shown in full above") || stdout.contains("numeric fallback"),
+        "ambiguous multi-symbol term must abstain or fall back honestly:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A canonical target resolved by two different query terms is kept once in each
+/// section — sections stay independently auditable against their own query.
+#[test]
+fn multi_symbol_duplicate_selector_kept_once_per_section() {
+    let dir = temp_repo("multi_symbol_duplicate");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src/a.rs"),
+        "pub struct Alpha;\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+    )
+    .unwrap();
+
+    // `run` and `Alpha` are different terms, but only `run` is a function name;
+    // to force a real cross-section duplicate, query the same bare name twice.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run,run", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let occurrences = stdout.matches("srcwalk show src/a.rs:Alpha.run").count();
+    assert_eq!(
+        occurrences, 2,
+        "a canonical selector must appear once per section, not be globally deduped:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// -------------------------------------------------- US-071 Step 4 dispatch (amendment)
+
+/// Helper: run `discover` in a fresh repo with two uniquely-named Rust methods,
+/// returning stdout so the caller can assert routing (multi-symbol section vs glob).
+fn dotted_multi_symbol_repo(name: &str) -> PathBuf {
+    let dir = temp_repo(name);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src/alpha.rs"),
+        "pub struct Alpha;\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src/beta.rs"),
+        "pub struct Beta;\nimpl Beta {\n    pub fn stop(&self) {}\n}\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn dotted_multi_symbol_dispatches_before_auto_classify() {
+    let dir = dotted_multi_symbol_repo("dotted_routes");
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "Alpha.run,Beta.stop",
+            "--as",
+            "symbol",
+            "--scope",
+            "src",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // A dotted part must not turn the whole query into a `**/...` file glob.
+    assert!(
+        !stdout.contains("# Files:") && !stdout.contains("**/Alpha.run"),
+        "dotted multi-symbol must not be a file glob:\n{stdout}"
+    );
+    // Each term is its own section.
+    assert!(stdout.contains("# Search: \"Alpha.run\""), "{stdout}");
+    assert!(stdout.contains("# Search: \"Beta.stop\""), "{stdout}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bare_multi_symbol_still_dispatches() {
+    let dir = dotted_multi_symbol_repo("bare_still");
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run,stop", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Search: \"run\""), "{stdout}");
+    assert!(stdout.contains("# Search: \"stop\""), "{stdout}");
+    assert!(
+        stdout.contains("srcwalk show src/alpha.rs:Alpha.run"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("srcwalk show src/beta.rs:Beta.stop"),
+        "{stdout}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn comma_filename_shapes_are_multi_symbol_in_auto_mode() {
+    let dir = dotted_multi_symbol_repo("comma_filename");
+    // `a,b.txt` and `foo.rs,bar.rs` become symbols `a`/`b.txt` per the pinned
+    // amendment decision; they route multi-symbol (ID sections), never a glob.
+    for query in ["a,b.txt", "foo.rs,bar.rs"] {
+        let out = srcwalk()
+            .current_dir(&dir)
+            .args(["discover", query, "--as", "symbol", "--scope", "src"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains("# Files:") && !stdout.contains("**/"),
+            "`{query}` must be multi-symbol, not a glob:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("# Search:"),
+            "`{query}` must emit sections:\n{stdout}"
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn multi_symbol_whitespace_and_degenerate_shapes() {
+    let dir = dotted_multi_symbol_repo("ws_degenerate");
+    // `foo, bar` trims and dispatches two symbols.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run, stop", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Search: \"run\""), "{stdout}");
+    assert!(stdout.contains("# Search: \"stop\""), "{stdout}");
+
+    // `,a,b` drops the empty leading slot.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", ",run,stop", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Search: \"run\""), "{stdout}");
+    assert!(stdout.contains("# Search: \"stop\""), "{stdout}");
+
+    // `foo,` drops the trailing slot, leaves one part -> None -> old flow
+    // (single term, not multi-symbol sections).
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run,", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"run\"\n"),
+        "`run,` must fall back to the old single-term flow, not multi-symbol:\n{stdout}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn multi_symbol_over_five_keeps_explicit_error() {
+    let dir = dotted_multi_symbol_repo("over_five");
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "a,b,c,d,e,f",
+            "--as",
+            "symbol",
+            "--scope",
+            "src",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "6 symbols must error");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("multi-symbol search supports 2-5 symbols"),
+        "{stderr}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn multi_symbol_does_not_hijack_glob_regex_path_or_section() {
+    let dir = dotted_multi_symbol_repo("no_hijack");
+    // Real glob: `*?{[` must keep the glob/file route, never multi-symbol sections.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "*.{rs,ts}", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"*."),
+        "glob must not become multi-symbol:\n{stdout}"
+    );
+
+    // Regex delimiters (leading `/`) must not be split into symbols.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "/foo,bar/", "--as", "symbol", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"/foo\""),
+        "regex must not be hijacked to multi-symbol:\n{stdout}"
+    );
+
+    // Path separator must keep the path/file route.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "src/alpha.rs,beta.rs", "--scope", "."])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"src\""),
+        "path-like query must not be hijacked:\n{stdout}"
+    );
+
+    // Section colon must keep the path/section route, not multi-symbol.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "alpha.rs:1,2",
+            "--as",
+            "symbol",
+            "--scope",
+            "src",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("# Search: \"alpha.rs:1\""),
+        "section query must not be hijacked to multi-symbol:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explicit_as_text_and_file_are_not_intercepted() {
+    let dir = dotted_multi_symbol_repo("explicit_as");
+    // `--as text` treats the whole comma string as ONE literal text query.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "run,stop", "--as", "text", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("# Search: \"run,stop\""),
+        "--as text must not split the comma into symbols:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("# Search: \"run\"\n# Search: \"stop\""),
+        "--as text must stay one literal query:\n{stdout}"
+    );
+
+    // `--as file` keeps the file route.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "a.rs,b.rs", "--as", "file", "--scope", "src"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("# Files:") && !stdout.contains("# Search:"),
+        "--as file must stay the file route, not multi-symbol:\n{stdout}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

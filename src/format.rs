@@ -95,15 +95,50 @@ pub(crate) fn display_path(path: &Path) -> String {
     normalize_display_path(cwd_relative(path).unwrap_or_else(|| path.display().to_string()))
 }
 
+/// What a displayed path is relative to. A printed command can only be copied
+/// verbatim when the display addresses the file on its own; otherwise it must
+/// carry the same `--scope`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DisplayBasis {
+    /// CWD-relative or a full path: the display addresses the file by itself.
+    SelfContained,
+    /// Scope-relative: the display only addresses the file given that `--scope`.
+    Scope,
+    /// The path is the scope itself, so the stripped display is empty and
+    /// `rel_nonempty` shortens it into a label that addresses no file.
+    Unaddressable,
+}
+
+/// Path for human result rows plus what that display is relative to.
+///
+/// `rel` is this function's string half. Keeping the basis on the same result
+/// is what stops a caller from re-deriving it with a second predicate that can
+/// answer a subtly different question.
+pub(crate) fn rel_with_basis(path: &Path, scope: &Path) -> (String, DisplayBasis) {
+    if let Some(rel) = cwd_relative(path) {
+        return (rel, DisplayBasis::SelfContained);
+    }
+    let Ok(stripped) = path.strip_prefix(scope) else {
+        return (
+            normalize_display_path(path.display().to_string()),
+            DisplayBasis::SelfContained,
+        );
+    };
+    let basis = if stripped.as_os_str().is_empty() {
+        DisplayBasis::Unaddressable
+    } else {
+        DisplayBasis::Scope
+    };
+    (
+        normalize_display_path(stripped.display().to_string()),
+        basis,
+    )
+}
+
 /// Path for human result rows. Prefer cwd-relative copy-pasteable paths, then
 /// fall back to scope-relative legacy display when the scope lives elsewhere.
 pub(crate) fn rel(path: &Path, scope: &Path) -> String {
-    normalize_display_path(cwd_relative(path).unwrap_or_else(|| {
-        path.strip_prefix(scope)
-            .unwrap_or(path)
-            .display()
-            .to_string()
-    }))
+    rel_with_basis(path, scope).0
 }
 
 fn cwd_relative(path: &Path) -> Option<String> {

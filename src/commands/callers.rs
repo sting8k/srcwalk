@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::cache::OutlineCache;
 use crate::commands::context::ArtifactMode;
+use crate::commands::pathsymbol::{self, PathSymbolOutcome};
 use crate::error::SrcwalkError;
 use crate::{budget, index, search, session};
 
@@ -79,10 +80,42 @@ pub(crate) fn run_callers_with_artifact(
     let session = session::Session::new();
     let bloom = index::bloom::BloomFilterCache::new();
 
+    // Resolve an exact `path:symbol` root first. The path pins WHICH definition
+    // the agent asked about; the terminal callable key is what a direct by-name
+    // search can actually match. An unresolved / ambiguous / missing / `::` root
+    // is an explicit error, never a silent bare-name search.
+    // The root file may sit outside --scope (it is only being identified); the
+    // relation search itself stays bounded by --scope.
+    let exact_root = match pathsymbol::resolve_path_symbol_outcome(target, scope) {
+        PathSymbolOutcome::Error(err) | PathSymbolOutcome::UnresolvedInNamedFile(err) => {
+            return Err(err)
+        }
+        PathSymbolOutcome::Unique { path, symbol, .. } => Some((path, symbol)),
+        PathSymbolOutcome::FallThrough => None,
+    };
+    let lookup = exact_root.as_ref().map_or(target, |(_, symbol)| {
+        crate::lang::qualified::terminal_callable_key(symbol)
+    });
+    let root = search::callers::CallerRoot {
+        lookup,
+        display: target,
+        from_exact_path: exact_root.is_some(),
+    };
+    let outside_scope_note = exact_root
+        .as_ref()
+        .filter(|(path, _)| !path.starts_with(scope))
+        .map(|(path, _)| {
+            format!(
+                "\n> Note: the exact root {} lies outside --scope {}; call sites are searched inside --scope only.",
+                crate::format::display_path(path),
+                crate::format::display_path(scope)
+            )
+        });
+
     // BFS path when --depth N (N >= 2). Otherwise use compact direct-call rows by default.
     let output = match depth {
         Some(d) if d >= 2 => search::callers::search_callers_bfs(
-            target,
+            root,
             scope,
             cache,
             &bloom,
@@ -93,9 +126,13 @@ pub(crate) fn run_callers_with_artifact(
             skip_hubs,
         )?,
         _ => search::callers::search_callers_expanded_with_artifact(
-            target, scope, cache, &session, &bloom, expand, None, limit, offset, glob, filter,
+            root, scope, cache, &session, &bloom, expand, None, limit, offset, glob, filter,
             count_by, artifact,
         )?,
+    };
+    let output = match outside_scope_note {
+        Some(note) => format!("{output}{note}"),
+        None => output,
     };
     match budget_tokens {
         Some(b) => Ok(budget::apply_preserving_footer(&output, b)),

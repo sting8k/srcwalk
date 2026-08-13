@@ -25,7 +25,10 @@ use crate::lang::detect_file_type;
 use crate::types::{FileType, ViewMode};
 
 pub use full::{read_file_with_budget, read_file_with_budget_and_context};
-pub(crate) use section::{resolve_path_symbol_target, PathSymbolTarget};
+pub(crate) use section::{
+    resolve_path_symbol_resolution, resolve_path_symbol_target, PathSymbolResolution,
+    PathSymbolTarget,
+};
 pub(crate) use suggest::edit_distance;
 pub use suggest::suggest_similar_file;
 

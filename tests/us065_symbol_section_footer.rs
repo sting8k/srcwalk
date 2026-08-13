@@ -1,11 +1,11 @@
 //! Symbol-addressed confirmed-structural-target footer + qualified `--section`
 //! resolution.
 //!
-//! The discover footer points to `srcwalk show <path> --section <symbol>`
-//! (bare or `Type.method`) instead of a numeric range, so models read the
-//! parser-backed symbol body rather than guessing numeric ranges. The
-//! `--section` reader resolves `Q.N` receiver/container-qualified symbols
-//! matching US-064 discover semantics.
+//! The discover footer points to the canonical `srcwalk show <path>:<symbol>`
+//! target (bare or `Type.method`) instead of a numeric range, so models read
+//! the parser-backed symbol body rather than guessing numeric ranges. The
+//! `--section` reader resolves the same `Q.N` receiver/container-qualified
+//! symbols, matching US-064 discover semantics.
 
 use std::fs;
 use std::path::PathBuf;
@@ -78,10 +78,7 @@ fn discover_bare_function_emits_symbol_section_command() {
     );
     let out = fx.discover(&["discover", "target", "--scope", "."]);
     assert!(out.contains("## Confirmed structural targets"), "{out}");
-    assert!(
-        out.contains("> Next: srcwalk show lib.rs --section target"),
-        "{out}"
-    );
+    assert!(out.contains("> Next: srcwalk show lib.rs:target"), "{out}");
     assert!(
         !out.contains("srcwalk show 'lib.rs:1-3'") && !out.contains("srcwalk show lib.rs:1-3"),
         "no numeric read command should be emitted:\n{out}"
@@ -105,7 +102,7 @@ fn discover_qualified_preserves_qualified_selector() {
     );
     let out = fx.discover(&["discover", "Batch.Set", "--as", "symbol", "--scope", "."]);
     assert!(
-        out.contains("> Next: srcwalk show batch.go --section Batch.Set"),
+        out.contains("> Next: srcwalk show batch.go:Batch.Set"),
         "{out}"
     );
 }
@@ -120,13 +117,16 @@ fn ambiguous_bare_name_falls_back_to_numeric_for_unresolvable_target() {
         )],
     );
     let out = fx.discover(&["discover", "helper", "--scope", "."]);
-    // The first `helper` round-trips via the bare symbol; the second same-name
-    // `helper` cannot round-trip (the bare selector reads the first), so it
-    // must fall back to a numeric range rather than point at the wrong body.
+    // With two same-file top-level `helper` definitions, the bare selector is
+    // ambiguous for BOTH bodies (unique-cardinality check resolves to two
+    // distinct ranges). No body may be advertised via the canonical symbol
+    // command (no silent first-match), so every one must fall back to a
+    // numeric range pointing at its own body.
     assert!(
-        out.contains("> Next: srcwalk show lib.rs --section helper"),
-        "{out}"
+        !out.contains("> Next: srcwalk show lib.rs:helper"),
+        "ambiguous same-name bodies must not emit a canonical symbol command:\n{out}"
     );
+    assert!(out.contains("> Next: srcwalk show lib.rs:1-1"), "{out}");
     assert!(out.contains("> Next: srcwalk show lib.rs:3-3"), "{out}");
 }
 
@@ -135,7 +135,7 @@ fn discover_quotes_space_and_comma_paths_in_symbol_command() {
     let fx = Fixture::new("quoted", &[("a file.rs", "fn target() -> i32 { 1 }\n")]);
     let out = fx.discover(&["discover", "target", "--scope", "."]);
     assert!(
-        out.contains("> Next: srcwalk show 'a file.rs' --section target"),
+        out.contains("> Next: srcwalk show 'a file.rs:target'"),
         "{out}"
     );
 

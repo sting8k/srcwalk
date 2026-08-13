@@ -20,6 +20,42 @@ pub(crate) fn split_dot_symbol_query(query: &str) -> Option<(&str, &str)> {
     Some((qualifier, plain))
 }
 
+/// The terminal bare callable name from a possibly-qualified callable label
+/// (`Class.method`, `mod::func`, or bare `method`). This is the single shared
+/// source used by direct callers, BFS frontiers, and recovery for relation
+/// lookup keys. `Class.method` -> `method`, `mod::func` -> `func`, bare name
+/// unchanged. Commands must use this helper and never re-split on `.` or `::`.
+pub(crate) fn terminal_callable_key(qualified: &str) -> &str {
+    // Terminal key = the segment after the RIGHTMOST supported separator of
+    // either kind (`.` or `::`), so `A.B::method` -> `method` and
+    // `A::B.method` -> `method` regardless of separator order/subtype/width.
+    // `(start_byte, width)` of the rightmost separator.
+    let mut sep: Option<(usize, usize)> = None;
+    let bytes = qualified.as_bytes();
+    let mut idx = 0;
+    while idx < bytes.len() {
+        if bytes[idx] == b'.' {
+            sep = Some((idx, 1));
+            idx += 1;
+        } else if bytes[idx] == b':' && idx + 1 < bytes.len() && bytes[idx + 1] == b':' {
+            sep = Some((idx, 2));
+            idx += 2;
+        } else {
+            idx += 1;
+        }
+    }
+    match sep {
+        // Rightmost separator is not trailing: terminal = suffix after it.
+        Some((start, width)) if start + width < qualified.len() => &qualified[start + width..],
+        // Trailing separator (`method.` / `method::`): the key is the prefix up
+        // to the separator, so it is never an empty lookup string.
+        Some((start, _)) if start > 0 => &qualified[..start],
+        // `.` / `::` alone -> explicitly empty (no invented value).
+        Some(_) => "",
+        None => qualified,
+    }
+}
+
 /// Normalize a Go receiver type — strip leading `*` and generic params:
 /// `*Batch` -> `Batch`, `syncQueue[T]` -> `syncQueue`. Single source of truth
 /// shared by search and the `--section` reader.
@@ -269,6 +305,39 @@ mod tests {
         assert_eq!(normalize_receiver_type("Queue"), "Queue");
         assert_eq!(normalize_receiver_type("*pkg[K,V]"), "pkg");
         assert_eq!(normalize_receiver_type("  *Batch  "), "Batch");
+    }
+
+    #[test]
+    fn terminal_callable_key_returns_bare_terminal_name() {
+        assert_eq!(terminal_callable_key("Class.method"), "method");
+        assert_eq!(terminal_callable_key("mod::func"), "func");
+        assert_eq!(terminal_callable_key("plain"), "plain");
+        assert_eq!(terminal_callable_key("A::b::c"), "c");
+        assert_eq!(terminal_callable_key(""), "");
+    }
+
+    #[test]
+    fn terminal_callable_key_uses_rightmost_separator_across_both_forms() {
+        // BLOCKER 2 regression: any separator must not win over a later one of
+        // the other kind. Terminal is after the RIGHTMOST `.` or `::`.
+        assert_eq!(terminal_callable_key("A.B::method"), "method");
+        assert_eq!(terminal_callable_key("A::B.method"), "method");
+        assert_eq!(terminal_callable_key("A.B.C"), "C");
+        assert_eq!(terminal_callable_key("A::B::C"), "C");
+        assert_eq!(terminal_callable_key("a.b::c.d"), "d");
+        assert_eq!(terminal_callable_key("a::b.c::d"), "d");
+        // Leading separators: suffix is non-empty.
+        assert_eq!(terminal_callable_key(".method"), "method");
+        assert_eq!(terminal_callable_key("::method"), "method");
+        // Trailing separators yield the prefix, never an empty key.
+        assert_eq!(terminal_callable_key("method."), "method");
+        assert_eq!(terminal_callable_key("method::"), "method");
+        assert_eq!(terminal_callable_key("A.B."), "A.B");
+        // Bare / degenerate.
+        assert_eq!(terminal_callable_key("plain"), "plain");
+        assert_eq!(terminal_callable_key("A...B"), "B");
+        // Empty input stays empty (explicit, not invented).
+        assert_eq!(terminal_callable_key(""), "");
     }
 
     #[test]

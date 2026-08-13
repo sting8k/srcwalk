@@ -988,7 +988,141 @@ fn parse_range(s: &str) -> Option<(usize, usize, Option<usize>)> {
     Some((start, end, None))
 }
 
+/// Resolved state of a `<path>:<symbol>` target, distinguished by the shared
+/// grammar parser and the AST-outline resolver. Every exact-body command
+/// (show/context/callees) and callers share one result shape so ambiguity and
+/// unresolved states are handled identically everywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PathSymbolResolution {
+    /// Not a `<path>:<symbol>` form: no single separating colon, the right side
+    /// is a line/range (`path:1-3`), or the drive colon of a naked `C:\` path.
+    NotForm,
+    /// The right side is a colon-bearing selector (`A::target`). Raw `::` input
+    /// is unsupported as `path:symbol` — the canonical dotted `.` form is what
+    /// commands accept. Explicit, consistent error contract.
+    UnsupportedColonSymbol { symbol: String },
+    /// The named file does not exist / could not be resolved to a real file.
+    /// Carries the raw path and symbol so callers can report the missing path
+    /// honestly without pretending an existing named file.
+    NamedPathMissing { path: PathBuf, symbol: String },
+    /// The named file exists and is readable, and the selector resolves uniquely
+    /// to one definition.
+    Unique {
+        path: PathBuf,
+        symbol: String,
+        start_line: usize,
+        end_line: usize,
+    },
+    /// The named file exists and is readable, and the selector has no exact
+    /// definition match (zero-cardinality against the AST outline).
+    NamedFileUnresolved { path: PathBuf, symbol: String },
+    /// The named file exists but could not be read; resolution never ran.
+    NamedFileUnreadable { path: PathBuf, symbol: String },
+    /// The named file exists and was read but has no parseable structural
+    /// outline (or non-UTF-8 content), so exact resolution was not attempted.
+    NamedFileUnresolvable { path: PathBuf, symbol: String },
+    /// The named file exists and the selector matches N>1 distinct definitions.
+    Ambiguous {
+        path: PathBuf,
+        symbol: String,
+        ranges: Vec<(usize, usize)>,
+    },
+}
+
+/// Split a `<path>:<symbol>` target on its SINGLE separating colon, preserving a
+/// leading Windows drive colon (`C:\\repo` / `C:/repo`) and treating a `::`
+/// colon-bearing selector as its own state. Returns `(path_part, symbol)` only
+/// for a clean, well-formed split; `None` otherwise.
+fn split_path_symbol(target: &str) -> Option<(&str, &str)> {
+    // Last colon that is not part of a "::" run (so `A::target` keeps its colons
+    // in the symbol side, while `C:\\...` / `C:/...` keep the drive colon in
+    // the path side).
+    let mut split_at = None;
+    for (i, b) in target.bytes().enumerate() {
+        if b == b':' {
+            let prev_double = i >= 1 && target.as_bytes()[i - 1] == b':';
+            let next_double = target.as_bytes().get(i + 1) == Some(&b':');
+            if !prev_double && !next_double {
+                split_at = Some(i);
+            }
+        }
+    }
+    let at = split_at?;
+    let path_part = &target[..at];
+    let symbol = &target[at + 1..];
+    if path_part.is_empty() || symbol.is_empty() {
+        return None;
+    }
+    Some((path_part, symbol))
+}
+
+pub(crate) fn resolve_path_symbol_resolution(target: &str, scope: &Path) -> PathSymbolResolution {
+    let Some((path_part, symbol)) = split_path_symbol(target) else {
+        return PathSymbolResolution::NotForm;
+    };
+
+    // A naked Windows drive path (`C:\\repo` / `C:/repo`) with no symbol after
+    // the drive colon: if the symbol side begins with a root slash, the "colon"
+    // was actually the drive colon, not a path-symbol separator.
+    if path_part.len() == 1
+        && path_part.as_bytes()[0].is_ascii_alphabetic()
+        && (symbol.starts_with('/') || symbol.starts_with('\\'))
+    {
+        return PathSymbolResolution::NotForm;
+    }
+
+    // Colon-bearing selector (`A::target`) is not the canonical dotted form.
+    if symbol.contains(':') {
+        return PathSymbolResolution::UnsupportedColonSymbol {
+            symbol: symbol.to_string(),
+        };
+    }
+
+    if parse_range(symbol).is_some() {
+        return PathSymbolResolution::NotForm;
+    }
+
+    let Some(path) = resolve_existing_file(path_part, scope) else {
+        return PathSymbolResolution::NamedPathMissing {
+            path: PathBuf::from(path_part),
+            symbol: symbol.to_string(),
+        };
+    };
+    let Some(buf) = fs::read(&path).ok() else {
+        return PathSymbolResolution::NamedFileUnreadable {
+            path,
+            symbol: symbol.to_string(),
+        };
+    };
+    match resolve_symbol_ranges(&buf, &path, symbol) {
+        Some(ranges) if ranges.len() == 1 => {
+            let (start_line, end_line) = ranges[0];
+            PathSymbolResolution::Unique {
+                path,
+                symbol: symbol.to_string(),
+                start_line,
+                end_line,
+            }
+        }
+        Some(ranges) if ranges.is_empty() => PathSymbolResolution::NamedFileUnresolved {
+            path,
+            symbol: symbol.to_string(),
+        },
+        Some(ranges) => PathSymbolResolution::Ambiguous {
+            path,
+            symbol: symbol.to_string(),
+            ranges,
+        },
+        None => PathSymbolResolution::NamedFileUnresolvable {
+            path,
+            symbol: symbol.to_string(),
+        },
+    }
+}
+
 /// A path-qualified symbol resolved from the same AST outline used by `--section`.
+/// Retains only the resolved exact target (for the reader/plumbing); ambiguity
+/// and unresolved states are surfaced via `resolve_path_symbol_resolution`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PathSymbolTarget {
     pub(crate) path: PathBuf,
@@ -996,25 +1130,48 @@ pub(crate) struct PathSymbolTarget {
     pub(crate) range: Option<(usize, usize)>,
 }
 
+/// Resolve a `<path>:<symbol>` target, returning `Some` only for well-formed,
+/// uniquely-resolved targets (used by the reader and best-effort plumbing).
+/// Non-canonical, unresolved, and ambiguous cases return `None`; callers that
+/// need to distinguish those states use `resolve_path_symbol_resolution`.
 pub(crate) fn resolve_path_symbol_target(target: &str, scope: &Path) -> Option<PathSymbolTarget> {
-    let (path_part, symbol) = target.rsplit_once(':')?;
-    if path_part.is_empty()
-        || symbol.is_empty()
-        || parse_range(symbol).is_some()
-        || (path_part.len() == 1
-            && path_part.as_bytes()[0].is_ascii_alphabetic()
-            && (symbol.starts_with('/') || symbol.starts_with('\\')))
-    {
-        return None;
+    match resolve_path_symbol_resolution(target, scope) {
+        PathSymbolResolution::Unique {
+            path,
+            symbol,
+            start_line,
+            end_line,
+        } => Some(PathSymbolTarget {
+            path,
+            symbol,
+            range: Some((start_line, end_line)),
+        }),
+        // The historical signature returned Some with range=None for a resolvable
+        // file whose symbol didn't match, so callers (e.g. `show` suggestion)
+        // treat it as a known path with no exact body. Preserve that behavior for
+        // the named-file-unresolved state.
+        PathSymbolResolution::NamedFileUnresolved { path, symbol, .. } => Some(PathSymbolTarget {
+            path,
+            symbol,
+            range: None,
+        }),
+        // A readable real file that has no structural outline (e.g. plain text)
+        // is still a recognized `path:symbol` on a real file: the prior wrapper
+        // returned Some(range=None) whenever resolve_existing_file+read
+        // succeeded. Preserve that for the resolvable-but-no-outline state.
+        PathSymbolResolution::NamedFileUnresolvable { path, symbol, .. } => {
+            Some(PathSymbolTarget {
+                path,
+                symbol,
+                range: None,
+            })
+        }
+        // Missing path, unreadable file, ambiguity, and colon-bearing selectors
+        // return None (the prior `resolve_existing_file(...)?` /
+        // `fs::read(...).ok()?` early returns produced None for a missing or
+        // unreadable path). They surface through resolve_path_symbol_resolution.
+        _ => None,
     }
-    let path = resolve_existing_file(path_part, scope)?;
-    let buf = std::fs::read(&path).ok()?;
-    let range = resolve_symbol(&buf, &path, symbol);
-    Some(PathSymbolTarget {
-        path,
-        symbol: symbol.to_string(),
-        range,
-    })
 }
 
 fn resolve_existing_file(raw: &str, scope: &Path) -> Option<PathBuf> {
@@ -1038,8 +1195,10 @@ fn resolve_existing_file(raw: &str, scope: &Path) -> Option<PathBuf> {
     })
 }
 
-/// Resolve a symbol name to its line range using AST outline.
-/// Returns (`start_line`, `end_line`) if found.
+/// Resolve a symbol name to its first matching `(start_line, end_line)` against
+/// the AST outline. Retained for the `--section` reader, which intentionally
+/// preserves first-match navigation for pre-existing exact-section behavior.
+/// New exact-body plumbing uses `resolve_symbol_ranges` for cardinality.
 fn resolve_symbol(buf: &[u8], path: &Path, symbol: &str) -> Option<(usize, usize)> {
     let content = std::str::from_utf8(buf).ok()?;
     let lang = detect_file_type(path).structural_lang()?;
@@ -1048,6 +1207,24 @@ fn resolve_symbol(buf: &[u8], path: &Path, symbol: &str) -> Option<(usize, usize
     // qualifier + plain-name interpretation (container / Go receiver).
     crate::lang::qualified::resolve_selector_first(&entries, Some(lang), symbol)
         .map(|(start, end)| (start as usize, end as usize))
+}
+
+/// Resolve a symbol name against the AST outline, returning every distinct
+/// `(start_line, end_line)` match in deterministic order. Uses the shared
+/// cardinality primitive `resolve_selector_matches` so N>1 same-file definitions
+/// (e.g. overloads) are surfaced explicitly rather than silently selecting the
+/// first. Returns `Some(vec![...])` for a resolvable file; `None` when the file
+/// has no structural language or the outline cannot be read.
+fn resolve_symbol_ranges(buf: &[u8], path: &Path, symbol: &str) -> Option<Vec<(usize, usize)>> {
+    let content = std::str::from_utf8(buf).ok()?;
+    let lang = detect_file_type(path).structural_lang()?;
+    let entries = lang_get_outline_entries(content, lang);
+    Some(
+        crate::lang::qualified::resolve_selector_matches(&entries, Some(lang), symbol)
+            .into_iter()
+            .map(|(start, end)| (start as usize, end as usize))
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Collect symbol names from outline entries (recursively) with their line ranges,

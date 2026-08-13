@@ -228,12 +228,10 @@ pub fn search_callers_bfs(
             } else if visited.insert(key) {
                 // calling_function is qualified ("Class.method" / "mod::func").
                 // Frontier needs the bare name since find_callers_batch matches
-                // by-name call sites, not qualified references.
-                let bare = m
-                    .calling_function
-                    .rsplit_once('.')
-                    .or_else(|| m.calling_function.rsplit_once("::"))
-                    .map_or(m.calling_function.as_str(), |(_, name)| name);
+                // by-name call sites, not qualified references. US-071 Step 2:
+                // the terminal key comes from the shared helper, never a local
+                // ad-hoc split.
+                let bare = crate::lang::qualified::terminal_callable_key(&m.calling_function);
                 next_frontier.insert(bare.to_string());
             }
 

@@ -2,6 +2,19 @@
 
 All notable changes to srcwalk are documented here.
 
+## [1.7.0] - 2026-08-13
+
+### Added
+- Shared typed `path:symbol` selector grammar with a single resolution seam, consumed by `show`, `context`, and `trace`, so canonical selectors round-trip between command output and command input.
+- `discover` emits the canonical owning-container selector for resolvable hits, including per-term sections of batch (comma-separated) queries, derived from outline primitives.
+
+### Fixed
+- Exact selector evidence is preserved through display instead of being rewritten into non-resolvable forms.
+- Copyable path displays are classified consistently across discover/show/callers output.
+
+### Known limitations
+- Dotted bare terms inside batch discover queries (e.g. `discover 'A.b,C'`) still resolve as free-text for the dotted term; the canonical selector for that term is not emitted. Single-term dotted queries are unaffected.
+
 ## [1.6.0] - 2026-08-12
 
 ### Added

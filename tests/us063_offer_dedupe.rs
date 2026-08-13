@@ -69,7 +69,7 @@ fn discover_keeps_offer_when_source_not_rendered() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("> Next: srcwalk show lib.js --section target"),
+        stdout.contains("> Next: srcwalk show lib.js:target"),
         "unrendered target should still be offered:\n{stdout}"
     );
     let _ = fs::remove_dir_all(&dir);

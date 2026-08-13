@@ -106,6 +106,13 @@ pub(crate) fn rel(path: &Path, scope: &Path) -> String {
     }))
 }
 
+/// True when `rel`/`rel_nonempty` render `path` relative to the process CWD.
+/// A printed command using that display string runs verbatim; a scope-relative
+/// display needs the same `--scope` to resolve.
+pub(crate) fn is_cwd_relative(path: &Path) -> bool {
+    cwd_relative(path).is_some()
+}
+
 fn cwd_relative(path: &Path) -> Option<String> {
     let cwd = CANONICAL_CWD.get_or_init(|| {
         let cwd = std::env::current_dir().ok()?;

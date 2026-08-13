@@ -1222,7 +1222,7 @@ pub(super) fn format_search_result_with_header(
         append_next_action(
             &mut footer,
             NextAction::guidance(
-                "read omitted hits with `srcwalk show <path>:<line> -C 10` or `srcwalk show <path> --section <symbol|range>`.",
+                "read omitted hits with `srcwalk show <path>:<line> -C 10` or `srcwalk show <path>:<symbol|start-end>`.",
                 "expanded hits omitted by budget",
                 70,
             ),

@@ -2196,17 +2196,15 @@ fn caller() -> i32 {
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show lib.rs --section target"),
+        stdout.contains("> Next: srcwalk show lib.rs:target"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show lib.rs --section caller"),
+        stdout.contains("> Next: srcwalk show lib.rs:caller"),
         "{stdout}"
     );
     assert_eq!(
-        stdout
-            .matches("> Next: srcwalk show lib.rs --section target")
-            .count(),
+        stdout.matches("> Next: srcwalk show lib.rs:target").count(),
         1,
         "confirmed structural next action should be deduplicated:\n{stdout}"
     );
@@ -2292,16 +2290,16 @@ fn discover_multiple_structural_matches_suggest_batched_show_target() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show a/lib.rs --section target"),
+        stdout.contains("> Next: srcwalk show a/lib.rs:target"),
         "expected symbol show next action:\n{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show b/lib.rs --section target"),
+        stdout.contains("> Next: srcwalk show b/lib.rs:target"),
         "expected symbol show next action:\n{stdout}"
     );
     assert_eq!(
         stdout
-            .matches("> Next: srcwalk show a/lib.rs --section target")
+            .matches("> Next: srcwalk show a/lib.rs:target")
             .count(),
         1,
         "symbol show next action should be deduplicated:\n{stdout}"
@@ -2328,7 +2326,7 @@ fn discover_structural_show_targets_quote_spaces_and_comma_paths() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("> Next: srcwalk show 'a file.rs' --section target"),
+        stdout.contains("> Next: srcwalk show 'a file.rs:target'"),
         "space-bearing target must be shell-quoted:\n{stdout}"
     );
 
@@ -2393,11 +2391,11 @@ export function startServer() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show server.ts --section createGatewayServer"),
+        stdout.contains("> Next: srcwalk show server.ts:createGatewayServer"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("> Next: srcwalk show server.ts --section startServer"),
+        stdout.contains("> Next: srcwalk show server.ts:startServer"),
         "{stdout}"
     );
     assert!(

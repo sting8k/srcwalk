@@ -256,3 +256,92 @@ fn windows_suppressed_structural_target_trace_uses_relative_path() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// US-071: the canonical `<path>:<symbol>` target Discover prints must resolve
+/// on Windows, where the display path carries a drive letter and the grammar
+/// must not split at the drive colon. The target is parsed out of the real
+/// output and copied verbatim; nothing is hand-authored.
+#[test]
+fn windows_discover_canonical_target_runs_verbatim_from_the_discover_cwd() {
+    let dir = fixture_repo("windows_canonical_target");
+    let elsewhere = temp_repo("windows_canonical_cwd");
+    let scope = dir.join("src");
+
+    let output = srcwalk()
+        .current_dir(&elsewhere)
+        .args(["discover", "alpha", "--as", "symbol", "--scope"])
+        .arg(&scope)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "discover failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("> Next: srcwalk show "))
+        .unwrap_or_else(|| panic!("no canonical show target:\n{stdout}"));
+    let rest = line.trim_start_matches("> Next: srcwalk show ").trim();
+    assert!(
+        !rest.contains("--section"),
+        "canonical target must be one argument:\n{stdout}"
+    );
+
+    // The scope lives outside the CWD, so the footer must carry the --scope
+    // that makes the copied target resolve.
+    let (target, scope_arg) = rest
+        .split_once(" --scope ")
+        .unwrap_or_else(|| panic!("scope-relative target must print its --scope:\n{stdout}"));
+    let target = target.trim_matches('\'');
+    let scope_arg = scope_arg.trim_matches('\'');
+    assert!(target.ends_with(":alpha"), "{stdout}");
+
+    let shown = srcwalk()
+        .current_dir(&elsewhere)
+        .args(["show", target, "--scope", scope_arg])
+        .output()
+        .unwrap();
+    assert!(
+        shown.status.success(),
+        "printed command must run verbatim on Windows:\n{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("pub fn alpha()"), "{shown}");
+    assert!(
+        !shown.contains("pub fn beta() {}"),
+        "must read only the requested body:\n{shown}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&elsewhere);
+}
+
+/// Both Windows drive forms must split after the file path, never at the drive
+/// colon, for the `<path>:<symbol>` grammar.
+#[test]
+fn windows_absolute_drive_path_symbol_splits_after_the_file_path() {
+    let dir = fixture_repo("windows_drive_path_symbol");
+    let file = dir.join("src").join("lib.rs");
+    let backslash = format!("{}:alpha", file.display());
+    let forward = format!("{}:alpha", file.display().to_string().replace('\\', "/"));
+
+    for target in [backslash, forward] {
+        let out = srcwalk().args(["show", &target]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "drive path:symbol {target} failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("pub fn alpha()"), "{target}:\n{stdout}");
+        assert!(
+            !stdout.contains("pub fn beta() {}"),
+            "{target} must read only the requested body:\n{stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -184,6 +184,7 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
         let is_csharp = detected == crate::types::FileType::Code(Lang::CSharp);
         let is_php = detected == crate::types::FileType::Code(Lang::Php);
         let is_c_cpp = matches!(detected, crate::types::FileType::Code(Lang::C | Lang::Cpp));
+        let is_ruby = detected == crate::types::FileType::Code(Lang::Ruby);
         if is_go
             || is_python
             || is_rust
@@ -193,6 +194,7 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
             || is_csharp
             || is_php
             || is_c_cpp
+            || is_ruby
         {
             by_path
                 .entry(input.path.to_path_buf())
@@ -360,6 +362,26 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
             for input in path_inputs {
                 if let Some(owner) =
                     crate::evidence::owners::c_cpp::owner_for(&regions, &errors, input.line)
+                {
+                    hits.push(OwnedTextHit {
+                        path: path.clone(),
+                        line: input.line,
+                        owner: owner.clone(),
+                    });
+                }
+            }
+            continue;
+        }
+        if detected == crate::types::FileType::Code(Lang::Ruby) {
+            // Ruby is owner-only: no call edges are inferred in US-072 Wave 2.
+            let Some((regions, errors)) =
+                crate::evidence::owners::ruby::ruby_regions(path, &content)
+            else {
+                continue;
+            };
+            for input in path_inputs {
+                if let Some(owner) =
+                    crate::evidence::owners::ruby::ruby_owner_for(&regions, &errors, input.line)
                 {
                     hits.push(OwnedTextHit {
                         path: path.clone(),

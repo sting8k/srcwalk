@@ -4948,3 +4948,426 @@ fn discover_text_or_c_cpp_nonmatching_files_do_not_change_output() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// US-072 Wave 2: Ruby enters owner-only dispatch. Inline evidence renders
+/// exact `#` (instance) and `.` (singleton) display with full `::` container
+/// paths; no Go mechanical-call appendix, no canonical-selector promotion, and
+/// the non-Go honesty caveat is present.
+#[test]
+fn discover_text_or_ruby_attributes_owners_without_go_call_appendix() {
+    let dir = temp_repo("discover_text_or_ruby_owner");
+    fs::write(
+        dir.join("app.rb"),
+        "module Billing\n\
+         \x20 class Invoice\n\
+         \x20\x20 def paid?\n\
+         \x20\x20\x20 compute_total\n\
+         \x20\x20 end\n\
+         \x20\x20 def self.find(id)\n\
+         \x20\x20\x20 query\n\
+         \x20\x20 end\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "compute_total,query",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Exact per-file owner evidence: `#` for instance, `.` for singleton.
+    assert!(
+        stdout.contains("app.rb:4 [owner Billing::Invoice#paid?@3-5]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("app.rb:7 [owner Billing::Invoice.find@6-8]"),
+        "{stdout}"
+    );
+    // No Go call appendix is emitted for a Ruby-only query.
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    // Ruby display punctuation is never promoted to a copyable canonical
+    // selector.
+    assert!(
+        !stdout.contains("## Confirmed structural targets"),
+        "{stdout}"
+    );
+    // Non-Go honesty caveat present, with no call-analysis claim.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("no call analysis was run for non-Go languages"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2: compact rollup renders Ruby owners for instance/singleton
+/// methods, and the exact command replays byte-identically.
+#[test]
+fn discover_text_or_ruby_compact_rollup_replays_byte_identically() {
+    let dir = temp_repo("discover_ruby_compact_replay");
+    fs::write(
+        dir.join("app.rb"),
+        "class A\n\
+         \x20 def run\n\
+         \x20\x20 work\n\
+         \x20 end\n\
+         \x20 def self.find\n\
+         \x20\x20 search\n\
+         \x20 end\n\
+         \x20 def stop\n\
+         \x20\x20 halt\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+
+    let run = |d: &Path| {
+        srcwalk()
+            .args([
+                "discover",
+                "work,search,halt",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(d)
+            .output()
+            .unwrap()
+    };
+    let first = run(&dir);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    assert!(
+        stdout.contains("owners (#N=Nth query term; *K=hits)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("A#run:2-4[#1]"), "{stdout}");
+    assert!(stdout.contains("A.find:5-7[#2]"), "{stdout}");
+    assert!(stdout.contains("A#stop:8-10[#3]"), "{stdout}");
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let second = run(&dir);
+    assert_eq!(
+        first.stdout, second.stdout,
+        "stdout differs across identical replays"
+    );
+    assert_eq!(
+        first.stderr, second.stderr,
+        "stderr differs across identical replays"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2: ordinary blocks/procs/lambdas are transparent (hits inside
+/// them inherit the enclosing method), while dynamic metaprogramming hazards
+/// and their attached bodies emit zero owner evidence — including nested
+/// recovered definitions.
+#[test]
+fn discover_text_or_ruby_blocks_transparent_metaprogramming_barriers() {
+    let dir = temp_repo("discover_ruby_block_hazard");
+    fs::write(
+        dir.join("service.rb"),
+        "def process\n\
+         \x20 items.each do |item|\n\
+         \x20\x20 handle(item)\n\
+         \x20 end\n\
+         \x20 define_method(:dyn) { }\n\
+         end\n\
+         class_eval do\n\
+         \x20 def leaked\n\
+         \x20\x20 secret\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "handle(item),define_method(:dyn),secret",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The transparent block inherits the enclosing method owner: the compact
+    // rollup attributes term #1 (handle(item), line 3 inside the block) to
+    // `process`, while the define_method hazard line and the class_eval body
+    // contribute no owner evidence.
+    assert!(stdout.contains("process:1-6[#1]"), "{stdout}");
+    assert!(stdout.contains("owners (#N"), "{stdout}");
+    assert!(!stdout.contains("service.rb:5 [owner"), "{stdout}");
+    assert!(!stdout.contains("[#2"), "{stdout}");
+    assert!(!stdout.contains("[#3"), "{stdout}");
+    // `leaked` is never rendered as an owner (the class_eval block and its
+    // nested recovered definition never regain a name).
+    assert!(!stdout.contains("leaked"), "{stdout}");
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2 re-review: qualified and root-qualified container names never
+/// fabricate a component through the CLI. `module A; class A::B` merges on the
+/// suffix witness (`A::B`, never `A::A::B`), a witness-free `module C;
+/// class A::B` barriers (no `C::A::B`, no shortened owner), and `class
+/// ::Rooted` is absolute inside a module (`Rooted`, never `M::Rooted`).
+#[test]
+fn discover_text_or_ruby_qualified_containers_never_fabricate_components() {
+    let dir = temp_repo("discover_ruby_qualified_containers");
+    fs::write(
+        dir.join("merged.rb"),
+        "module A\n\
+         \x20 class A::B\n\
+         \x20\x20 def hit_method\n\
+         \x20\x20\x20 duplicate_container_hit\n\
+         \x20\x20 end\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("barriered.rb"),
+        "module C\n\
+         \x20 class A::B\n\
+         \x20\x20 def unprovable_method\n\
+         \x20\x20\x20 unprovable_container_hit\n\
+         \x20\x20 end\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("rooted.rb"),
+        "module M\n\
+         \x20 class ::Rooted\n\
+         \x20\x20 def rooted_method\n\
+         \x20\x20\x20 rooted_container_hit\n\
+         \x20\x20 end\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "duplicate_container_hit,unprovable_container_hit,rooted_container_hit",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Suffix-witness merge: the duplicated component appears exactly once.
+    assert!(stdout.contains("A::B#hit_method:3-5"), "{stdout}");
+    assert!(!stdout.contains("A::A::B"), "{stdout}");
+    // Root-qualified is absolute: no lexical prefix.
+    assert!(stdout.contains("Rooted#rooted_method:3-5"), "{stdout}");
+    assert!(!stdout.contains("M::Rooted"), "{stdout}");
+    // Witness-free qualified container: no guessed path, no shortened owner,
+    // and no owner evidence of any kind for that hit.
+    assert!(!stdout.contains("C::A::B"), "{stdout}");
+    assert!(!stdout.contains("unprovable_method"), "{stdout}");
+    assert!(!stdout.contains("barriered.rb:4 [owner"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2: a mixed Go + Ruby + C/C++ scope keeps the mechanical-call
+/// appendix Go-only. Ruby owners are attributed but never enter call-edge
+/// analysis, and no non-Go zero-edge/call claim is made.
+#[test]
+fn discover_text_or_go_plus_ruby_c_cpp_mixed_keeps_edges_go_only() {
+    let dir = temp_repo("discover_go_ruby_c_cpp_mixed");
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha */ }\nfunc Second() { /* beta */ First() }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("service.rb"),
+        "class Service\n\
+         \x20 def load\n\
+         \x20\x20 alpha_hit\n\
+         \x20 end\n\
+         \x20 def handle\n\
+         \x20\x20 beta_hit\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app.c"),
+        "int load_c(void) {\n    return 1; /* alpha */\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // All three languages carry exact per-file owner evidence.
+    assert!(
+        stdout.contains("feature.go:2 [owner First@2-2]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("service.rb:3 [owner Service#load@2-4]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("service.rb:6 [owner Service#handle@5-7]"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("app.c:2 [owner load_c@1-3]"), "{stdout}");
+    // The Go mechanical-call appendix exists and the single rendered edge is
+    // Go-only.
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("- [bare] Second calls First@feature.go:3; candidate First@:2-2"),
+        "{stdout}"
+    );
+    let go_edge_rows = stdout
+        .lines()
+        .filter(|l| l.starts_with("- [") && l.contains(" calls "))
+        .count();
+    assert_eq!(go_edge_rows, 1, "{stdout}");
+    // No non-Go zero-edge or call claim; Ruby/C never enter candidate sets.
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+    assert!(!stdout.contains("candidate Service#"), "{stdout}");
+    assert!(!stdout.contains("candidate load_c@"), "{stdout}");
+    // Both honesty caveats present.
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2: adding nonmatching Ruby files to the scope does not change
+/// any pre-existing stdout/stderr bytes.
+#[test]
+fn discover_text_or_ruby_nonmatching_files_do_not_change_output() {
+    let dir = temp_repo("discover_ruby_nonmatching");
+    fs::write(dir.join("app.rb"), "def alpha\n  hit\nend\n").unwrap();
+
+    let run = |d: &Path| {
+        srcwalk()
+            .args([
+                "discover", "alpha", "--match", "any", "--as", "text", "--scope",
+            ])
+            .arg(d)
+            .output()
+            .unwrap()
+    };
+    let baseline = run(&dir);
+    assert!(
+        baseline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    // Add nonmatching Ruby files (no query-term text).
+    fs::write(
+        dir.join("unrelated.rb"),
+        "class Unrelated\n  def helper\n    work\n  end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("another.rb"),
+        "module Other\n  def run; end\nend\n",
+    )
+    .unwrap();
+
+    let after = run(&dir);
+    assert!(
+        after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert_eq!(
+        baseline.stdout, after.stdout,
+        "stdout changed after adding nonmatching Ruby files"
+    );
+    assert_eq!(
+        baseline.stderr, after.stderr,
+        "stderr changed after adding nonmatching Ruby files"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

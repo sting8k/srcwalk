@@ -409,9 +409,9 @@ source: text · kind: name occurrence · confidence: text evidence
 </details>
 
 <details>
-<summary><b>Discover — Go owner rollup and mechanical call evidence</b></summary>
+<summary><b>Discover — owner rollup and Go-only mechanical call evidence</b></summary>
 
-For compact Go `discover --as text --match any` output, matching file rows may include a narrowest-owner rollup and a bounded mechanical call appendix. Owner ranges are candidate exact reads (dereference them with `srcwalk show`), not runtime binding proof.
+For compact `discover --as text --match any` output, matching file rows may include a narrowest-owner rollup (multi-language) and a bounded mechanical call appendix (Go-only). Owner ranges are candidate exact reads (dereference them with `srcwalk show`), not runtime binding proof.
 
 ```
 $ srcwalk discover "apply body,set body,connect body" --match any --as text --scope .

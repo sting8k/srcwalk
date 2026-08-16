@@ -29,7 +29,8 @@ use tree_sitter::Node;
 
 use crate::evidence::owner_links::OwnerAnchor;
 use crate::evidence::owners::{
-    attribute_line, collect_error_ranges, degrade_named_on_error, ErrorRange, OwnerRegion,
+    attribute_line, collect_error_ranges, degrade_named_on_error, ErrorRange, OwnerAttribution,
+    OwnerRegion,
 };
 use crate::lang::outline::outline_language;
 use crate::types::Lang;
@@ -917,7 +918,7 @@ pub(crate) fn csharp_owner_for<'a>(
     regions: &'a [OwnerRegion],
     errors: &[ErrorRange],
     line: u32,
-) -> Option<&'a OwnerAnchor> {
+) -> OwnerAttribution<'a> {
     attribute_line(regions, errors, line)
 }
 
@@ -936,7 +937,7 @@ mod tests {
     }
 
     fn assert_owner(regions: &[OwnerRegion], errors: &[ErrorRange], line: u32, name: &str) {
-        let owner = csharp_owner_for(regions, errors, line);
+        let owner = csharp_owner_for(regions, errors, line).named();
         assert_eq!(
             owner.map(OwnerAnchor::qualified_name),
             Some(name.to_string()),
@@ -946,7 +947,7 @@ mod tests {
 
     fn assert_abstain(regions: &[OwnerRegion], errors: &[ErrorRange], line: u32) {
         assert!(
-            csharp_owner_for(regions, errors, line).is_none(),
+            csharp_owner_for(regions, errors, line).named().is_none(),
             "line {line} should abstain"
         );
     }
@@ -1415,7 +1416,7 @@ mod tests {
             let (regions, errors) = parse(case.source);
             for &(hit_line, name, start, end) in case.owners {
                 positives += 1;
-                let owner = csharp_owner_for(&regions, &errors, hit_line);
+                let owner = csharp_owner_for(&regions, &errors, hit_line).named();
                 assert!(
                     owner.is_some(),
                     "[{}] line {hit_line}: expected {name}@{start}-{end}, got abstain",
@@ -1429,14 +1430,14 @@ mod tests {
             for &line in case.abstain {
                 abstentions += 1;
                 assert!(
-                    csharp_owner_for(&regions, &errors, line).is_none(),
+                    csharp_owner_for(&regions, &errors, line).named().is_none(),
                     "[{}] line {line} should abstain",
                     case.label
                 );
             }
             for &line in case.incidental {
                 assert!(
-                    csharp_owner_for(&regions, &errors, line).is_none(),
+                    csharp_owner_for(&regions, &errors, line).named().is_none(),
                     "[{}] incidental line {line} should abstain",
                     case.label
                 );

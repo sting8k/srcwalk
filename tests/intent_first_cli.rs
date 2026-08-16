@@ -4548,3 +4548,1175 @@ fn explicit_as_text_and_file_are_not_intercepted() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// US-072: C and C++ files enter owner-only dispatch. Inline Text OR rows carry
+/// exact `[owner NAME@start-end]` evidence, the C++ owner renders `::`
+/// qualification without being advertised as a canonical selector, the non-Go
+/// honesty caveat is present, and the Go-only call appendix never appears for a
+/// C/C++-only query.
+#[test]
+fn discover_text_or_c_cpp_attributes_owners_without_go_call_appendix() {
+    let dir = temp_repo("discover_text_or_c_cpp_owner");
+    fs::write(
+        dir.join("util.c"),
+        "int add(int a, int b) {\n    return a + b;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("svc.cpp"),
+        "namespace ns {\nclass Foo {\npublic:\n    void bar() {\n        log();\n    }\n};\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "return a + b,log()",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Exact per-file owner evidence: C plain name, C++ `::` qualified name.
+    assert!(stdout.contains("util.c:2 [owner add@1-3]"), "{stdout}");
+    assert!(
+        stdout.contains("svc.cpp:5 [owner ns::Foo::bar@4-6]"),
+        "{stdout}"
+    );
+    // No Go call appendix is emitted for a C/C++-only query.
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        !stdout.contains("[recv=same package-qualified receiver type"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    // C++ `::` display is never promoted to a copyable canonical selector.
+    assert!(
+        !stdout.contains("## Confirmed structural targets"),
+        "{stdout}"
+    );
+    // Non-Go honesty caveat present, and it must not imply call analysis ran.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("no call analysis was run for non-Go languages"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072: compact rollup renders owners for BOTH C and C++ in one query, and
+/// the exact command replays byte-identically (compact ordering + ranges).
+#[test]
+fn discover_text_or_c_cpp_compact_rollup_replays_byte_identically() {
+    let dir = temp_repo("discover_c_cpp_compact_replay");
+    fs::write(
+        dir.join("util.c"),
+        "int add(int a, int b) {\n    return a + b;\n}\nint sub(int a, int b) {\n    return a - b;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("svc.cpp"),
+        "namespace ns {\nclass Foo {\npublic:\n    void bar() {\n        log();\n    }\n    void run() {\n        bar();\n    }\n};\n}\n",
+    )
+    .unwrap();
+
+    let run = |d: &Path| {
+        srcwalk()
+            .args([
+                "discover",
+                "return a + b,return a - b,log(),bar()",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(d)
+            .output()
+            .unwrap()
+    };
+    let first = run(&dir);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    // Compact rollup line carries both languages with `::` C++ qualification.
+    assert!(
+        stdout.contains("owners (#N=Nth query term; *K=hits)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("add:1-3[#1]"), "{stdout}");
+    assert!(stdout.contains("sub:4-6[#2]"), "{stdout}");
+    assert!(stdout.contains("ns::Foo::bar:4-6[#3,#4]"), "{stdout}");
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    // Byte-identical replay.
+    let second = run(&dir);
+    assert_eq!(
+        first.stdout, second.stdout,
+        "stdout differs across identical replays"
+    );
+    assert_eq!(
+        first.stderr, second.stderr,
+        "stderr differs across identical replays"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 §7.2: every C++ lambda is an anonymous barrier and macro-generated
+/// `TEST(Foo, Bar)` bodies abstain. In compact mode the enclosing named
+/// function keeps the owner for its non-lambda hits while lambda-body and
+/// TEST-body hits contribute no owner evidence at all (the TEST file's rollup
+/// has no owners line).
+#[test]
+fn discover_text_or_cpp_lambda_and_macro_lines_abstain() {
+    let dir = temp_repo("discover_cpp_lambda_macro_abstain");
+    fs::write(
+        dir.join("lam.cpp"),
+        "void run() {\n    init();\n    auto l = [](int x) {\n        return x + 1;\n    };\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("tests.cpp"),
+        "TEST(Foo, Bar) {\n    EXPECT_EQ(1, 1);\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "init(),return x + 1,EXPECT_EQ(1, 1)",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The enclosing function keeps the owner for hits outside the lambda; the
+    // lambda body and TEST body contribute nothing.
+    let owners_lines = stdout
+        .lines()
+        .filter(|l| l.contains("owners (#N=Nth query term"))
+        .collect::<Vec<_>>();
+    assert_eq!(owners_lines.len(), 1, "{stdout}");
+    assert!(owners_lines[0].contains("run:1-6[#1]"), "{stdout}");
+    assert!(!owners_lines[0].contains("TEST"), "{stdout}");
+    // No fabricated macro owner appears anywhere.
+    assert!(!stdout.contains("TEST@"), "{stdout}");
+    assert!(!stdout.contains("[owner TEST"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 P1 regression (Biscuit review): a type-less namespace
+/// "constructor", a macro/TEST body, and an abstained (malformed) function
+/// identity never gain owner evidence, and an abstained function never leaks
+/// a nested function as an owner.
+#[test]
+fn discover_text_or_cpp_abstained_identities_never_leak_nested_owner() {
+    let dir = temp_repo("discover_cpp_p1_regression");
+    fs::write(
+        dir.join("regress.cpp"),
+        "namespace Faux {\n\
+         Faux() {\n\
+             hit_one();\n\
+         }\n\
+         }\n\
+         TEST(Foo, Bar) {\n\
+             void leaked() {\n\
+                 hit_two();\n\
+             }\n\
+         }\n\
+         void Foo::operator int() {\n\
+             void leaked2() {\n\
+                 hit_three();\n\
+             }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "hit_one(),hit_two(),hit_three()",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // All three hits are found, but zero owner evidence: the namespace
+    // "constructor", the TEST body, and the malformed `operator int` all
+    // abstain, and their nested functions never leak an owner.
+    assert!(
+        stdout.contains("hit_one() — 1/1 matches, 1 file"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("hit_two() — 1/1 matches, 1 file"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("hit_three() — 1/1 matches, 1 file"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("[owner"), "{stdout}");
+    assert!(!stdout.contains("owners (#N"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072: a mixed Go + C/C++ scope keeps the mechanical-call appendix
+/// Go-only. C/C++ owners are attributed, but they never enter call-edge
+/// analysis and no non-Go zero-edge/call claim is made.
+#[test]
+fn discover_text_or_go_plus_c_cpp_mixed_keeps_edges_go_only() {
+    let dir = temp_repo("discover_go_c_cpp_mixed");
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha */ }\nfunc Second() { /* beta */ First() }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app.c"),
+        "int load(void) {\n    return 1; /* alpha */\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app.cpp"),
+        "namespace svc {\nclass App {\npublic:\n    void handle() { /* beta */ }\n};\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // All three languages carry exact per-file owner evidence.
+    assert!(
+        stdout.contains("feature.go:2 [owner First@2-2]"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("app.c:2 [owner load@1-3]"), "{stdout}");
+    assert!(
+        stdout.contains("app.cpp:4 [owner svc::App::handle@4-4]"),
+        "{stdout}"
+    );
+    // The Go mechanical-call appendix exists and the single rendered edge is
+    // Go-only.
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("- [bare] Second calls First@feature.go:3; candidate First@:2-2"),
+        "{stdout}"
+    );
+    let go_edge_rows = stdout
+        .lines()
+        .filter(|l| l.starts_with("- [") && l.contains(" calls "))
+        .count();
+    assert_eq!(go_edge_rows, 1, "{stdout}");
+    // No non-Go zero-edge or call claim.
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+    assert!(!stdout.contains("candidate load@"), "{stdout}");
+    assert!(!stdout.contains("candidate svc::"), "{stdout}");
+    // Both honesty caveats present.
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072: a C++ call operator (`operator()`) carries exact owner evidence, and
+/// the non-Go isolation invariant holds (no call edge, no zero-edge line for a
+/// C++-only hit set).
+#[test]
+fn discover_text_or_cpp_call_operator_owner_without_call_edges() {
+    let dir = temp_repo("discover_cpp_call_operator");
+    fs::write(
+        dir.join("functor.cpp"),
+        "namespace svc {\nstruct Adder {\n    int operator()(int x) {\n        return x; /* alpha */\n    }\n};\n}\nint svc::Adder::operator()(int x, int y) {\n    return x + y; /* beta */\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Inline member and out-of-line definitions both name the call operator.
+    assert!(
+        stdout.contains("functor.cpp:4 [owner svc::Adder::operator()@3-5]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("functor.cpp:9 [owner svc::Adder::operator()@8-10]"),
+        "{stdout}"
+    );
+    // Non-Go isolation: no mechanical call appendix, no edge, no zero-edge line.
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(!stdout.contains(" calls "), "{stdout}");
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072: adding nonmatching C/C++ files to the scope does not change any
+/// pre-existing stdout/stderr bytes (no owner evidence, no caveat, no rollup
+/// line appears for files with zero hits).
+#[test]
+fn discover_text_or_c_cpp_nonmatching_files_do_not_change_output() {
+    let dir = temp_repo("discover_c_cpp_nonmatching");
+    fs::write(dir.join("app.c"), "int alpha(void) {\n    return 1;\n}\n").unwrap();
+    fs::write(dir.join("app.cpp"), "namespace n { void beta() { } }\n").unwrap();
+
+    let run = |d: &Path| {
+        srcwalk()
+            .args([
+                "discover",
+                "alpha,beta",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(d)
+            .output()
+            .unwrap()
+    };
+    let baseline = run(&dir);
+    assert!(
+        baseline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    // Add nonmatching C/C++ files (no query-term text).
+    fs::write(
+        dir.join("unrelated.c"),
+        "static int unused_helper(void) {\n    return 42;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("unrelated.cpp"),
+        "namespace other { class Widget { public: void draw() {} }; }\n",
+    )
+    .unwrap();
+
+    let after = run(&dir);
+    assert!(
+        after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert_eq!(
+        baseline.stdout, after.stdout,
+        "stdout changed after adding nonmatching C/C++ files"
+    );
+    assert_eq!(
+        baseline.stderr, after.stderr,
+        "stderr changed after adding nonmatching C/C++ files"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2: Ruby enters owner-only dispatch. Inline evidence renders
+/// exact `#` (instance) and `.` (singleton) display with full `::` container
+/// paths; no Go mechanical-call appendix, no canonical-selector promotion, and
+/// the non-Go honesty caveat is present.
+#[test]
+fn discover_text_or_ruby_attributes_owners_without_go_call_appendix() {
+    let dir = temp_repo("discover_text_or_ruby_owner");
+    fs::write(
+        dir.join("app.rb"),
+        "module Billing\n\
+         \x20 class Invoice\n\
+         \x20\x20 def paid?\n\
+         \x20\x20\x20 compute_total\n\
+         \x20\x20 end\n\
+         \x20\x20 def self.find(id)\n\
+         \x20\x20\x20 query\n\
+         \x20\x20 end\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "compute_total,query",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Exact per-file owner evidence: `#` for instance, `.` for singleton.
+    assert!(
+        stdout.contains("app.rb:4 [owner Billing::Invoice#paid?@3-5]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("app.rb:7 [owner Billing::Invoice.find@6-8]"),
+        "{stdout}"
+    );
+    // No Go call appendix is emitted for a Ruby-only query.
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        !stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    // Ruby display punctuation is never promoted to a copyable canonical
+    // selector.
+    assert!(
+        !stdout.contains("## Confirmed structural targets"),
+        "{stdout}"
+    );
+    // Non-Go honesty caveat present, with no call-analysis claim.
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("no call analysis was run for non-Go languages"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2: compact rollup renders Ruby owners for instance/singleton
+/// methods, and the exact command replays byte-identically.
+#[test]
+fn discover_text_or_ruby_compact_rollup_replays_byte_identically() {
+    let dir = temp_repo("discover_ruby_compact_replay");
+    fs::write(
+        dir.join("app.rb"),
+        "class A\n\
+         \x20 def run\n\
+         \x20\x20 work\n\
+         \x20 end\n\
+         \x20 def self.find\n\
+         \x20\x20 search\n\
+         \x20 end\n\
+         \x20 def stop\n\
+         \x20\x20 halt\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+
+    let run = |d: &Path| {
+        srcwalk()
+            .args([
+                "discover",
+                "work,search,halt",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(d)
+            .output()
+            .unwrap()
+    };
+    let first = run(&dir);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    assert!(
+        stdout.contains("owners (#N=Nth query term; *K=hits)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("A#run:2-4[#1]"), "{stdout}");
+    assert!(stdout.contains("A.find:5-7[#2]"), "{stdout}");
+    assert!(stdout.contains("A#stop:8-10[#3]"), "{stdout}");
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let second = run(&dir);
+    assert_eq!(
+        first.stdout, second.stdout,
+        "stdout differs across identical replays"
+    );
+    assert_eq!(
+        first.stderr, second.stderr,
+        "stderr differs across identical replays"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2: ordinary blocks/procs/lambdas are transparent (hits inside
+/// them inherit the enclosing method), while dynamic metaprogramming hazards
+/// and their attached bodies emit zero owner evidence — including nested
+/// recovered definitions.
+#[test]
+fn discover_text_or_ruby_blocks_transparent_metaprogramming_barriers() {
+    let dir = temp_repo("discover_ruby_block_hazard");
+    fs::write(
+        dir.join("service.rb"),
+        "def process\n\
+         \x20 items.each do |item|\n\
+         \x20\x20 handle(item)\n\
+         \x20 end\n\
+         \x20 define_method(:dyn) { }\n\
+         end\n\
+         class_eval do\n\
+         \x20 def leaked\n\
+         \x20\x20 secret\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "handle(item),define_method(:dyn),secret",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The transparent block inherits the enclosing method owner: the compact
+    // rollup attributes term #1 (handle(item), line 3 inside the block) to
+    // `process`, while the define_method hazard line and the class_eval body
+    // contribute no owner evidence.
+    assert!(stdout.contains("process:1-6[#1]"), "{stdout}");
+    assert!(stdout.contains("owners (#N"), "{stdout}");
+    assert!(!stdout.contains("service.rb:5 [owner"), "{stdout}");
+    assert!(!stdout.contains("[#2"), "{stdout}");
+    assert!(!stdout.contains("[#3"), "{stdout}");
+    // `leaked` is never rendered as an owner (the class_eval block and its
+    // nested recovered definition never regain a name).
+    assert!(!stdout.contains("leaked"), "{stdout}");
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2 re-review: qualified and root-qualified container names never
+/// fabricate a component through the CLI. `module A; class A::B` merges on the
+/// suffix witness (`A::B`, never `A::A::B`), a witness-free `module C;
+/// class A::B` barriers (no `C::A::B`, no shortened owner), and `class
+/// ::Rooted` is absolute inside a module (`Rooted`, never `M::Rooted`).
+#[test]
+fn discover_text_or_ruby_qualified_containers_never_fabricate_components() {
+    let dir = temp_repo("discover_ruby_qualified_containers");
+    fs::write(
+        dir.join("merged.rb"),
+        "module A\n\
+         \x20 class A::B\n\
+         \x20\x20 def hit_method\n\
+         \x20\x20\x20 duplicate_container_hit\n\
+         \x20\x20 end\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("barriered.rb"),
+        "module C\n\
+         \x20 class A::B\n\
+         \x20\x20 def unprovable_method\n\
+         \x20\x20\x20 unprovable_container_hit\n\
+         \x20\x20 end\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("rooted.rb"),
+        "module M\n\
+         \x20 class ::Rooted\n\
+         \x20\x20 def rooted_method\n\
+         \x20\x20\x20 rooted_container_hit\n\
+         \x20\x20 end\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "duplicate_container_hit,unprovable_container_hit,rooted_container_hit",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Suffix-witness merge: the duplicated component appears exactly once.
+    assert!(stdout.contains("A::B#hit_method:3-5"), "{stdout}");
+    assert!(!stdout.contains("A::A::B"), "{stdout}");
+    // Root-qualified is absolute: no lexical prefix.
+    assert!(stdout.contains("Rooted#rooted_method:3-5"), "{stdout}");
+    assert!(!stdout.contains("M::Rooted"), "{stdout}");
+    // Witness-free qualified container: no guessed path, no shortened owner,
+    // and no owner evidence of any kind for that hit.
+    assert!(!stdout.contains("C::A::B"), "{stdout}");
+    assert!(!stdout.contains("unprovable_method"), "{stdout}");
+    assert!(!stdout.contains("barriered.rb:4 [owner"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2: a mixed Go + Ruby + C/C++ scope keeps the mechanical-call
+/// appendix Go-only. Ruby owners are attributed but never enter call-edge
+/// analysis, and no non-Go zero-edge/call claim is made.
+#[test]
+fn discover_text_or_go_plus_ruby_c_cpp_mixed_keeps_edges_go_only() {
+    let dir = temp_repo("discover_go_ruby_c_cpp_mixed");
+    fs::write(
+        dir.join("feature.go"),
+        "package feature\nfunc First() { /* alpha */ }\nfunc Second() { /* beta */ First() }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("service.rb"),
+        "class Service\n\
+         \x20 def load\n\
+         \x20\x20 alpha_hit\n\
+         \x20 end\n\
+         \x20 def handle\n\
+         \x20\x20 beta_hit\n\
+         \x20 end\n\
+         end\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app.c"),
+        "int load_c(void) {\n    return 1; /* alpha */\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // All three languages carry exact per-file owner evidence.
+    assert!(
+        stdout.contains("feature.go:2 [owner First@2-2]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("service.rb:3 [owner Service#load@2-4]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("service.rb:6 [owner Service#handle@5-7]"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("app.c:2 [owner load_c@1-3]"), "{stdout}");
+    // The Go mechanical-call appendix exists and the single rendered edge is
+    // Go-only.
+    assert!(stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(
+        stdout.contains("- [bare] Second calls First@feature.go:3; candidate First@:2-2"),
+        "{stdout}"
+    );
+    let go_edge_rows = stdout
+        .lines()
+        .filter(|l| l.starts_with("- [") && l.contains(" calls "))
+        .count();
+    assert_eq!(go_edge_rows, 1, "{stdout}");
+    // No non-Go zero-edge or call claim; Ruby/C never enter candidate sets.
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+    assert!(!stdout.contains("candidate Service#"), "{stdout}");
+    assert!(!stdout.contains("candidate load_c@"), "{stdout}");
+    // Both honesty caveats present.
+    assert!(
+        stdout.contains("structural owner and mechanically filtered"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("structural lexical ownership candidates"),
+        "{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-072 Wave 2: adding nonmatching Ruby files to the scope does not change
+/// any pre-existing stdout/stderr bytes.
+#[test]
+fn discover_text_or_ruby_nonmatching_files_do_not_change_output() {
+    let dir = temp_repo("discover_ruby_nonmatching");
+    fs::write(dir.join("app.rb"), "def alpha\n  hit\nend\n").unwrap();
+
+    let run = |d: &Path| {
+        srcwalk()
+            .args([
+                "discover", "alpha", "--match", "any", "--as", "text", "--scope",
+            ])
+            .arg(d)
+            .output()
+            .unwrap()
+    };
+    let baseline = run(&dir);
+    assert!(
+        baseline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    // Add nonmatching Ruby files (no query-term text).
+    fs::write(
+        dir.join("unrelated.rb"),
+        "class Unrelated\n  def helper\n    work\n  end\nend\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("another.rb"),
+        "module Other\n  def run; end\nend\n",
+    )
+    .unwrap();
+
+    let after = run(&dir);
+    assert!(
+        after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert_eq!(
+        baseline.stdout, after.stdout,
+        "stdout changed after adding nonmatching Ruby files"
+    );
+    assert_eq!(
+        baseline.stderr, after.stderr,
+        "stderr changed after adding nonmatching Ruby files"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ---- US-073: owner abstention transparency ----
+
+/// The three owner states are distinguishable in one detailed Text OR run:
+/// a named owner keeps its exact tag, an analyzed-but-abstained hit is
+/// summarized once per file, and an unsupported language stays silent.
+#[test]
+fn text_or_distinguishes_named_abstained_and_unsupported_owner_states() {
+    let dir = temp_repo("owner_abstain_three_states");
+    fs::write(
+        dir.join("a.py"),
+        "X = 1  # alpha\ndef f():\n    return 2  # alpha\n",
+    )
+    .unwrap();
+    fs::write(dir.join("notes.txt"), "alpha here\n").unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Named: existing inline owner tag, unchanged.
+    assert!(stdout.contains("a.py:3 [owner f@2-3]"), "{stdout}");
+    // Abstained: one bounded file line naming the parser-known reason.
+    assert!(stdout.contains("\n## Owner abstentions\n"), "{stdout}");
+    assert!(stdout.contains("a.py — top-level ×1"), "{stdout}");
+    // Unsupported: no owner tag and no abstention line for the text file.
+    assert!(stdout.contains("notes.txt:1 — alpha here"), "{stdout}");
+    assert!(!stdout.contains("notes.txt —"), "{stdout}");
+    assert!(!stdout.contains("notes.txt ["), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Compact mode: a fully abstained file states `owners: none`, a mixed file
+/// keeps its exact owners line and adds only the abstention line, and the
+/// abstention line sits before windows.
+#[test]
+fn text_or_compact_renders_all_abstained_and_mixed_owner_shapes() {
+    let dir = temp_repo("owner_abstain_compact");
+    fs::write(
+        dir.join("mixed.py"),
+        "TOP = 1  # alpha\ndef f():\n    return 2  # beta\n",
+    )
+    .unwrap();
+    fs::write(dir.join("top.py"), "A = 1  # alpha\nB = 2  # beta\n").unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta,= 1",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Mixed file: exact owners line preserved, abstention line added after it.
+    assert!(
+        stdout.contains(
+            "  owners (#N=Nth query term; *K=hits): f:2-3[#2]\n  owner abstentions: top-level ×2"
+        ),
+        "{stdout}"
+    );
+    // Fully abstained file: `owners: none` shape.
+    assert!(
+        stdout.contains("  owners: none — abstained (top-level ×3)"),
+        "{stdout}"
+    );
+    // Placement: the abstention line precedes windows for the mixed file.
+    let abstain_at = stdout.find("owner abstentions:").unwrap();
+    let windows_at = stdout[abstain_at..].find("windows:").unwrap();
+    assert!(windows_at > 0, "{stdout}");
+    // Compact mode adds no detailed section.
+    assert!(!stdout.contains("## Owner abstentions"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Backward safety: a named-only result gains zero new lines, and identical
+/// commands replay byte-identically (Unix and Windows).
+#[test]
+fn text_or_named_only_output_is_unchanged_and_replays_byte_identically() {
+    let dir = temp_repo("owner_abstain_named_only");
+    fs::write(
+        dir.join("only.py"),
+        "def f():\n    return 1  # alpha\n\ndef g():\n    return 2  # beta\n",
+    )
+    .unwrap();
+
+    let run = || {
+        let output = srcwalk()
+            .args([
+                "discover",
+                "alpha,beta",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        (
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    };
+    let (stdout, stderr) = run();
+    // Every shown hit is named, so no abstention line or section may appear.
+    assert!(stdout.contains("only.py:2 [owner f@1-2]"), "{stdout}");
+    assert!(stdout.contains("only.py:5 [owner g@4-5]"), "{stdout}");
+    assert!(!stdout.contains("Owner abstentions"), "{stdout}");
+    assert!(!stdout.contains("owner abstentions"), "{stdout}");
+    assert!(!stdout.contains("owners: none"), "{stdout}");
+    // Deterministic replay.
+    let (stdout2, stderr2) = run();
+    assert_eq!(stdout, stdout2);
+    assert_eq!(stderr, stderr2);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Go isolation: an abstained Go hit never creates a call appendix, an edge, or
+/// a zero-edge claim, and a malformed Go file reports `parse-failed`.
+#[test]
+fn text_or_go_abstentions_do_not_widen_call_evidence() {
+    let dir = temp_repo("owner_abstain_go_isolation");
+    fs::write(
+        dir.join("broken.go"),
+        "package p\nfunc F( {\n    // alpha\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("broken.go — parse-failed ×1"), "{stdout}");
+    // No Go call evidence of any kind for an unparsed file.
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(!stdout.contains(" calls "), "{stdout}");
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Every routed owner language reaches the shared decision end-to-end: each
+/// fixture's top-level hit is reported as `top-level` for its own file.
+#[test]
+fn text_or_owner_abstentions_cover_every_routed_language() {
+    // The detailed section is intentionally bounded, so the 13 routed languages
+    // are exercised in batches that fit under that cap.
+    let batches: &[&[(&str, &str)]] = &[
+        &[
+            ("a.go", "package p\n\nvar X = 1 // alpha\n"),
+            ("a.py", "X = 1  # alpha\n"),
+            ("a.rs", "const X: u8 = 1; // alpha\n"),
+            ("a.js", "const X = 1; // alpha\n"),
+            ("a.ts", "const X: number = 1; // alpha\n"),
+            ("a.tsx", "const X = 1; // alpha\n"),
+            ("A.java", "class A {\n    int x = 1; // alpha\n}\n"),
+        ],
+        &[
+            ("a.kt", "val x = 1 // alpha\n"),
+            ("A.cs", "class A {\n    int x = 1; // alpha\n}\n"),
+            ("a.php", "<?php\n$x = 1; // alpha\n"),
+            ("a.c", "int x = 1; /* alpha */\n"),
+            ("a.cpp", "int y = 1; /* alpha */\n"),
+            ("a.rb", "X = 1 # alpha\n"),
+        ],
+    ];
+    for (batch_index, cases) in batches.iter().enumerate() {
+        let dir = temp_repo(&format!("owner_abstain_lang_matrix_{batch_index}"));
+        for (name, source) in cases.iter() {
+            fs::write(dir.join(name), source).unwrap();
+        }
+
+        let output = srcwalk()
+            .args([
+                "discover",
+                "alpha,beta",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("## Owner abstentions"), "{stdout}");
+        for (name, _) in cases.iter() {
+            assert!(
+                stdout.contains(&format!("{name} — top-level ×1")),
+                "{name} missing from abstentions:\n{stdout}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// The abstention section stays inside a tight budget through the existing
+/// footer-preserving path.
+#[test]
+fn text_or_owner_abstentions_survive_a_tight_budget() {
+    let dir = temp_repo("owner_abstain_budget");
+    for i in 0..12 {
+        fs::write(
+            dir.join(format!("f{i:02}.py")),
+            "X = 1  # alpha\nY = 2  # beta\n",
+        )
+        .unwrap();
+    }
+
+    for budget in ["60", "400"] {
+        let output = srcwalk()
+            .args(["discover", "alpha,beta", "--match", "any", "--as", "text"])
+            .args(["--budget", budget])
+            .arg("--scope")
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "budget {budget} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // The footer-preserving budget path keeps the header and the trailing
+        // next-action footer at every budget.
+        assert!(stdout.contains("# Text OR:"), "budget {budget}: {stdout}");
+        assert!(
+            stdout.contains("> Next: read raw hit evidence"),
+            "budget {budget} lost its footer: {stdout}"
+        );
+        // Any surviving abstention row is complete (`PATH — reason ×N`), never a
+        // dangling label. Only rows inside the section are checked; the header
+        // line legitimately contains the same em-dash separator.
+        if let Some(section) = stdout.split("## Owner abstentions").nth(1) {
+            for line in section
+                .lines()
+                .take_while(|line| !line.starts_with("> Next"))
+                .filter(|line| line.contains(" — "))
+            {
+                assert!(
+                    line.contains(" ×"),
+                    "budget {budget} emitted a partial abstention row `{line}`: {stdout}"
+                );
+            }
+        }
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}

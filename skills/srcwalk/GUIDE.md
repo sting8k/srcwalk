@@ -70,8 +70,8 @@ If `discover` prints `## Confirmed structural targets`, run the printed `> Next:
 
 Symbol discovery separates parser-backed definitions from text-matched name occurrences. Repeated same-name definitions receive an ambiguity caveat. Text discovery remains literal evidence; `--match all` is same-file co-occurrence, not semantic relation proof.
 
-For Go `discover --as text --match any`, matched lines may carry a structural owner rollup and a bounded mechanical call appendix:
-- `owners (#N=...; *K=hits)` lists each matched line's narrowest structural owner by query-term position; the range is a candidate exact read (`srcwalk show`), not relation or runtime binding proof.
+For `discover --as text --match any`, matched lines may carry a multi-language structural owner rollup and a Go-only bounded mechanical call appendix:
+- `owners (#N=...; *K=hits)` lists each matched line's narrowest structural owner by query-term position; the range is a candidate exact read (`srcwalk show`), not relation or runtime binding proof. An analyzed file that declined reports `owners: none — abstained (...)` or `owner abstentions: ...` (`parse-failed`, `error-line`, `barrier`, `top-level`, `tie`); silence means the language has no owner analyzer, and absence is not an abstention claim. `top-level` is a lexical position, not an importance judgment.
 - Edge labels: `[recv]`=same package-qualified receiver type, `[local]`=single-assignment constructor local, `[bare]`=same-package invocation.
 - `calls NAME` names the call expression, not the candidate binding; the candidate is a mechanically filtered definition candidate, not a proven binding.
 - Edges are mechanically filtered direct-call navigation (absence does not rule out dynamic dispatch, DI, callbacks, or protocol wiring); `@:` = candidate in the same call file, cross-file keeps the repo-relative path. Capped, deterministically ordered; zero-edge owners abstain with an explicit caveat.

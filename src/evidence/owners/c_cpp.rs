@@ -33,7 +33,8 @@ use tree_sitter::Node;
 
 use crate::evidence::owner_links::OwnerAnchor;
 use crate::evidence::owners::{
-    attribute_line, collect_error_ranges, degrade_named_on_error, ErrorRange, OwnerRegion,
+    attribute_line, collect_error_ranges, degrade_named_on_error, ErrorRange, OwnerAttribution,
+    OwnerRegion,
 };
 use crate::lang::outline::outline_language;
 use crate::types::Lang;
@@ -185,7 +186,7 @@ pub(crate) fn owner_for<'a>(
     regions: &'a [OwnerRegion],
     errors: &[ErrorRange],
     line: u32,
-) -> Option<&'a OwnerAnchor> {
+) -> OwnerAttribution<'a> {
     attribute_line(regions, errors, line)
 }
 
@@ -851,7 +852,7 @@ mod tests {
         name: &str,
         lang: Lang,
     ) {
-        let owner = owner_for(regions, errors, line);
+        let owner = owner_for(regions, errors, line).named();
         assert_eq!(
             owner.map(OwnerAnchor::qualified_name),
             Some(name.to_string()),
@@ -864,7 +865,7 @@ mod tests {
 
     fn assert_abstain(regions: &[OwnerRegion], errors: &[ErrorRange], line: u32) {
         assert!(
-            owner_for(regions, errors, line).is_none(),
+            owner_for(regions, errors, line).named().is_none(),
             "line {line} should abstain"
         );
     }
@@ -877,7 +878,7 @@ mod tests {
         assert_owner(&r, &e, 1, "add", Lang::C);
         assert_owner(&r, &e, 2, "add", Lang::C);
         assert_owner(&r, &e, 3, "add", Lang::C);
-        let owner = owner_for(&r, &e, 1).unwrap();
+        let owner = owner_for(&r, &e, 1).named().unwrap();
         assert_eq!((owner.start_line, owner.end_line), (1, 3));
         assert_eq!(owner.name, "add");
     }
@@ -1058,7 +1059,7 @@ mod tests {
             parse_cpp("struct F {\n    int operator()(int x) {\n        return x;\n    }\n};\n");
         assert_owner(&r, &e, 2, "F::operator()", Lang::Cpp);
         assert_owner(&r, &e, 3, "F::operator()", Lang::Cpp);
-        let owner = owner_for(&r, &e, 2).unwrap();
+        let owner = owner_for(&r, &e, 2).named().unwrap();
         assert_eq!((owner.start_line, owner.end_line), (2, 4));
         assert_eq!(owner.name, "operator()");
     }
@@ -1077,7 +1078,7 @@ mod tests {
         let (r, e) = parse_cpp("int Foo::operator()(int x) {\n    return x;\n}\n");
         assert_owner(&r, &e, 1, "Foo::operator()", Lang::Cpp);
         assert_owner(&r, &e, 2, "Foo::operator()", Lang::Cpp);
-        let owner = owner_for(&r, &e, 1).unwrap();
+        let owner = owner_for(&r, &e, 1).named().unwrap();
         assert_eq!((owner.start_line, owner.end_line), (1, 3));
     }
 
@@ -1096,8 +1097,9 @@ mod tests {
         assert_owner(&r, &e, 4, "A::f", Lang::Cpp);
         // Distinct ranges: overload 1 is 2-3, overload 2 is 4-5. Four owned
         // hit lines across the two distinct anchors.
-        let owners: Vec<&OwnerAnchor> =
-            (1..=5).filter_map(|line| owner_for(&r, &e, line)).collect();
+        let owners: Vec<&OwnerAnchor> = (1..=5)
+            .filter_map(|line| owner_for(&r, &e, line).named())
+            .collect();
         assert_eq!(owners.len(), 4);
         let mut ranges: std::collections::HashSet<(u32, u32)> =
             owners.iter().map(|o| (o.start_line, o.end_line)).collect();
@@ -1584,7 +1586,7 @@ mod tests {
             };
             for &(hit_line, name, start, end) in case.owners {
                 positives += 1;
-                let owner = owner_for(&regions, &errors, hit_line);
+                let owner = owner_for(&regions, &errors, hit_line).named();
                 assert!(
                     owner.is_some(),
                     "[{}] line {hit_line}: expected {name}@{start}-{end}, got abstain",
@@ -1599,14 +1601,14 @@ mod tests {
             for &line in case.abstain {
                 abstentions += 1;
                 assert!(
-                    owner_for(&regions, &errors, line).is_none(),
+                    owner_for(&regions, &errors, line).named().is_none(),
                     "[{}] line {line} should abstain",
                     case.label
                 );
             }
             for &line in case.incidental {
                 assert!(
-                    owner_for(&regions, &errors, line).is_none(),
+                    owner_for(&regions, &errors, line).named().is_none(),
                     "[{}] incidental line {line} should abstain",
                     case.label
                 );

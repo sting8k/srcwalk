@@ -5419,3 +5419,304 @@ fn discover_text_or_ruby_nonmatching_files_do_not_change_output() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ---- US-073: owner abstention transparency ----
+
+/// The three owner states are distinguishable in one detailed Text OR run:
+/// a named owner keeps its exact tag, an analyzed-but-abstained hit is
+/// summarized once per file, and an unsupported language stays silent.
+#[test]
+fn text_or_distinguishes_named_abstained_and_unsupported_owner_states() {
+    let dir = temp_repo("owner_abstain_three_states");
+    fs::write(
+        dir.join("a.py"),
+        "X = 1  # alpha\ndef f():\n    return 2  # alpha\n",
+    )
+    .unwrap();
+    fs::write(dir.join("notes.txt"), "alpha here\n").unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Named: existing inline owner tag, unchanged.
+    assert!(stdout.contains("a.py:3 [owner f@2-3]"), "{stdout}");
+    // Abstained: one bounded file line naming the parser-known reason.
+    assert!(stdout.contains("\n## Owner abstentions\n"), "{stdout}");
+    assert!(stdout.contains("a.py — top-level ×1"), "{stdout}");
+    // Unsupported: no owner tag and no abstention line for the text file.
+    assert!(stdout.contains("notes.txt:1 — alpha here"), "{stdout}");
+    assert!(!stdout.contains("notes.txt —"), "{stdout}");
+    assert!(!stdout.contains("notes.txt ["), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Compact mode: a fully abstained file states `owners: none`, a mixed file
+/// keeps its exact owners line and adds only the abstention line, and the
+/// abstention line sits before windows.
+#[test]
+fn text_or_compact_renders_all_abstained_and_mixed_owner_shapes() {
+    let dir = temp_repo("owner_abstain_compact");
+    fs::write(
+        dir.join("mixed.py"),
+        "TOP = 1  # alpha\ndef f():\n    return 2  # beta\n",
+    )
+    .unwrap();
+    fs::write(dir.join("top.py"), "A = 1  # alpha\nB = 2  # beta\n").unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta,= 1",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Mixed file: exact owners line preserved, abstention line added after it.
+    assert!(
+        stdout.contains(
+            "  owners (#N=Nth query term; *K=hits): f:2-3[#2]\n  owner abstentions: top-level ×2"
+        ),
+        "{stdout}"
+    );
+    // Fully abstained file: `owners: none` shape.
+    assert!(
+        stdout.contains("  owners: none — abstained (top-level ×3)"),
+        "{stdout}"
+    );
+    // Placement: the abstention line precedes windows for the mixed file.
+    let abstain_at = stdout.find("owner abstentions:").unwrap();
+    let windows_at = stdout[abstain_at..].find("windows:").unwrap();
+    assert!(windows_at > 0, "{stdout}");
+    // Compact mode adds no detailed section.
+    assert!(!stdout.contains("## Owner abstentions"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Backward safety: a named-only result gains zero new lines, and identical
+/// commands replay byte-identically (Unix and Windows).
+#[test]
+fn text_or_named_only_output_is_unchanged_and_replays_byte_identically() {
+    let dir = temp_repo("owner_abstain_named_only");
+    fs::write(
+        dir.join("only.py"),
+        "def f():\n    return 1  # alpha\n\ndef g():\n    return 2  # beta\n",
+    )
+    .unwrap();
+
+    let run = || {
+        let output = srcwalk()
+            .args([
+                "discover",
+                "alpha,beta",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        (
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    };
+    let (stdout, stderr) = run();
+    // Every shown hit is named, so no abstention line or section may appear.
+    assert!(stdout.contains("only.py:2 [owner f@1-2]"), "{stdout}");
+    assert!(stdout.contains("only.py:5 [owner g@4-5]"), "{stdout}");
+    assert!(!stdout.contains("Owner abstentions"), "{stdout}");
+    assert!(!stdout.contains("owner abstentions"), "{stdout}");
+    assert!(!stdout.contains("owners: none"), "{stdout}");
+    // Deterministic replay.
+    let (stdout2, stderr2) = run();
+    assert_eq!(stdout, stdout2);
+    assert_eq!(stderr, stderr2);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Go isolation: an abstained Go hit never creates a call appendix, an edge, or
+/// a zero-edge claim, and a malformed Go file reports `parse-failed`.
+#[test]
+fn text_or_go_abstentions_do_not_widen_call_evidence() {
+    let dir = temp_repo("owner_abstain_go_isolation");
+    fs::write(
+        dir.join("broken.go"),
+        "package p\nfunc F( {\n    // alpha\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("broken.go — parse-failed ×1"), "{stdout}");
+    // No Go call evidence of any kind for an unparsed file.
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(!stdout.contains(" calls "), "{stdout}");
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Every routed owner language reaches the shared decision end-to-end: each
+/// fixture's top-level hit is reported as `top-level` for its own file.
+#[test]
+fn text_or_owner_abstentions_cover_every_routed_language() {
+    // The detailed section is intentionally bounded, so the 13 routed languages
+    // are exercised in batches that fit under that cap.
+    let batches: &[&[(&str, &str)]] = &[
+        &[
+            ("a.go", "package p\n\nvar X = 1 // alpha\n"),
+            ("a.py", "X = 1  # alpha\n"),
+            ("a.rs", "const X: u8 = 1; // alpha\n"),
+            ("a.js", "const X = 1; // alpha\n"),
+            ("a.ts", "const X: number = 1; // alpha\n"),
+            ("a.tsx", "const X = 1; // alpha\n"),
+            ("A.java", "class A {\n    int x = 1; // alpha\n}\n"),
+        ],
+        &[
+            ("a.kt", "val x = 1 // alpha\n"),
+            ("A.cs", "class A {\n    int x = 1; // alpha\n}\n"),
+            ("a.php", "<?php\n$x = 1; // alpha\n"),
+            ("a.c", "int x = 1; /* alpha */\n"),
+            ("a.cpp", "int y = 1; /* alpha */\n"),
+            ("a.rb", "X = 1 # alpha\n"),
+        ],
+    ];
+    for (batch_index, cases) in batches.iter().enumerate() {
+        let dir = temp_repo(&format!("owner_abstain_lang_matrix_{batch_index}"));
+        for (name, source) in cases.iter() {
+            fs::write(dir.join(name), source).unwrap();
+        }
+
+        let output = srcwalk()
+            .args([
+                "discover",
+                "alpha,beta",
+                "--match",
+                "any",
+                "--as",
+                "text",
+                "--scope",
+            ])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("## Owner abstentions"), "{stdout}");
+        for (name, _) in cases.iter() {
+            assert!(
+                stdout.contains(&format!("{name} — top-level ×1")),
+                "{name} missing from abstentions:\n{stdout}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// The abstention section stays inside a tight budget through the existing
+/// footer-preserving path.
+#[test]
+fn text_or_owner_abstentions_survive_a_tight_budget() {
+    let dir = temp_repo("owner_abstain_budget");
+    for i in 0..12 {
+        fs::write(
+            dir.join(format!("f{i:02}.py")),
+            "X = 1  # alpha\nY = 2  # beta\n",
+        )
+        .unwrap();
+    }
+
+    for budget in ["60", "400"] {
+        let output = srcwalk()
+            .args(["discover", "alpha,beta", "--match", "any", "--as", "text"])
+            .args(["--budget", budget])
+            .arg("--scope")
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "budget {budget} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // The footer-preserving budget path keeps the header and the trailing
+        // next-action footer at every budget.
+        assert!(stdout.contains("# Text OR:"), "budget {budget}: {stdout}");
+        assert!(
+            stdout.contains("> Next: read raw hit evidence"),
+            "budget {budget} lost its footer: {stdout}"
+        );
+        // Any surviving abstention row is complete (`PATH — reason ×N`), never a
+        // dangling label. Only rows inside the section are checked; the header
+        // line legitimately contains the same em-dash separator.
+        if let Some(section) = stdout.split("## Owner abstentions").nth(1) {
+            for line in section
+                .lines()
+                .take_while(|line| !line.starts_with("> Next"))
+                .filter(|line| line.contains(" — "))
+            {
+                assert!(
+                    line.contains(" ×"),
+                    "budget {budget} emitted a partial abstention row `{line}`: {stdout}"
+                );
+            }
+        }
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -47,7 +47,7 @@ use tree_sitter::Node;
 use crate::evidence::owner_links::OwnerAnchor;
 use crate::evidence::owners::{
     any_error_overlaps_bytes, attribute_line, collect_error_ranges, degrade_named_on_error,
-    ErrorRange, OwnerRegion,
+    ErrorRange, OwnerAttribution, OwnerRegion,
 };
 use crate::lang::outline::outline_language;
 use crate::types::Lang;
@@ -184,7 +184,7 @@ pub(crate) fn ruby_owner_for<'a>(
     regions: &'a [OwnerRegion],
     errors: &[ErrorRange],
     line: u32,
-) -> Option<&'a OwnerAnchor> {
+) -> OwnerAttribution<'a> {
     attribute_line(regions, errors, line)
 }
 
@@ -702,7 +702,7 @@ mod tests {
     }
 
     fn assert_owner(regions: &[OwnerRegion], errors: &[ErrorRange], line: u32, name: &str) {
-        let owner = ruby_owner_for(regions, errors, line);
+        let owner = ruby_owner_for(regions, errors, line).named();
         assert_eq!(
             owner.map(OwnerAnchor::qualified_name),
             Some(name.to_string()),
@@ -715,7 +715,7 @@ mod tests {
 
     fn assert_abstain(regions: &[OwnerRegion], errors: &[ErrorRange], line: u32) {
         assert!(
-            ruby_owner_for(regions, errors, line).is_none(),
+            ruby_owner_for(regions, errors, line).named().is_none(),
             "line {line} should abstain"
         );
     }
@@ -730,7 +730,7 @@ mod tests {
         assert_owner(&r, &e, 1, "run");
         assert_owner(&r, &e, 2, "run");
         assert_owner(&r, &e, 3, "run");
-        let owner = ruby_owner_for(&r, &e, 1).unwrap();
+        let owner = ruby_owner_for(&r, &e, 1).named().unwrap();
         assert_eq!((owner.start_line, owner.end_line), (1, 3));
         assert_eq!(owner.name, "run");
         // Empty, endless, predicate, bang, setter, index forms.
@@ -758,7 +758,7 @@ mod tests {
         for line in 1..=5 {
             assert_owner(&r, &e, line, "outer");
         }
-        let owner = ruby_owner_for(&r, &e, 1).unwrap();
+        let owner = ruby_owner_for(&r, &e, 1).named().unwrap();
         assert_eq!((owner.start_line, owner.end_line), (1, 5));
     }
 
@@ -793,7 +793,7 @@ mod tests {
         assert_owner(&r, &e, 3, "A::B#hit_method");
         assert_owner(&r, &e, 4, "A::B#hit_method");
         assert_owner(&r, &e, 5, "A::B#hit_method");
-        let owner = ruby_owner_for(&r, &e, 4).unwrap();
+        let owner = ruby_owner_for(&r, &e, 4).named().unwrap();
         assert_eq!((owner.start_line, owner.end_line), (3, 5));
         // Deeper stack: the qualified prefix matches the stack suffix, so the
         // outer lexical component is kept exactly once.
@@ -1121,7 +1121,7 @@ mod tests {
     fn ruby_reopened_classes_keep_independent_ranges() {
         let (r, e) = parse_ruby("class A\n  def m; end\nend\nclass A\n  def m; end\nend\n");
         let owners: Vec<&OwnerAnchor> = (1..=6)
-            .filter_map(|line| ruby_owner_for(&r, &e, line))
+            .filter_map(|line| ruby_owner_for(&r, &e, line).named())
             .collect();
         let mut ranges: HashSet<(u32, u32)> =
             owners.iter().map(|o| (o.start_line, o.end_line)).collect();
@@ -1437,7 +1437,7 @@ mod tests {
             let (regions, errors) = parse_ruby(case.source);
             for &(hit_line, name, start, end) in case.owners {
                 positives += 1;
-                let owner = ruby_owner_for(&regions, &errors, hit_line);
+                let owner = ruby_owner_for(&regions, &errors, hit_line).named();
                 assert!(
                     owner.is_some(),
                     "[{}] line {hit_line}: expected {name}@{start}-{end}, got abstain",
@@ -1452,14 +1452,14 @@ mod tests {
             for &line in case.abstain {
                 abstentions += 1;
                 assert!(
-                    ruby_owner_for(&regions, &errors, line).is_none(),
+                    ruby_owner_for(&regions, &errors, line).named().is_none(),
                     "[{}] line {line} should abstain",
                     case.label
                 );
             }
             for &line in case.incidental {
                 assert!(
-                    ruby_owner_for(&regions, &errors, line).is_none(),
+                    ruby_owner_for(&regions, &errors, line).named().is_none(),
                     "[{}] incidental line {line} should abstain",
                     case.label
                 );

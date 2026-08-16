@@ -4888,6 +4888,54 @@ fn discover_text_or_go_plus_c_cpp_mixed_keeps_edges_go_only() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// US-072: a C++ call operator (`operator()`) carries exact owner evidence, and
+/// the non-Go isolation invariant holds (no call edge, no zero-edge line for a
+/// C++-only hit set).
+#[test]
+fn discover_text_or_cpp_call_operator_owner_without_call_edges() {
+    let dir = temp_repo("discover_cpp_call_operator");
+    fs::write(
+        dir.join("functor.cpp"),
+        "namespace svc {\nstruct Adder {\n    int operator()(int x) {\n        return x; /* alpha */\n    }\n};\n}\nint svc::Adder::operator()(int x, int y) {\n    return x + y; /* beta */\n}\n",
+    )
+    .unwrap();
+
+    let output = srcwalk()
+        .args([
+            "discover",
+            "alpha,beta",
+            "--match",
+            "any",
+            "--as",
+            "text",
+            "--scope",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Inline member and out-of-line definitions both name the call operator.
+    assert!(
+        stdout.contains("functor.cpp:4 [owner svc::Adder::operator()@3-5]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("functor.cpp:9 [owner svc::Adder::operator()@8-10]"),
+        "{stdout}"
+    );
+    // Non-Go isolation: no mechanical call appendix, no edge, no zero-edge line.
+    assert!(!stdout.contains("## Mechanical Go calls"), "{stdout}");
+    assert!(!stdout.contains(" calls "), "{stdout}");
+    assert!(!stdout.contains(OWNER_LINK_ZERO_EDGE), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// US-072: adding nonmatching C/C++ files to the scope does not change any
 /// pre-existing stdout/stderr bytes (no owner evidence, no caveat, no rollup
 /// line appears for files with zero hits).

@@ -755,15 +755,19 @@ fn identifier_text(node: Node<'_>, bytes: &[u8]) -> Option<String> {
     Some(text)
 }
 
-/// A grammar-terminal spelling (`~Foo`, `operator+`, `operator new`): trimmed,
-/// non-empty, no newline or structural punctuation. Spaces are allowed because
-/// `operator new`/`operator delete` spellings contain them.
+/// A grammar-terminal spelling (`~Foo`, `operator+`, `operator new`,
+/// `operator()`): trimmed, non-empty, no newline or structural punctuation.
+/// Spaces are allowed because `operator new`/`operator delete` spellings
+/// contain them. Parentheses are allowed because `operator()` is a valid
+/// terminal spelling; this helper only ever reads `destructor_name` /
+/// `operator_name` nodes, so plain identifiers stay protected by
+/// `identifier_text`.
 fn terminal_text(node: Node<'_>, bytes: &[u8]) -> Option<String> {
     let text = node.utf8_text(bytes).ok()?.trim().to_string();
     if text.is_empty()
         || text
             .chars()
-            .any(|c| c == '\n' || matches!(c, '(' | ')' | '{' | '}' | ';' | ',' | ':'))
+            .any(|c| c == '\n' || matches!(c, '{' | '}' | ';' | ',' | ':'))
     {
         return None;
     }
@@ -1046,6 +1050,42 @@ mod tests {
         assert_owner(&r, &e, 7, "Foo::operator=", Lang::Cpp);
         assert_owner(&r, &e, 10, "Foo::Foo", Lang::Cpp);
         assert_owner(&r, &e, 12, "Foo::~Foo", Lang::Cpp);
+    }
+
+    #[test]
+    fn cpp_call_operator_inline_member() {
+        let (r, e) =
+            parse_cpp("struct F {\n    int operator()(int x) {\n        return x;\n    }\n};\n");
+        assert_owner(&r, &e, 2, "F::operator()", Lang::Cpp);
+        assert_owner(&r, &e, 3, "F::operator()", Lang::Cpp);
+        let owner = owner_for(&r, &e, 2).unwrap();
+        assert_eq!((owner.start_line, owner.end_line), (2, 4));
+        assert_eq!(owner.name, "operator()");
+    }
+
+    #[test]
+    fn cpp_call_operator_const_overload() {
+        let (r, e) = parse_cpp(
+            "struct F {\n    int operator()(int x) const {\n        return x;\n    }\n};\n",
+        );
+        assert_owner(&r, &e, 2, "F::operator()", Lang::Cpp);
+        assert_owner(&r, &e, 3, "F::operator()", Lang::Cpp);
+    }
+
+    #[test]
+    fn cpp_call_operator_out_of_line() {
+        let (r, e) = parse_cpp("int Foo::operator()(int x) {\n    return x;\n}\n");
+        assert_owner(&r, &e, 1, "Foo::operator()", Lang::Cpp);
+        assert_owner(&r, &e, 2, "Foo::operator()", Lang::Cpp);
+        let owner = owner_for(&r, &e, 1).unwrap();
+        assert_eq!((owner.start_line, owner.end_line), (1, 3));
+    }
+
+    #[test]
+    fn cpp_call_operator_out_of_line_namespace_qualified() {
+        let (r, e) = parse_cpp("int ns::Foo::operator()() {\n    return 0;\n}\n");
+        assert_owner(&r, &e, 1, "ns::Foo::operator()", Lang::Cpp);
+        assert_owner(&r, &e, 2, "ns::Foo::operator()", Lang::Cpp);
     }
 
     #[test]

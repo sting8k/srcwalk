@@ -150,11 +150,9 @@ fn resolve_existing_file(raw: &str, scope: &Path) -> Option<PathBuf> {
         }
     }
 
-    candidates.into_iter().find(|candidate| {
-        std::fs::metadata(candidate)
-            .ok()
-            .is_some_and(|meta| meta.is_file())
-    })
+    candidates
+        .into_iter()
+        .find(|candidate| std::fs::metadata(candidate).is_ok_and(|meta| meta.is_file()))
 }
 
 fn looks_like_path(value: &str) -> bool {

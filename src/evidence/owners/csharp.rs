@@ -241,8 +241,7 @@ fn walk(
         let has_malformed_fs_ns = node.named_children(&mut cur3).any(|c| {
             c.kind() == "ERROR"
                 && c.utf8_text(bytes)
-                    .ok()
-                    .is_some_and(|t| t.trim_start().starts_with("namespace"))
+                    .is_ok_and(|t| t.trim_start().starts_with("namespace"))
         });
         // A file-scoped namespace exists but its name is missing/unreadable:
         // fail closed so sibling declarations cannot leak unqualified to an

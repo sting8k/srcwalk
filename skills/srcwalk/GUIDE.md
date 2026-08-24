@@ -2,7 +2,7 @@
 
 Default to srcwalk first for code-structure work. Use this contract to find exact evidence, choose the next read, and keep claims bounded before shell search.
 
-Keep `--scope` narrow. Use `rg`, `read`, `fd`, `find`, or shell filesystem tools only for final text/regex confirmation, filesystem metadata, generated-output cleanup, or when srcwalk lacks structural support. If you bypass srcwalk for a code claim, say why.
+Keep `--scope` narrow. Use `rg`, `read`, `fd`, `find`, or shell filesystem tools only for final text/regex confirmation, filesystem metadata, generated-output cleanup, or when srcwalk lacks structural support. If you bypass srcwalk for a code claim, say why. srcwalk's evidence/navigation commands are all offline; network access is explicit through `srcwalk update`, `update --check`, or compatibility `version --check`.
 
 ## Choose one route first
 

@@ -1,0 +1,51 @@
+[
+  {
+    "rustOs": "linux",
+    "rustArch": "x86_64",
+    "nodePlatform": "linux",
+    "nodeArch": "x64",
+    "target": "x86_64-unknown-linux-musl",
+    "binary": "srcwalk"
+  },
+  {
+    "rustOs": "linux",
+    "rustArch": "aarch64",
+    "nodePlatform": "linux",
+    "nodeArch": "arm64",
+    "target": "aarch64-unknown-linux-musl",
+    "binary": "srcwalk"
+  },
+  {
+    "rustOs": "macos",
+    "rustArch": "x86_64",
+    "nodePlatform": "darwin",
+    "nodeArch": "x64",
+    "target": "x86_64-apple-darwin",
+    "binary": "srcwalk"
+  },
+  {
+    "rustOs": "macos",
+    "rustArch": "aarch64",
+    "nodePlatform": "darwin",
+    "nodeArch": "arm64",
+    "target": "aarch64-apple-darwin",
+    "binary": "srcwalk"
+  },
+  {
+    "rustOs": "windows",
+    "rustArch": "x86_64",
+    "nodePlatform": "win32",
+    "nodeArch": "x64",
+    "target": "x86_64-pc-windows-msvc",
+    "binary": "srcwalk.exe"
+  },
+  {
+    "rustOs": "windows",
+    "rustArch": "aarch64",
+    "nodePlatform": "win32",
+    "nodeArch": "arm64",
+    "target": "x86_64-pc-windows-msvc",
+    "binary": "srcwalk.exe",
+    "note": "ARM64 runs the x64 asset via OS emulation; no native asset is published."
+  }
+]

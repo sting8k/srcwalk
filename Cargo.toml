@@ -74,6 +74,9 @@ tree-sitter-scss = "1.0.0"
 tree-sitter-less = "1.0.0"
 tree-sitter-html = "0.23.2"
 
+# Standalone update integrity verification (US-074)
+sha2 = "0.10"
+
 
 [dev-dependencies]
 tempfile = "3"

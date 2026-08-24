@@ -720,9 +720,9 @@ fn windows_move_non_overwrite(source: &Path, destination: &Path) -> Result<(), S
     windows_move_non_overwrite_with(
         source,
         destination,
-        std::fs::hard_link,
-        std::fs::remove_file,
-        std::fs::remove_file,
+        |s: &Path, d: &Path| std::fs::hard_link(s, d),
+        |p: &Path| std::fs::remove_file(p),
+        |p: &Path| std::fs::remove_file(p),
     )
 }
 
@@ -1061,8 +1061,12 @@ fn stage_same_dir_write(
 ) -> Result<(), String> {
     let mut src = std::fs::File::open(extracted_binary)
         .map_err(|e| format!("could not open extracted binary: {e}"))?;
-    std::io::copy(&mut src, &mut dest)
-        .map_err(|e| format!("could not stage updated binary: {e}"))?;
+    std::io::copy(&mut src, &mut dest).map_err(|e| {
+        format!(
+            "could not stage updated binary at {}: {e}",
+            staged.display()
+        )
+    })?;
     #[cfg(unix)]
     {
         drop(dest);

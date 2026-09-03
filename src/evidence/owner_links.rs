@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::evidence::owners::{ErrorRange, OwnerAbstentionReason, OwnerAttribution, OwnerRegion};
 use crate::lang::outline::{get_outline_entries, outline_language};
 use crate::lang::qualified::normalize_receiver_type;
 use crate::search::callees::{extract_call_sites, CallSite};
@@ -57,6 +58,16 @@ pub(crate) struct OwnedTextHit {
     pub(crate) owner: OwnerAnchor,
 }
 
+/// One shown hit whose language IS owner-supported but whose structural owner
+/// attribution stopped for a parser-known reason. Unsupported languages create
+/// neither this nor an `OwnedTextHit`.
+#[derive(Debug, Clone)]
+pub(crate) struct AbstainedTextHit {
+    pub(crate) path: PathBuf,
+    pub(crate) line: u32,
+    pub(crate) reason: OwnerAbstentionReason,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum OwnerCallMechanism {
     SingleAssignmentLocalConstructor,
@@ -77,6 +88,10 @@ pub(crate) struct OwnerCallEvidence {
 #[derive(Debug, Default)]
 pub(crate) struct OwnerLinkEvidence {
     pub(crate) hits: Vec<OwnedTextHit>,
+    /// Analyzed-but-abstained shown hits, kept strictly separate from `hits`.
+    /// Named-owner queries, edge construction, and owner thresholds never read
+    /// this collection.
+    pub(crate) abstained: Vec<AbstainedTextHit>,
     pub(crate) edges: Vec<OwnerCallEvidence>,
     /// True when Go call/edge analysis was actually attempted for this query
     /// (at least one Go file was parsed for edge evidence). This is the only
@@ -95,6 +110,15 @@ impl OwnerLinkEvidence {
 
     pub(crate) fn has_owners(&self) -> bool {
         !self.hits.is_empty()
+    }
+
+    /// The abstention reason recorded for one shown hit, if any. A hit has at
+    /// most one attribution result, so this never coexists with `owner_for`.
+    pub(crate) fn abstention_for(&self, path: &Path, line: u32) -> Option<OwnerAbstentionReason> {
+        self.abstained
+            .iter()
+            .find(|hit| hit.path == path && hit.line == line)
+            .map(|hit| hit.reason)
     }
 
     /// Whether any attributed owner is a non-Go language. Derived from the
@@ -165,6 +189,58 @@ enum Initializer {
     Constructor(String),
 }
 
+/// An owner-only adapter's parse result: its owner regions plus collected
+/// parser error ranges, or `None` when the analyzer produced no usable
+/// analysis.
+type OwnerParse = Option<(Vec<OwnerRegion>, Vec<ErrorRange>)>;
+
+/// One owner-only language's dispatch pair: its parse result and the adapter
+/// lookup wrapper that classifies each line through the shared decision.
+type OwnerOnlyDispatch = (OwnerParse, OwnerLookup);
+
+/// An owner-only adapter's line-lookup wrapper. Every one of them delegates to
+/// the shared typed decision, so dispatch routes through the adapter's own
+/// entry point without letting any adapter classify reasons itself.
+type OwnerLookup = for<'a> fn(&'a [OwnerRegion], &[ErrorRange], u32) -> OwnerAttribution<'a>;
+
+/// Record one typed attribution per shown hit for an owner-only (non-Go)
+/// language. `parsed` is the adapter's parse result: `None` means the
+/// owner-supported analyzer produced no usable analysis, which is
+/// `parse-failed` for every shown hit in that file (US-073).
+fn record_owner_only_attributions(
+    path: &Path,
+    path_inputs: &[&OwnerLinkHitInput<'_>],
+    parsed: Option<&(Vec<OwnerRegion>, Vec<ErrorRange>)>,
+    lookup: OwnerLookup,
+    hits: &mut Vec<OwnedTextHit>,
+    abstained: &mut Vec<AbstainedTextHit>,
+) {
+    let Some((regions, errors)) = parsed else {
+        for input in path_inputs {
+            abstained.push(AbstainedTextHit {
+                path: path.to_path_buf(),
+                line: input.line,
+                reason: OwnerAbstentionReason::ParseFailed,
+            });
+        }
+        return;
+    };
+    for input in path_inputs {
+        match lookup(regions, errors, input.line) {
+            OwnerAttribution::Named(owner) => hits.push(OwnedTextHit {
+                path: path.to_path_buf(),
+                line: input.line,
+                owner: owner.clone(),
+            }),
+            OwnerAttribution::Abstained(reason) => abstained.push(AbstainedTextHit {
+                path: path.to_path_buf(),
+                line: input.line,
+                reason,
+            }),
+        }
+    }
+}
+
 pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> OwnerLinkEvidence {
     // Group inputs by path, tracking which go through the Go (owners + edges)
     // pipeline versus a non-Go owner-only pipeline. Non-Go files are routed by
@@ -183,6 +259,8 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
         let is_kotlin = detected == crate::types::FileType::Code(Lang::Kotlin);
         let is_csharp = detected == crate::types::FileType::Code(Lang::CSharp);
         let is_php = detected == crate::types::FileType::Code(Lang::Php);
+        let is_c_cpp = matches!(detected, crate::types::FileType::Code(Lang::C | Lang::Cpp));
+        let is_ruby = detected == crate::types::FileType::Code(Lang::Ruby);
         if is_go
             || is_python
             || is_rust
@@ -191,6 +269,8 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
             || is_kotlin
             || is_csharp
             || is_php
+            || is_c_cpp
+            || is_ruby
         {
             by_path
                 .entry(input.path.to_path_buf())
@@ -201,165 +281,104 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
 
     let mut files = BTreeMap::new();
     let mut hits = Vec::new();
+    let mut abstained = Vec::new();
     for (path, path_inputs) in &by_path {
+        // A read failure is not a parser fact: omit the file entirely rather
+        // than mislabelling it `parse-failed` (US-073).
         let Ok(content) = fs::read_to_string(path) else {
             continue;
         };
         let detected = crate::lang::detect_file_type(path);
-        if detected == crate::types::FileType::Code(Lang::Python) {
-            // Python is owner-only: no call edges are inferred in phase 1.
-            let Some((regions, errors)) =
-                crate::evidence::owners::python::python_regions(path, &content)
-            else {
-                continue;
-            };
-            for input in path_inputs {
-                if let Some(owner) =
-                    crate::evidence::owners::python::python_owner_for(&regions, &errors, input.line)
-                {
-                    hits.push(OwnedTextHit {
-                        path: path.clone(),
-                        line: input.line,
-                        owner: owner.clone(),
-                    });
-                }
-            }
-            continue;
-        }
-        if detected == crate::types::FileType::Code(Lang::Rust) {
-            // Rust is owner-only: no call edges are inferred in phase 2.
-            let Some((regions, errors)) =
-                crate::evidence::owners::rust::rust_regions(path, &content)
-            else {
-                continue;
-            };
-            for input in path_inputs {
-                if let Some(owner) =
-                    crate::evidence::owners::rust::rust_owner_for(&regions, &errors, input.line)
-                {
-                    hits.push(OwnedTextHit {
-                        path: path.clone(),
-                        line: input.line,
-                        owner: owner.clone(),
-                    });
-                }
-            }
-            continue;
-        }
-        if let crate::types::FileType::Code(
-            owner_lang @ (Lang::JavaScript | Lang::TypeScript | Lang::Tsx),
-        ) = detected
-        {
-            // JS/TS/TSX is owner-only: no call edges are inferred in phases 3B/3C.
-            let Some((regions, errors)) =
-                crate::evidence::owners::js_ts::regions_for(owner_lang, path, &content)
-            else {
-                continue;
-            };
-            for input in path_inputs {
-                if let Some(owner) =
-                    crate::evidence::owners::js_ts::owner_for(&regions, &errors, input.line)
-                {
-                    hits.push(OwnedTextHit {
-                        path: path.clone(),
-                        line: input.line,
-                        owner: owner.clone(),
-                    });
-                }
-            }
-            continue;
-        }
-        if detected == crate::types::FileType::Code(Lang::Java) {
-            // Java is owner-only: no call edges are inferred in Wave 2A.
-            let Some((regions, errors)) =
-                crate::evidence::owners::java::java_regions(path, &content)
-            else {
-                continue;
-            };
-            for input in path_inputs {
-                if let Some(owner) =
-                    crate::evidence::owners::java::java_owner_for(&regions, &errors, input.line)
-                {
-                    hits.push(OwnedTextHit {
-                        path: path.clone(),
-                        line: input.line,
-                        owner: owner.clone(),
-                    });
-                }
-            }
-            continue;
-        }
-        if detected == crate::types::FileType::Code(Lang::Kotlin) {
-            // Kotlin is owner-only: no call edges are inferred in Wave 2A.
-            let Some((regions, errors)) =
-                crate::evidence::owners::kotlin::kotlin_regions(path, &content)
-            else {
-                continue;
-            };
-            for input in path_inputs {
-                if let Some(owner) =
-                    crate::evidence::owners::kotlin::kotlin_owner_for(&regions, &errors, input.line)
-                {
-                    hits.push(OwnedTextHit {
-                        path: path.clone(),
-                        line: input.line,
-                        owner: owner.clone(),
-                    });
-                }
-            }
-            continue;
-        }
-        if detected == crate::types::FileType::Code(Lang::CSharp) {
-            // C# is owner-only: no call edges are inferred in Wave 2A.
-            let Some((regions, errors)) =
-                crate::evidence::owners::csharp::csharp_regions(path, &content)
-            else {
-                continue;
-            };
-            for input in path_inputs {
-                if let Some(owner) =
-                    crate::evidence::owners::csharp::csharp_owner_for(&regions, &errors, input.line)
-                {
-                    hits.push(OwnedTextHit {
-                        path: path.clone(),
-                        line: input.line,
-                        owner: owner.clone(),
-                    });
-                }
-            }
-            continue;
-        }
-        if detected == crate::types::FileType::Code(Lang::Php) {
-            // PHP is owner-only: no call edges are inferred in Wave 2A.
-            let Some((regions, errors)) = crate::evidence::owners::php::php_regions(path, &content)
-            else {
-                continue;
-            };
-            for input in path_inputs {
-                if let Some(owner) =
-                    crate::evidence::owners::php::php_owner_for(&regions, &errors, input.line)
-                {
-                    hits.push(OwnedTextHit {
-                        path: path.clone(),
-                        line: input.line,
-                        owner: owner.clone(),
-                    });
-                }
-            }
+        // Owner-only languages: no call edges are inferred for any of them. Each
+        // arm supplies its adapter's parse result; the shared recorder maps a
+        // `None` parse to `parse-failed` and every analyzed line to one typed
+        // decision, so no adapter classifies reasons itself.
+        let owner_only: Option<OwnerOnlyDispatch> = match detected {
+            crate::types::FileType::Code(Lang::Python) => Some((
+                crate::evidence::owners::python::python_regions(path, &content),
+                crate::evidence::owners::python::python_owner_for,
+            )),
+            crate::types::FileType::Code(Lang::Rust) => Some((
+                crate::evidence::owners::rust::rust_regions(path, &content),
+                crate::evidence::owners::rust::rust_owner_for,
+            )),
+            crate::types::FileType::Code(
+                owner_lang @ (Lang::JavaScript | Lang::TypeScript | Lang::Tsx),
+            ) => Some((
+                crate::evidence::owners::js_ts::regions_for(owner_lang, path, &content),
+                crate::evidence::owners::js_ts::owner_for,
+            )),
+            crate::types::FileType::Code(Lang::Java) => Some((
+                crate::evidence::owners::java::java_regions(path, &content),
+                crate::evidence::owners::java::java_owner_for,
+            )),
+            crate::types::FileType::Code(Lang::Kotlin) => Some((
+                crate::evidence::owners::kotlin::kotlin_regions(path, &content),
+                crate::evidence::owners::kotlin::kotlin_owner_for,
+            )),
+            crate::types::FileType::Code(Lang::CSharp) => Some((
+                crate::evidence::owners::csharp::csharp_regions(path, &content),
+                crate::evidence::owners::csharp::csharp_owner_for,
+            )),
+            crate::types::FileType::Code(Lang::Php) => Some((
+                crate::evidence::owners::php::php_regions(path, &content),
+                crate::evidence::owners::php::php_owner_for,
+            )),
+            crate::types::FileType::Code(lang @ (Lang::C | Lang::Cpp)) => Some((
+                crate::evidence::owners::c_cpp::regions_for(lang, path, &content),
+                crate::evidence::owners::c_cpp::owner_for,
+            )),
+            crate::types::FileType::Code(Lang::Ruby) => Some((
+                crate::evidence::owners::ruby::ruby_regions(path, &content),
+                crate::evidence::owners::ruby::ruby_owner_for,
+            )),
+            _ => None,
+        };
+        if let Some((parsed, lookup)) = owner_only {
+            record_owner_only_attributions(
+                path,
+                path_inputs,
+                parsed.as_ref(),
+                lookup,
+                &mut hits,
+                &mut abstained,
+            );
             continue;
         }
         let package_dir = canonical_package_dir(path);
         let Some((owners, functions)) = go_file_owners(path, &package_dir, &content) else {
-            // Malformed/unparsed Go: preserve raw hits, omit owner/edge evidence.
-            continue;
-        };
-        for input in path_inputs {
-            if let Some(owner) = narrowest_owner(&owners, input.line) {
-                hits.push(OwnedTextHit {
+            // Malformed/unparsed Go: preserve raw hits and omit owner/edge
+            // evidence, but record the parser-known abstention. No
+            // `FileAnalysis` is inserted, so call analysis stays success-only.
+            for input in path_inputs {
+                abstained.push(AbstainedTextHit {
                     path: path.clone(),
                     line: input.line,
-                    owner: owner.anchor.clone(),
+                    reason: OwnerAbstentionReason::ParseFailed,
                 });
+            }
+            continue;
+        };
+        // Go reuses the shared decision primitive over its own owners. Go's
+        // parser contract rejects any tree with errors up front, so no error
+        // ranges exist here, and Go has no anonymous-region model: only
+        // `Named`, `TopLevel`, and `Tie` are reachable.
+        let go_regions = owners
+            .iter()
+            .map(|owner| OwnerRegion::Named(owner.anchor.clone()))
+            .collect::<Vec<_>>();
+        for input in path_inputs {
+            match crate::evidence::owners::attribute_line(&go_regions, &[], input.line) {
+                OwnerAttribution::Named(owner) => hits.push(OwnedTextHit {
+                    path: path.clone(),
+                    line: input.line,
+                    owner: owner.clone(),
+                }),
+                OwnerAttribution::Abstained(reason) => abstained.push(AbstainedTextHit {
+                    path: path.clone(),
+                    line: input.line,
+                    reason,
+                }),
             }
         }
         files.insert(
@@ -440,6 +459,7 @@ pub(crate) fn build_owner_link_evidence(inputs: &[OwnerLinkHitInput<'_>]) -> Own
 
     OwnerLinkEvidence {
         hits,
+        abstained,
         edges,
         go_call_analysis_attempted,
     }
@@ -755,41 +775,6 @@ fn collect_file_owners(
             }
         }
         collect_file_owners(path, package_dir, &entry.children, receivers, owners);
-    }
-}
-
-/// Pick the unique owner whose `[start_line, end_line]` contains `line` and has
-/// the smallest span. Returns `None` when nothing contains `line` or when two
-/// or more distinct owners tie for the narrowest span: without a column there
-/// is no deterministic way to choose, so we abstain rather than risk a false
-/// owner. The minimum is computed first, then uniqueness is required, so a
-/// later narrower owner is never lost to an earlier tie.
-fn narrowest_owner(owners: &[FileOwner], line: u32) -> Option<&FileOwner> {
-    let containing = owners
-        .iter()
-        .filter(|owner| owner.anchor.start_line <= line && line <= owner.anchor.end_line)
-        .collect::<Vec<_>>();
-    let min_span = containing
-        .iter()
-        .map(|owner| {
-            owner
-                .anchor
-                .end_line
-                .saturating_sub(owner.anchor.start_line)
-        })
-        .min()?;
-    let mut narrowest = containing.iter().filter(|owner| {
-        owner
-            .anchor
-            .end_line
-            .saturating_sub(owner.anchor.start_line)
-            == min_span
-    });
-    let first = narrowest.next()?;
-    if narrowest.next().is_some() {
-        None
-    } else {
-        Some(&**first)
     }
 }
 
@@ -1914,7 +1899,16 @@ mod tests {
                 },
             },
         ];
-        assert!(narrowest_owner(&owners, 4).is_none());
+        // Go now reaches the shared decision, so an equal-span tie must surface
+        // as `Tie` rather than a silent `None` (US-073 Go parity).
+        let go_regions = owners
+            .iter()
+            .map(|owner| OwnerRegion::Named(owner.anchor.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            crate::evidence::owners::attribute_line(&go_regions, &[], 4).abstained(),
+            Some(OwnerAbstentionReason::Tie)
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2050,6 +2044,334 @@ mod tests {
             ]
         );
         assert_eq!(fwd.edges.len(), 1, "{:#?}", fwd.edges);
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+// ---- US-073: typed abstention transport, dispatch, and Go parity ----
+
+#[cfg(test)]
+mod abstention_tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("srcwalk-abstain-{name}-{nonce}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn inputs<'a>(path: &'a Path, lines: &[u32]) -> Vec<OwnerLinkHitInput<'a>> {
+        lines
+            .iter()
+            .map(|line| OwnerLinkHitInput { path, line: *line })
+            .collect()
+    }
+
+    #[test]
+    fn supported_parse_failure_records_parse_failed_for_every_shown_hit() {
+        let dir = temp_dir("parse-failed");
+        let path = dir.join("broken.go");
+        // Go's owner contract rejects any tree containing errors, so a
+        // malformed supported file is `parse-failed` for every shown hit --
+        // a parser fact, not missing product support.
+        fs::write(&path, "package p\nfunc F( {\n    return\n}\n").unwrap();
+        let evidence = build_owner_link_evidence(&inputs(&path, &[1, 3]));
+
+        assert!(evidence.hits.is_empty());
+        assert_eq!(
+            evidence.abstention_for(&path, 1),
+            Some(OwnerAbstentionReason::ParseFailed)
+        );
+        assert_eq!(
+            evidence.abstention_for(&path, 3),
+            Some(OwnerAbstentionReason::ParseFailed)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The non-Go dispatch mapping: a `None` parse result becomes
+    /// `parse-failed` for every shown hit, and never an `error-line`/
+    /// `top-level` guess.
+    ///
+    /// This is asserted directly at the dispatch seam because no file CONTENT
+    /// can force a non-Go adapter to return `None`: tree-sitter always yields a
+    /// root of the language's start rule with `ERROR` children, so those
+    /// adapters' `root.kind() == "ERROR"` guard is only reachable through
+    /// grammar-load/parser-setup/cancellation failure, not hostile text.
+    #[test]
+    fn non_go_none_parse_maps_to_parse_failed_at_dispatch() {
+        let path = PathBuf::from("x.py");
+        let hit_inputs = inputs(&path, &[1, 7]);
+        let borrowed = hit_inputs.iter().collect::<Vec<_>>();
+        let mut hits = Vec::new();
+        let mut abstained = Vec::new();
+        record_owner_only_attributions(
+            &path,
+            &borrowed,
+            None,
+            crate::evidence::owners::python::python_owner_for,
+            &mut hits,
+            &mut abstained,
+        );
+
+        assert!(hits.is_empty());
+        assert_eq!(abstained.len(), 2);
+        assert!(abstained
+            .iter()
+            .all(|hit| hit.reason == OwnerAbstentionReason::ParseFailed));
+        assert_eq!(abstained[0].line, 1);
+        assert_eq!(abstained[1].line, 7);
+    }
+
+    #[test]
+    fn unsupported_extension_records_neither_named_nor_abstained() {
+        let dir = temp_dir("unsupported");
+        let path = dir.join("notes.txt");
+        fs::write(&path, "alpha\nbeta\n").unwrap();
+        let evidence = build_owner_link_evidence(&inputs(&path, &[1, 2]));
+
+        assert!(evidence.hits.is_empty());
+        assert!(evidence.abstained.is_empty());
+        assert_eq!(evidence.abstention_for(&path, 1), None);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_file_is_omitted_and_never_labeled_parse_failed() {
+        let dir = temp_dir("read-fail");
+        let path = dir.join("gone.py");
+        // A read failure is not a parser fact (spec: file read races must not
+        // be mislabeled `parse-failed`).
+        let evidence = build_owner_link_evidence(&inputs(&path, &[1]));
+
+        assert!(evidence.hits.is_empty());
+        assert!(evidence.abstained.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn every_shown_hit_has_at_most_one_attribution_result() {
+        let dir = temp_dir("one-result");
+        let path = dir.join("m.py");
+        fs::write(&path, "X = 1\ndef f():\n    return 2\n").unwrap();
+        let evidence = build_owner_link_evidence(&inputs(&path, &[1, 3]));
+
+        // Line 1 is top-level, line 3 is owned; neither appears twice and no
+        // line appears in both collections.
+        assert_eq!(
+            evidence.abstention_for(&path, 1),
+            Some(OwnerAbstentionReason::TopLevel)
+        );
+        assert!(evidence.owner_for(&path, 1).is_none());
+        assert!(evidence.owner_for(&path, 3).is_some());
+        assert_eq!(evidence.abstention_for(&path, 3), None);
+        assert_eq!(evidence.hits.len(), 1);
+        assert_eq!(evidence.abstained.len(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn abstentions_never_widen_go_call_analysis_or_edges() {
+        let dir = temp_dir("go-isolation");
+        let broken = dir.join("broken.go");
+        // Unparseable Go: records `parse-failed` but must NOT insert a
+        // FileAnalysis, so call analysis stays un-attempted.
+        fs::write(&broken, ")))\n").unwrap();
+        let evidence = build_owner_link_evidence(&inputs(&broken, &[1]));
+
+        assert_eq!(
+            evidence.abstention_for(&broken, 1),
+            Some(OwnerAbstentionReason::ParseFailed)
+        );
+        assert!(!evidence.go_call_analysis_attempted);
+        assert!(evidence.edges.is_empty());
+        assert!(!evidence.has_owners());
+        assert!(!evidence.has_go_owners());
+        assert_eq!(evidence.attributed_go_owner_count(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn go_success_yields_named_and_top_level_without_error_or_barrier_reasons() {
+        let dir = temp_dir("go-parity");
+        let path = dir.join("svc.go");
+        fs::write(&path, "package p\n\nfunc F() {\n    return\n}\n").unwrap();
+        let evidence = build_owner_link_evidence(&inputs(&path, &[1, 3, 4]));
+
+        // Package clause is top-level; the function body is named.
+        assert_eq!(
+            evidence.abstention_for(&path, 1),
+            Some(OwnerAbstentionReason::TopLevel)
+        );
+        assert_eq!(
+            evidence
+                .owner_for(&path, 4)
+                .map(OwnerAnchor::qualified_name),
+            Some("F".to_string())
+        );
+        // Go must not invent error-line or barrier reasons.
+        assert!(evidence
+            .abstained
+            .iter()
+            .all(|hit| hit.reason == OwnerAbstentionReason::TopLevel));
+        assert!(evidence.go_call_analysis_attempted);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn abstained_go_hits_do_not_satisfy_the_two_owner_zero_edge_threshold() {
+        let dir = temp_dir("go-threshold");
+        let path = dir.join("one.go");
+        // One named Go owner plus two top-level abstentions: the distinct Go
+        // owner count must stay 1, below the zero-edge threshold of 2.
+        fs::write(&path, "package p\n\nvar X = 1\nfunc F() {\n    return\n}\n").unwrap();
+        let evidence = build_owner_link_evidence(&inputs(&path, &[1, 3, 5]));
+
+        assert_eq!(evidence.attributed_go_owner_count(), 1);
+        assert_eq!(evidence.abstained.len(), 2);
+        assert!(evidence.edges.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn barrier_and_error_line_reasons_surface_for_a_non_go_language() {
+        let dir = temp_dir("reasons");
+        let path = dir.join("m.py");
+        // A lambda body is an anonymous barrier; a hit inside it abstains as
+        // `barrier` rather than falling through to the enclosing function.
+        fs::write(
+            &path,
+            "def outer():\n    f = lambda x: (\n        x + 1\n    )\n    return f\n",
+        )
+        .unwrap();
+        let evidence = build_owner_link_evidence(&inputs(&path, &[3]));
+        assert_eq!(
+            evidence.abstention_for(&path, 3),
+            Some(OwnerAbstentionReason::Barrier)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Every currently routed owner `Lang` variant must reach the shared typed
+    /// decision. Each fixture has one owned line and one top-level line, so a
+    /// missing dispatch arm (silence) fails loudly.
+    #[test]
+    fn every_routed_language_variant_reaches_the_typed_decision() {
+        struct Case {
+            file: &'static str,
+            source: &'static str,
+            top_level_line: u32,
+            owned_line: u32,
+        }
+        let cases = [
+            Case {
+                file: "a.go",
+                source: "package p\n\nfunc F() {\n    return\n}\n",
+                top_level_line: 1,
+                owned_line: 4,
+            },
+            Case {
+                file: "a.py",
+                source: "X = 1\ndef f():\n    return 2\n",
+                top_level_line: 1,
+                owned_line: 3,
+            },
+            Case {
+                file: "a.rs",
+                source: "const X: u8 = 1;\nfn f() {\n    let _ = 2;\n}\n",
+                top_level_line: 1,
+                owned_line: 3,
+            },
+            Case {
+                file: "a.js",
+                source: "const X = 1;\nfunction f() {\n  return 2;\n}\n",
+                top_level_line: 1,
+                owned_line: 3,
+            },
+            Case {
+                file: "a.ts",
+                source: "const X: number = 1;\nfunction f(): number {\n  return 2;\n}\n",
+                top_level_line: 1,
+                owned_line: 3,
+            },
+            Case {
+                file: "a.tsx",
+                source: "const X = 1;\nfunction f() {\n  return <div />;\n}\n",
+                top_level_line: 1,
+                owned_line: 3,
+            },
+            Case {
+                file: "A.java",
+                source: "class A {\n    int x = 1;\n    void f() {\n        int y = 2;\n    }\n}\n",
+                top_level_line: 2,
+                owned_line: 4,
+            },
+            Case {
+                file: "a.kt",
+                source: "val x = 1\nfun f() {\n    val y = 2\n}\n",
+                top_level_line: 1,
+                owned_line: 3,
+            },
+            Case {
+                file: "A.cs",
+                source: "class A {\n    int x = 1;\n    void F() {\n        int y = 2;\n    }\n}\n",
+                top_level_line: 2,
+                owned_line: 4,
+            },
+            Case {
+                file: "a.php",
+                source: "<?php\n$x = 1;\nfunction f() {\n    return 2;\n}\n",
+                top_level_line: 2,
+                owned_line: 4,
+            },
+            Case {
+                file: "a.c",
+                source: "int x = 1;\nint f(void) {\n    return 2;\n}\n",
+                top_level_line: 1,
+                owned_line: 3,
+            },
+            Case {
+                file: "a.cpp",
+                source: "int x = 1;\nint f() {\n    return 2;\n}\n",
+                top_level_line: 1,
+                owned_line: 3,
+            },
+            Case {
+                file: "a.rb",
+                source: "X = 1\ndef f\n  2\nend\n",
+                top_level_line: 1,
+                owned_line: 3,
+            },
+        ];
+
+        let dir = temp_dir("lang-matrix");
+        for case in &cases {
+            let path = dir.join(case.file);
+            fs::write(&path, case.source).unwrap();
+            let evidence =
+                build_owner_link_evidence(&inputs(&path, &[case.top_level_line, case.owned_line]));
+            assert_eq!(
+                evidence.abstention_for(&path, case.top_level_line),
+                Some(OwnerAbstentionReason::TopLevel),
+                "{}: line {} should be top-level",
+                case.file,
+                case.top_level_line
+            );
+            assert!(
+                evidence.owner_for(&path, case.owned_line).is_some(),
+                "{}: line {} should have a named owner",
+                case.file,
+                case.owned_line
+            );
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 }

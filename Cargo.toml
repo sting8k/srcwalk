@@ -1,6 +1,6 @@
 [package]
 name = "srcwalk"
-version = "1.7.0"
+version = "1.8.0"
 edition = "2021"
 description = "Tree-sitter indexed lookups — smart code reading for AI agents"
 license = "MIT"
@@ -73,6 +73,9 @@ tree-sitter-css = "0.25.0"
 tree-sitter-scss = "1.0.0"
 tree-sitter-less = "1.0.0"
 tree-sitter-html = "0.23.2"
+
+# Standalone update integrity verification (US-074)
+sha2 = "0.10"
 
 
 [dev-dependencies]

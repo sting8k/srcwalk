@@ -2,6 +2,26 @@
 
 All notable changes to srcwalk are documented here.
 
+## [1.8.0] - 2026-08-16
+
+### Added
+- Structural owner attribution for C, C++, and Ruby in `discover --match any --as text`, extending owner coverage from 8 to 11 languages. C++ owners carry namespace/type qualification (`ns::Class::method`) including out-of-line definitions and operators; templates are transparent and lambdas are barriers. Ruby owners distinguish instance (`A::B#m`) from singleton (`A::B.m`) definitions, support one `class << self` level, and keep reopened classes as independent sites.
+- Fail-closed abstention across the new languages: macro-generated (e.g. `TEST(...)`) and K&R C definitions, Ruby dynamic metaprogramming (`define_method`, eval/exec families, `alias`, `attr_*`), unprovable qualified compositions, and error-degraded regions never fabricate owners.
+- Typed owner-abstention transparency: a file that was analyzed but declined attribution now reports parser-known reasons once per file (`parse-failed`, `error-line`, `barrier`, `top-level`, `tie`); silence now reliably means the language has no owner analyzer. Existing named-owner output is byte-for-byte unchanged.
+- `srcwalk update`/`update --check`: installation-aware self-update that detects the npm/pnpm/yarn/bun channel and re-runs its global install command, or, for a standalone/cargo install, downloads the matching release archive, verifies its SHA-256, and swaps it in with a verified, transactional replace. Network access is explicit-only through `update`, `update --check`, or the compatibility command `version --check`; plain version and navigation commands remain offline.
+
+### Fixed
+- Valid C++ `operator()` definitions (inline, const, out-of-line, namespace-qualified) attribute owners instead of degrading to anonymous barriers.
+- GUIDE and README no longer describe the multi-language owner rollup as Go-only; the mechanical call appendix remains Go-only.
+
+### Evidence boundary
+- Owner and abstention labels are structural lexical evidence, not runtime binding, dispatch, or importance ranking; `top-level` is a lexical position and top-level configuration may still be the most relevant evidence.
+- No call analysis runs for any non-Go language.
+
+### Known limitations
+- The C++ comma operator spelling (`operator,`) still abstains.
+- Dotted bare terms inside batch discover queries still resolve as free-text for the dotted term (unchanged from 1.7.0).
+
 ## [1.7.0] - 2026-08-13
 
 ### Added

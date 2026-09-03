@@ -50,7 +50,8 @@ use tree_sitter::Node;
 
 use crate::evidence::owner_links::OwnerAnchor;
 use crate::evidence::owners::{
-    attribute_line, collect_error_ranges, degrade_named_on_error, ErrorRange, OwnerRegion,
+    attribute_line, collect_error_ranges, degrade_named_on_error, ErrorRange, OwnerAttribution,
+    OwnerRegion,
 };
 use crate::lang::outline::outline_language;
 use crate::types::Lang;
@@ -214,7 +215,7 @@ pub(crate) fn owner_for<'a>(
     regions: &'a [OwnerRegion],
     errors: &[ErrorRange],
     line: u32,
-) -> Option<&'a OwnerAnchor> {
+) -> OwnerAttribution<'a> {
     attribute_line(regions, errors, line)
 }
 
@@ -891,6 +892,7 @@ mod tests {
         end: u32,
     ) {
         let owner = owner_for(regions, errors, hit_line)
+            .named()
             .unwrap_or_else(|| panic!("line {hit_line} should attribute to {name}"));
         assert_eq!(owner.qualified_name(), name, "line {hit_line} display name");
         assert_eq!(owner.start_line, start, "line {hit_line} start line");
@@ -899,7 +901,7 @@ mod tests {
 
     fn assert_abstain(regions: &[OwnerRegion], errors: &[ErrorRange], line: u32) {
         assert!(
-            owner_for(regions, errors, line).is_none(),
+            owner_for(regions, errors, line).named().is_none(),
             "line {line} should abstain"
         );
     }

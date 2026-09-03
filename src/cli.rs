@@ -52,7 +52,7 @@ pub(crate) struct Cli {
 }
 
 pub(crate) const ROOT_HELP: &str = "\
-Start here:\n  srcwalk guide                         Full embedded, version-matched agent guide for agents\n\nCommon:\n  srcwalk overview                      Show repo orientation and dependency groups\n  srcwalk context <symbol-or-file:line> Understand one known target\n  srcwalk trace callers <symbol>        Show who calls a symbol\n  srcwalk trace callees <symbol>        Show what a symbol calls\n  srcwalk deps <file>                   Show imports and dependents\n  srcwalk assess <symbol>               Heuristic blast-radius triage\n  srcwalk review <range-or-staged>      Review a change set with Flow Map evidence\n  srcwalk compare <target-a> <target-b> Compare two known source targets structurally\n  srcwalk discover <query>              Find candidate symbols/name occurrences/text\n  srcwalk discover <glob> --as file     Find files by glob\n  srcwalk show <path>:<line> -C 10      Read exact evidence with extra line context\n  srcwalk <path>                        Read a file smartly\n  srcwalk <path>:<line>                 Read around a line\n  srcwalk version                       Show version; add --check for latest";
+Start here:\n  srcwalk guide                         Full embedded, version-matched agent guide for agents\n\nCommon:\n  srcwalk overview                      Show repo orientation and dependency groups\n  srcwalk context <symbol-or-file:line> Understand one known target\n  srcwalk trace callers <symbol>        Show who calls a symbol\n  srcwalk trace callees <symbol>        Show what a symbol calls\n  srcwalk deps <file>                   Show imports and dependents\n  srcwalk assess <symbol>               Heuristic blast-radius triage\n  srcwalk review <range-or-staged>      Review a change set with Flow Map evidence\n  srcwalk compare <target-a> <target-b> Compare two known source targets structurally\n  srcwalk discover <query>              Find candidate symbols/name occurrences/text\n  srcwalk discover <glob> --as file     Find files by glob\n  srcwalk show <path>:<line> -C 10      Read exact evidence with extra line context\n  srcwalk <path>                        Read a file smartly\n  srcwalk <path>:<line>                 Read around a line\n  srcwalk version                       Show version; add --check for latest\n  srcwalk update                        Update to the latest release; add --check to preview";
 
 pub(crate) const GUIDE: &str = include_str!("../skills/srcwalk/GUIDE.md");
 
@@ -80,6 +80,8 @@ pub(crate) enum Command {
     Show(ShowCmd),
     /// Show version, optionally checking the latest release.
     Version(VersionCmd),
+    /// Update srcwalk to the latest release, or check with --check.
+    Update(UpdateCmd),
     /// Structural decision-flow compatibility primitive for review internals.
     #[command(hide = true)]
     DecisionFlow(DecisionFlowCmd),
@@ -90,7 +92,14 @@ pub(crate) enum Command {
 
 #[derive(Args)]
 pub(crate) struct VersionCmd {
-    /// Check GitHub for the latest release and print update commands if newer.
+    /// Check GitHub for the latest release and print "Run: srcwalk update" if newer.
+    #[arg(long)]
+    pub(crate) check: bool,
+}
+
+#[derive(Args)]
+pub(crate) struct UpdateCmd {
+    /// Resolve and compare only; never downloads, execs a package manager, or writes files.
     #[arg(long)]
     pub(crate) check: bool,
 }
@@ -492,7 +501,7 @@ impl RunConfig {
 
     pub(crate) fn from_command(command: Command) -> Option<Self> {
         match command {
-            Command::Guide | Command::Version(_) => None,
+            Command::Guide | Command::Version(_) | Command::Update(_) => None,
             Command::Discover(cmd) => Some(Self::from_discover(cmd)),
             Command::Show(cmd) => Some(Self::from_show(cmd)),
             Command::Trace(cmd) => Some(Self::from_trace(cmd)),

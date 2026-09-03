@@ -19,7 +19,8 @@ use tree_sitter::Node;
 
 use crate::evidence::owner_links::OwnerAnchor;
 use crate::evidence::owners::{
-    attribute_line, collect_error_ranges, degrade_named_on_error, ErrorRange, OwnerRegion,
+    attribute_line, collect_error_ranges, degrade_named_on_error, ErrorRange, OwnerAttribution,
+    OwnerRegion,
 };
 use crate::lang::outline::outline_language;
 use crate::types::Lang;
@@ -212,7 +213,7 @@ pub(crate) fn python_owner_for<'a>(
     regions: &'a [OwnerRegion],
     errors: &[ErrorRange],
     line: u32,
-) -> Option<&'a OwnerAnchor> {
+) -> OwnerAttribution<'a> {
     attribute_line(regions, errors, line)
 }
 #[cfg(test)]
@@ -232,7 +233,7 @@ mod tests {
     }
 
     fn assert_owner(regions: &[OwnerRegion], errors: &[ErrorRange], line: u32, name: &str) {
-        let owner = python_owner_for(regions, errors, line);
+        let owner = python_owner_for(regions, errors, line).named();
         assert_eq!(
             owner.map(OwnerAnchor::qualified_name),
             Some(name.to_string()),
@@ -242,7 +243,7 @@ mod tests {
 
     fn assert_abstain(regions: &[OwnerRegion], errors: &[ErrorRange], line: u32) {
         assert!(
-            python_owner_for(regions, errors, line).is_none(),
+            python_owner_for(regions, errors, line).named().is_none(),
             "line {line} should abstain"
         );
     }
@@ -347,7 +348,9 @@ mod tests {
             language: Lang::Python,
             display_name: "f".into(),
         };
-        assert!(attribute_line(&[OwnerRegion::Named(anchor)], &e, 1).is_none());
+        assert!(attribute_line(&[OwnerRegion::Named(anchor)], &e, 1)
+            .named()
+            .is_none());
     }
 
     #[test]
@@ -601,7 +604,7 @@ mod tests {
             let (regions, errors) = parse(case.source);
             for &(hit_line, name, start, end) in case.owners {
                 positives += 1;
-                let owner = python_owner_for(&regions, &errors, hit_line);
+                let owner = python_owner_for(&regions, &errors, hit_line).named();
                 assert!(
                     owner.is_some(),
                     "[{}] line {hit_line}: expected {name}@{start}-{end}, got abstain",

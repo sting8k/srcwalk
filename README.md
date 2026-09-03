@@ -89,6 +89,15 @@ curl -L https://github.com/sting8k/srcwalk/releases/latest/download/srcwalk-aarc
 
 After installing the CLI, `srcwalk guide` prints the full embedded, version-matched agent guide. The installable skill entry is [`skills/srcwalk/SKILL.md`](./skills/srcwalk/SKILL.md); it bootstraps agents to that embedded guide in the installed binary.
 
+## Upgrade
+
+```sh
+srcwalk update          # apply the latest release
+srcwalk update --check  # resolve and compare only, no download or install
+```
+
+npm/pnpm/yarn/bun installs re-run that package manager's global install command. A `cargo install`/pre-built-binary install instead downloads the matching release archive, verifies its SHA-256, and swaps it in with a verified, transactional replace. Network access only happens when you explicitly run `update`, `update --check`, or the compatibility command `version --check` — never on a plain `version` or any navigation command.
+
 ## Release notes
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for curated release notes. Maintainers should update the matching changelog section before pushing a `vX.Y.Z` tag; the release workflow uses that section as the GitHub Release body.
@@ -409,9 +418,9 @@ source: text · kind: name occurrence · confidence: text evidence
 </details>
 
 <details>
-<summary><b>Discover — Go owner rollup and mechanical call evidence</b></summary>
+<summary><b>Discover — owner rollup and Go-only mechanical call evidence</b></summary>
 
-For compact Go `discover --as text --match any` output, matching file rows may include a narrowest-owner rollup and a bounded mechanical call appendix. Owner ranges are candidate exact reads (dereference them with `srcwalk show`), not runtime binding proof.
+For compact `discover --as text --match any` output, matching file rows may include a narrowest-owner rollup (multi-language) and a bounded mechanical call appendix (Go-only). Owner ranges are candidate exact reads (dereference them with `srcwalk show`), not runtime binding proof.
 
 ```
 $ srcwalk discover "apply body,set body,connect body" --match any --as text --scope .

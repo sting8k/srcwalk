@@ -15,6 +15,7 @@ use crate::evidence::owner_links::{
     build_owner_link_evidence, OwnerAnchor, OwnerCallMechanism, OwnerLinkEvidence,
     OwnerLinkHitInput, OWNER_LINK_CAVEAT, OWNER_LINK_EDGE_CAP, OWNER_LINK_ZERO_EDGE,
 };
+use crate::evidence::owners::OwnerAbstentionReason;
 use crate::evidence::{render_next_actions, NextAction};
 use crate::types::{Match, QueryType, RegexCoOccurrenceQuery, RegexTextKind, RegexTextQuery};
 use crate::OutlineCache;
@@ -27,6 +28,8 @@ const TEXT_OR_COMPACT_MIN_TERMS: usize = 3;
 const TEXT_OR_COMPACT_MIN_MATCHES: usize = 30;
 const TEXT_OR_ROLLUP_FILE_LIMIT: usize = 8;
 const TEXT_OR_ROLLUP_LINE_LIMIT: usize = 6;
+/// Max files listed in the detailed `## Owner abstentions` section.
+const OWNER_ABSTENTION_FILE_LIMIT: usize = 8;
 const TEXT_OR_WINDOW_CONTEXT_LINES: u32 = 10;
 const TEXT_OR_WINDOW_LIMIT: usize = 3;
 const TEXT_OR_WINDOW_MAX_SPAN: u32 = 80;
@@ -345,6 +348,11 @@ fn render_text_or_term_details(
             );
         }
     }
+    rendered.push_str(&render_owner_abstention_section(
+        term_results,
+        scope,
+        owner_links,
+    ));
     rendered
 }
 
@@ -687,6 +695,7 @@ fn render_text_or_owner_rollup(
         }
     }
     if owners.is_empty() {
+        render_compact_owner_abstentions(rendered, path, owner_links, term_results, false);
         return;
     }
     let summaries = owners
@@ -718,6 +727,115 @@ fn render_text_or_owner_rollup(
         rendered,
         "\n  owners (#N=Nth query term; *K=hits): {summaries}"
     );
+    render_compact_owner_abstentions(rendered, path, owner_links, term_results, true);
+}
+
+/// Append this file's aggregated abstention line, if any. Placed directly after
+/// the existing owners line (when present) and before windows, so no line that
+/// currently carries a named owner changes by a single byte. `has_named` picks
+/// the approved shape: a fully abstained file states `owners: none`, a mixed
+/// file adds only `owner abstentions`.
+fn render_compact_owner_abstentions(
+    rendered: &mut String,
+    path: &Path,
+    owner_links: &OwnerLinkEvidence,
+    term_results: &[TextOrTermResult],
+    has_named: bool,
+) {
+    use std::fmt::Write as _;
+
+    let counts = owner_abstention_counts(path, owner_links, term_results);
+    if counts.is_empty() {
+        return;
+    }
+    let summary = format_owner_abstention_counts(&counts);
+    if has_named {
+        let _ = write!(rendered, "\n  owner abstentions: {summary}");
+    } else {
+        let _ = write!(rendered, "\n  owners: none — abstained ({summary})");
+    }
+}
+
+/// Count one file's abstained SHOWN hits by reason, using the same occurrence
+/// semantics as the existing owners line: a line matched by two query terms
+/// contributes two shown-hit records. The `BTreeMap` key order is the reason
+/// enum's declaration order, which IS the canonical render order.
+fn owner_abstention_counts(
+    path: &Path,
+    owner_links: &OwnerLinkEvidence,
+    term_results: &[TextOrTermResult],
+) -> BTreeMap<OwnerAbstentionReason, usize> {
+    let mut counts: BTreeMap<OwnerAbstentionReason, usize> = BTreeMap::new();
+    for result in term_results {
+        for m in &result.matches {
+            if m.path != *path {
+                continue;
+            }
+            if let Some(reason) = owner_links.abstention_for(&m.path, m.line) {
+                *counts.entry(reason).or_insert(0) += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// `parse-failed ×1, barrier ×2` in canonical reason order.
+fn format_owner_abstention_counts(counts: &BTreeMap<OwnerAbstentionReason, usize>) -> String {
+    counts
+        .iter()
+        .map(|(reason, count)| format!("{} ×{count}", reason.label()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Detailed mode: one bounded `## Owner abstentions` section with a single line
+/// per affected shown file in deterministic path order. Omitted entirely when
+/// no shown hit abstained, so named-only and unsupported output gains zero
+/// new lines.
+fn render_owner_abstention_section(
+    term_results: &[TextOrTermResult],
+    scope: &Path,
+    owner_links: &OwnerLinkEvidence,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut paths: BTreeSet<&PathBuf> = BTreeSet::new();
+    for result in term_results {
+        for m in &result.matches {
+            if owner_links.abstention_for(&m.path, m.line).is_some() {
+                paths.insert(&m.path);
+            }
+        }
+    }
+    let rows = paths
+        .into_iter()
+        .filter_map(|path| {
+            let counts = owner_abstention_counts(path, owner_links, term_results);
+            if counts.is_empty() {
+                return None;
+            }
+            Some((path, format_owner_abstention_counts(&counts)))
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut rendered = String::from("\n\n## Owner abstentions");
+    for (path, summary) in rows.iter().take(OWNER_ABSTENTION_FILE_LIMIT) {
+        let _ = write!(
+            rendered,
+            "\n{} — {summary}",
+            format::rel_nonempty(path, scope)
+        );
+    }
+    if rows.len() > OWNER_ABSTENTION_FILE_LIMIT {
+        let _ = write!(
+            rendered,
+            "\n> Note: {} more files with owner abstentions omitted; narrow terms.",
+            rows.len() - OWNER_ABSTENTION_FILE_LIMIT
+        );
+    }
+    rendered
 }
 
 fn render_owner_link_appendix(owner_links: &OwnerLinkEvidence, scope: &Path) -> String {
@@ -2096,6 +2214,7 @@ mod tests {
             owner: anchor,
         }];
         let ev = OwnerLinkEvidence {
+            abstained: Vec::new(),
             hits,
             edges: edges.to_vec(),
             go_call_analysis_attempted: true,
@@ -2290,6 +2409,7 @@ mod tests {
             },
         ];
         let ev = OwnerLinkEvidence {
+            abstained: Vec::new(),
             hits,
             edges: Vec::new(),
             go_call_analysis_attempted: true,
@@ -2368,6 +2488,7 @@ mod tests {
             })
             .collect();
         let ev = OwnerLinkEvidence {
+            abstained: Vec::new(),
             hits,
             edges: Vec::new(),
             go_call_analysis_attempted: true,
@@ -2407,6 +2528,7 @@ mod tests {
         let py1 = py_anchor("app.py", "apply", 1, 2);
         let py2 = py_anchor("app.py", "set", 3, 4);
         let ev = OwnerLinkEvidence {
+            abstained: Vec::new(),
             hits: vec![go_hit(py1, 1), go_hit(py2, 3)],
             edges: Vec::new(),
             go_call_analysis_attempted: false,
@@ -2433,6 +2555,7 @@ mod tests {
         let py1 = py_anchor("app.py", "apply", 1, 2);
         let py2 = py_anchor("app.py", "set", 3, 4);
         let ev = OwnerLinkEvidence {
+            abstained: Vec::new(),
             hits: vec![go_hit(go, 12), go_hit(py1, 1), go_hit(py2, 3)],
             edges: Vec::new(),
             go_call_analysis_attempted: true,
@@ -2456,6 +2579,7 @@ mod tests {
         let go1 = anchor("a.go", "Run", "DB", 10, 40);
         let go2 = anchor("a.go", "Apply", "DB", 50, 80);
         let ev = OwnerLinkEvidence {
+            abstained: Vec::new(),
             hits: vec![go_hit(go1, 12), go_hit(go2, 52)],
             edges: Vec::new(),
             go_call_analysis_attempted: true,
@@ -2830,5 +2954,257 @@ mod tests {
         let out =
             std::env::var("SRCWALK_US067_AUDIT_OUT").expect("SRCWALK_US067_AUDIT_OUT required");
         run_us067_replay(Path::new(&scope), &query, limit, Path::new(&out));
+    }
+
+    // ---- US-073: owner abstention rendering ----
+
+    use crate::evidence::owner_links::AbstainedTextHit;
+
+    fn abstain_match(path: &Path, line: u32) -> Match {
+        Match {
+            path: path.to_path_buf(),
+            line,
+            text: String::new(),
+            is_definition: false,
+            exact: false,
+            file_lines: 100,
+            mtime: std::time::SystemTime::UNIX_EPOCH,
+            def_range: None,
+            def_name: None,
+            def_weight: 0,
+            impl_target: None,
+            base_target: None,
+            in_comment: false,
+        }
+    }
+
+    fn abstain_term(index: usize, term: &str, path: &Path, lines: &[u32]) -> TextOrTermResult {
+        TextOrTermResult {
+            query_term_index: index,
+            term: term.into(),
+            total_found: lines.len(),
+            file_count: 1,
+            matches: lines
+                .iter()
+                .map(|line| abstain_match(path, *line))
+                .collect(),
+            omitted: 0,
+        }
+    }
+
+    fn abstained(path: &Path, line: u32, reason: OwnerAbstentionReason) -> AbstainedTextHit {
+        AbstainedTextHit {
+            path: path.to_path_buf(),
+            line,
+            reason,
+        }
+    }
+
+    #[test]
+    fn compact_all_abstained_file_renders_owners_none_line() {
+        let path = PathBuf::from("pkg/a.py");
+        let terms = vec![abstain_term(1, "alpha", &path, &[3, 7, 9])];
+        let ev = OwnerLinkEvidence {
+            hits: Vec::new(),
+            abstained: vec![
+                abstained(&path, 3, OwnerAbstentionReason::TopLevel),
+                abstained(&path, 7, OwnerAbstentionReason::TopLevel),
+                abstained(&path, 9, OwnerAbstentionReason::Barrier),
+            ],
+            edges: Vec::new(),
+            go_call_analysis_attempted: false,
+        };
+        let mut rendered = String::new();
+        render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
+        assert_eq!(
+            rendered,
+            "\n  owners: none — abstained (barrier ×1, top-level ×2)"
+        );
+    }
+
+    #[test]
+    fn compact_mixed_file_keeps_owners_line_and_appends_abstentions() {
+        let path = PathBuf::from("pkg/a.py");
+        let owner = py_anchor("pkg/a.py", "f", 10, 20);
+        let terms = vec![abstain_term(1, "alpha", &path, &[12, 3, 30])];
+        let ev = OwnerLinkEvidence {
+            hits: vec![OwnedTextHit {
+                path: path.clone(),
+                line: 12,
+                owner,
+            }],
+            abstained: vec![
+                abstained(&path, 3, OwnerAbstentionReason::TopLevel),
+                abstained(&path, 30, OwnerAbstentionReason::Tie),
+            ],
+            edges: Vec::new(),
+            go_call_analysis_attempted: false,
+        };
+        let mut rendered = String::new();
+        render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
+        // Existing owners line byte-identical, then the abstention line.
+        assert_eq!(
+            rendered,
+            "\n  owners (#N=Nth query term; *K=hits): f:10-20[#1]\n  owner abstentions: top-level ×1, tie ×1"
+        );
+    }
+
+    #[test]
+    fn compact_reason_order_is_canonical_not_alphabetical() {
+        let path = PathBuf::from("pkg/a.py");
+        let terms = vec![abstain_term(1, "alpha", &path, &[1, 2, 3, 4, 5])];
+        let ev = OwnerLinkEvidence {
+            hits: Vec::new(),
+            abstained: vec![
+                abstained(&path, 1, OwnerAbstentionReason::Tie),
+                abstained(&path, 2, OwnerAbstentionReason::TopLevel),
+                abstained(&path, 3, OwnerAbstentionReason::Barrier),
+                abstained(&path, 4, OwnerAbstentionReason::ErrorLine),
+                abstained(&path, 5, OwnerAbstentionReason::ParseFailed),
+            ],
+            edges: Vec::new(),
+            go_call_analysis_attempted: false,
+        };
+        let mut rendered = String::new();
+        render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
+        assert_eq!(
+            rendered,
+            "\n  owners: none — abstained (parse-failed ×1, error-line ×1, barrier ×1, top-level ×1, tie ×1)"
+        );
+    }
+
+    #[test]
+    fn named_only_file_gains_zero_new_lines() {
+        let path = PathBuf::from("pkg/a.py");
+        let owner = py_anchor("pkg/a.py", "f", 10, 20);
+        let terms = vec![abstain_term(1, "alpha", &path, &[12])];
+        let ev = OwnerLinkEvidence {
+            hits: vec![OwnedTextHit {
+                path: path.clone(),
+                line: 12,
+                owner,
+            }],
+            abstained: Vec::new(),
+            edges: Vec::new(),
+            go_call_analysis_attempted: false,
+        };
+        let mut rendered = String::new();
+        render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
+        assert_eq!(
+            rendered,
+            "\n  owners (#N=Nth query term; *K=hits): f:10-20[#1]"
+        );
+    }
+
+    #[test]
+    fn unsupported_file_gains_zero_new_lines() {
+        let path = PathBuf::from("pkg/notes.txt");
+        let terms = vec![abstain_term(1, "alpha", &path, &[1])];
+        let ev = OwnerLinkEvidence::default();
+        let mut rendered = String::new();
+        render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
+        assert_eq!(rendered, "");
+    }
+
+    #[test]
+    fn compact_abstention_counts_use_shown_hit_occurrence_semantics() {
+        // The same abstained line matched by two query terms counts twice, the
+        // same occurrence semantics the existing owners line already uses.
+        let path = PathBuf::from("pkg/a.py");
+        let terms = vec![
+            abstain_term(1, "alpha", &path, &[3]),
+            abstain_term(2, "beta", &path, &[3]),
+        ];
+        let ev = OwnerLinkEvidence {
+            hits: Vec::new(),
+            abstained: vec![abstained(&path, 3, OwnerAbstentionReason::TopLevel)],
+            edges: Vec::new(),
+            go_call_analysis_attempted: false,
+        };
+        let mut rendered = String::new();
+        render_text_or_owner_rollup(&mut rendered, &path, &ev, &terms);
+        assert_eq!(rendered, "\n  owners: none — abstained (top-level ×2)");
+    }
+
+    #[test]
+    fn detailed_owner_abstentions_section_is_path_sorted_and_one_line_per_file() {
+        let b = PathBuf::from("pkg/b.py");
+        let a = PathBuf::from("pkg/a.py");
+        let terms = vec![
+            abstain_term(1, "alpha", &b, &[4, 4]),
+            abstain_term(2, "beta", &a, &[1]),
+        ];
+        let ev = OwnerLinkEvidence {
+            hits: Vec::new(),
+            abstained: vec![
+                abstained(&b, 4, OwnerAbstentionReason::Barrier),
+                abstained(&a, 1, OwnerAbstentionReason::TopLevel),
+            ],
+            edges: Vec::new(),
+            go_call_analysis_attempted: false,
+        };
+        let rendered = render_owner_abstention_section(&terms, Path::new(""), &ev);
+        // One line per affected file, deterministic path order, no per-term or
+        // per-hit duplication.
+        assert_eq!(
+            rendered,
+            "\n\n## Owner abstentions\npkg/a.py — top-level ×1\npkg/b.py — barrier ×2"
+        );
+    }
+
+    #[test]
+    fn detailed_owner_abstentions_section_is_omitted_when_nothing_abstained() {
+        let path = PathBuf::from("pkg/a.py");
+        let owner = py_anchor("pkg/a.py", "f", 10, 20);
+        let terms = vec![abstain_term(1, "alpha", &path, &[12])];
+        let ev = OwnerLinkEvidence {
+            hits: vec![OwnedTextHit {
+                path: path.clone(),
+                line: 12,
+                owner,
+            }],
+            abstained: Vec::new(),
+            edges: Vec::new(),
+            go_call_analysis_attempted: false,
+        };
+        assert_eq!(
+            render_owner_abstention_section(&terms, Path::new(""), &ev),
+            ""
+        );
+        assert_eq!(
+            render_owner_abstention_section(&[], Path::new(""), &OwnerLinkEvidence::default()),
+            ""
+        );
+    }
+
+    #[test]
+    fn detailed_owner_abstentions_section_is_bounded_by_a_file_cap() {
+        let mut terms = Vec::new();
+        let mut abstained_hits = Vec::new();
+        let paths: Vec<PathBuf> = (0..OWNER_ABSTENTION_FILE_LIMIT + 3)
+            .map(|i| PathBuf::from(format!("pkg/f{i:02}.py")))
+            .collect();
+        for (i, path) in paths.iter().enumerate() {
+            terms.push(abstain_term(i + 1, "alpha", path, &[1]));
+            abstained_hits.push(abstained(path, 1, OwnerAbstentionReason::TopLevel));
+        }
+        let ev = OwnerLinkEvidence {
+            hits: Vec::new(),
+            abstained: abstained_hits,
+            edges: Vec::new(),
+            go_call_analysis_attempted: false,
+        };
+        let rendered = render_owner_abstention_section(&terms, Path::new(""), &ev);
+        let file_lines = rendered.lines().filter(|line| line.contains(" — ")).count();
+        assert_eq!(file_lines, OWNER_ABSTENTION_FILE_LIMIT);
+        assert!(
+            rendered.contains("3 more files with owner abstentions omitted"),
+            "{rendered}"
+        );
+        // Determinism: identical inputs render identical bytes.
+        assert_eq!(
+            rendered,
+            render_owner_abstention_section(&terms, Path::new(""), &ev)
+        );
     }
 }

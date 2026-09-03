@@ -74,6 +74,25 @@ async function testTarRoundTrip() {
   }
 }
 
+// Shared pinned fixture (kept outside npm/, so it is never part of the
+// packed payload): cross-checks PLATFORM_MAP against the exact same table
+// `release_target_for` asserts against in src/main_version_tests.rs, so the
+// two cannot silently drift.
+const fixturePath = path.join(__dirname, "..", "tests", "fixtures", "release-targets.json");
+const fixtureRows = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+assert.strictEqual(
+  fixtureRows.length,
+  Object.keys(PLATFORM_MAP).length,
+  "fixture row count must match PLATFORM_MAP",
+);
+for (const row of fixtureRows) {
+  const key = `${row.nodePlatform}-${row.nodeArch}`;
+  const platform = PLATFORM_MAP[key];
+  assert.ok(platform, `PLATFORM_MAP missing ${key}`);
+  assert.strictEqual(platform.target, row.target, `${key} target mismatch`);
+  assert.strictEqual(platform.binName, row.binary, `${key} binary mismatch`);
+}
+
 testTarRoundTrip()
   .then(() => console.log("PASS: npm installer checksum, redirect, archive, tar, and platform guards"))
   .catch((error) => {

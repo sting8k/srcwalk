@@ -17,6 +17,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod cli;
 mod cli_run;
 mod output;
+mod update;
 mod version;
 
 use clap::{error::ErrorKind, CommandFactory, Parser};
@@ -373,6 +374,10 @@ fn main() {
         }
         Some(Command::Version(cmd)) => {
             version::run_version(cmd.check);
+            return;
+        }
+        Some(Command::Update(cmd)) => {
+            update::run_update(cmd.check);
             return;
         }
         _ => {}

@@ -607,11 +607,25 @@ fn batch_definitions_match_single_search_for_qualified_and_overlapping_queries()
         "sample.py",
         "class Batch:\n    def set(self, v):\n        return v\n\n\nclass Other:\n    def set(self, v):\n        return v\n\n\ndef helper():\n    return None\n",
     )];
-    // The long name lives in a file that does not contain the short name, so a
-    // masked needle cannot be rescued by the other query's admission.
+    // A generic receiver spells the container as `Store[T]`, so the qualified
+    // term must survive a batch the same way a plain receiver does.
+    const GO_GENERIC: &[(&str, &str)] = &[(
+        "generic.go",
+        "package sample\n\ntype Store[T any] struct{}\n\nfunc (s *Store[T]) Get() {}\n\ntype Plain struct{}\n\nfunc (p Plain) Get() {}\n\nfunc helper() {}\n",
+    )];
+    // Every overlapping name owns a file that contains no other query name, so a
+    // masked needle can never be rescued by a sibling query's admission.
+    // `help` is a prefix, `extra` is a suffix, and `helper` is both.
     const OVERLAP: &[(&str, &str)] = &[
         ("only_extra.rs", "pub fn helper_extra() -> u8 {\n    1\n}\n"),
         ("short.rs", "pub fn helper() -> u8 {\n    2\n}\n"),
+        ("contained.rs", "pub fn extra() -> u8 {\n    3\n}\n"),
+        ("chain.rs", "pub fn help() -> u8 {\n    4\n}\n"),
+    ];
+    // The self-hosted repro shape that first exposed the masked needle.
+    const SEARCH_REPRO: &[(&str, &str)] = &[
+        ("single.rs", "pub fn search() -> u8 {\n    1\n}\n"),
+        ("batch.rs", "pub fn search_batch() -> u8 {\n    2\n}\n"),
     ];
 
     let cases = [
@@ -644,6 +658,58 @@ fn batch_definitions_match_single_search_for_qualified_and_overlapping_queries()
             expected_defs: &[1, 1],
         },
         Case {
+            name: "rust_qualified_reversed",
+            files: RUST,
+            glob: "*.rs",
+            queries: &["helper", "Batch.set"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "python_qualified_reversed",
+            files: PY,
+            glob: "*.py",
+            queries: &["helper", "Batch.set"],
+            expected_defs: &[1, 1],
+        },
+        // The qualified term and its own plain name in one batch: the plain name
+        // keeps both definitions, the qualified term keeps only its own.
+        Case {
+            name: "rust_plain_name_control",
+            files: RUST,
+            glob: "*.rs",
+            queries: &["Batch.set", "set"],
+            expected_defs: &[1, 2],
+        },
+        Case {
+            name: "python_plain_name_control",
+            files: PY,
+            glob: "*.py",
+            queries: &["Batch.set", "set"],
+            expected_defs: &[1, 2],
+        },
+        Case {
+            name: "go_generic_receiver",
+            files: GO_GENERIC,
+            glob: "*.go",
+            queries: &["Store.Get", "helper"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "go_generic_receiver_reversed",
+            files: GO_GENERIC,
+            glob: "*.go",
+            queries: &["helper", "Store.Get"],
+            expected_defs: &[1, 1],
+        },
+        // Generic and plain receivers share the `Get` needle in one batch.
+        Case {
+            name: "go_generic_and_plain_receiver",
+            files: GO_GENERIC,
+            glob: "*.go",
+            queries: &["Store.Get", "Plain.Get", "Get"],
+            expected_defs: &[1, 1, 2],
+        },
+        Case {
             name: "prefix_overlap",
             files: OVERLAP,
             glob: "*.rs",
@@ -655,6 +721,48 @@ fn batch_definitions_match_single_search_for_qualified_and_overlapping_queries()
             files: OVERLAP,
             glob: "*.rs",
             queries: &["helper_extra", "helper"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "suffix_overlap",
+            files: OVERLAP,
+            glob: "*.rs",
+            queries: &["extra", "helper_extra"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "suffix_overlap_reversed",
+            files: OVERLAP,
+            glob: "*.rs",
+            queries: &["helper_extra", "extra"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "overlap_chain",
+            files: OVERLAP,
+            glob: "*.rs",
+            queries: &["help", "helper", "helper_extra"],
+            expected_defs: &[1, 1, 1],
+        },
+        Case {
+            name: "overlap_chain_reversed",
+            files: OVERLAP,
+            glob: "*.rs",
+            queries: &["helper_extra", "helper", "help"],
+            expected_defs: &[1, 1, 1],
+        },
+        Case {
+            name: "search_batch_repro",
+            files: SEARCH_REPRO,
+            glob: "*.rs",
+            queries: &["search", "search_batch"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "search_batch_repro_reversed",
+            files: SEARCH_REPRO,
+            glob: "*.rs",
+            queries: &["search_batch", "search"],
             expected_defs: &[1, 1],
         },
         Case {
@@ -735,9 +843,9 @@ fn batch_definition_anchors_are_independent_of_comment_occurrences() {
     assert_eq!(without_comment, single_without);
 }
 
-/// US-075 AC-6: same-name definitions in different files stay separate, and a
-/// wrong qualifier never acquires a definition because a sibling query admitted
-/// the file.
+/// US-075 AC-6: same-name definitions in different files stay separate, the
+/// plain name owns both of them, and neither a wrong qualifier nor an absent
+/// name acquires a definition because a sibling query admitted the file.
 #[test]
 fn batch_shared_needle_keeps_qualifier_ownership_and_file_identity() {
     let dir = tempfile::tempdir().unwrap();
@@ -754,7 +862,7 @@ fn batch_shared_needle_keeps_qualifier_ownership_and_file_identity() {
     )
     .unwrap();
 
-    let queries = ["Batch.Set", "Other.Set", "Nope.Set"];
+    let queries = ["Batch.Set", "Other.Set", "Set", "Nope.Set", "absent_name"];
     let batch = search_batch(&queries, dir.path(), None, None, Some("*.go")).unwrap();
 
     let batch_first = definition_keys(&batch[0], dir.path());
@@ -763,9 +871,21 @@ fn batch_shared_needle_keeps_qualifier_ownership_and_file_identity() {
     assert_eq!(batch_second.len(), 1, "{batch_second:?}");
     assert!(batch_first.iter().all(|k| k.0 == "a/sample.go"));
     assert!(batch_second.iter().all(|k| k.0 == "b/sample.go"));
+
+    // The shared plain name keeps both file identities, not one merged anchor.
+    let plain: Vec<String> = definition_keys(&batch[2], dir.path())
+        .into_iter()
+        .map(|k| k.0)
+        .collect();
+    assert_eq!(plain, vec!["a/sample.go", "b/sample.go"], "{plain:?}");
+
     assert!(
-        definition_keys(&batch[2], dir.path()).is_empty(),
+        definition_keys(&batch[3], dir.path()).is_empty(),
         "wrong qualifier must not acquire a definition"
+    );
+    assert!(
+        definition_keys(&batch[4], dir.path()).is_empty(),
+        "absent plain name must not acquire a definition"
     );
 
     for (idx, query) in queries.iter().enumerate() {

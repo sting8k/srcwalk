@@ -5,7 +5,7 @@ All notable changes to srcwalk are documented here.
 ## [Unreleased]
 
 ### Fixed
-- Emitted generic selectors carrying a comma (`show 'src/cache.rs:Cache<K, V>.get'`) now replay unchanged through `show`, `context`, `trace callers`, `trace callees`, and `--section`. Target lists split only at a comma outside balanced `<...>`, so such a selector stays one target and can be combined with other targets, while an unbalanced `<...>` fails once as an explicit framing error without running any target. Comma-free targets, target lists, and every discover/query comma grammar are unchanged.
+- Emitted generic selectors carrying a comma (`show 'src/cache.rs:Cache<K, V>.get'`) now replay unchanged through `show`, `context`, `trace callers`, `trace callees`, and `--section`. Target lists split only at a comma outside balanced `<...>`, so such a selector stays one target and can be combined with other targets, while an unbalanced comma-separated target list fails once as an explicit framing error without running any target. Comma-free targets, target lists, and every discover/query comma grammar are unchanged.
 - Symbol batches (`discover 'a,b' --as symbol`) no longer drop definitions that the same terms find on their own. The batch definition prefilter now derives its scan needle exactly like the single-symbol search, so a receiver/container-qualified term keeps its method definition inside a batch (`'Batch.Set,helper'`), and it matches overlapping needles, so a shorter term no longer masks a longer one (`'helper,helper_extra'`). Qualification is still decided by the existing structural matcher, usage matching is unchanged, and single-symbol output stays byte-for-byte identical.
 
 ## [1.8.0] - 2026-08-16

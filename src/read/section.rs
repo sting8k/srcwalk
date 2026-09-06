@@ -205,45 +205,45 @@ pub(super) fn read_section_with_context(
     // Resolve section address: line range, focused line, heading, symbol name,
     // or a comma-separated list of those addresses. A comma nested in a generic
     // selector (`Cache<K, V>.get`) is part of one address, not a separator.
-    let section_list =
-        crate::format::split_target_list(range).map_err(|reason| SrcwalkError::InvalidQuery {
-            query: range.to_string(),
-            reason: reason.to_string(),
-        })?;
-    let is_section_list = section_list.len() > 1;
+    // Framing is deliberately lazy: a Markdown heading is matched in full first,
+    // so a heading may carry both a comma and a literal `<` or `>`.
+    let is_section_list = |range: &str| -> Result<bool, SrcwalkError> {
+        crate::format::split_target_list(range)
+            .map(|framed| framed.len() > 1)
+            .map_err(|reason| SrcwalkError::InvalidQuery {
+                query: range.to_string(),
+                reason: reason.to_string(),
+            })
+    };
     let mut focus_line = None;
     let requested_range = parse_requested_range(range);
     let (start, end) = if range.starts_with('#') {
         // Markdown heading. Try the full heading first so headings containing
         // commas still work; if that fails, fall through to comma-list parsing.
-        match resolve_heading(buf, range) {
-            Some((start, end)) => {
-                if let Some(context) = context_lines {
-                    expand_range(start, end, context)
-                } else {
-                    (start, end)
-                }
+        let Some((start, end)) = resolve_heading(buf, range) else {
+            if is_section_list(range)? {
+                return read_multi_section(path, buf, range, budget, context_lines);
             }
-            None if is_section_list => {
-                return read_multi_section(path, buf, range, budget, context_lines)
-            }
-            None => {
-                let suggestions = suggest_headings(buf, range, 5);
-                let reason = if suggestions.is_empty() {
-                    "heading not found in file".to_string()
-                } else {
-                    format!(
-                        "heading not found in file. Closest matches:\n  {}",
-                        suggestions.join("\n  ")
-                    )
-                };
-                return Err(SrcwalkError::InvalidQuery {
-                    query: range.to_string(),
-                    reason,
-                });
-            }
+            let suggestions = suggest_headings(buf, range, 5);
+            let reason = if suggestions.is_empty() {
+                "heading not found in file".to_string()
+            } else {
+                format!(
+                    "heading not found in file. Closest matches:\n  {}",
+                    suggestions.join("\n  ")
+                )
+            };
+            return Err(SrcwalkError::InvalidQuery {
+                query: range.to_string(),
+                reason,
+            });
+        };
+        if let Some(context) = context_lines {
+            expand_range(start, end, context)
+        } else {
+            (start, end)
         }
-    } else if is_section_list {
+    } else if is_section_list(range)? {
         return read_multi_section(path, buf, range, budget, context_lines);
     } else if let Some(line) = parse_focused_line(range).filter(|_| context_lines.is_some()) {
         let context = context_lines.expect("checked context_lines above");
@@ -1383,22 +1383,33 @@ mod section_list_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A markdown heading containing a comma still resolves full-heading-first.
+    /// A markdown heading is matched in full before any list framing, so a
+    /// heading may carry a comma together with a literal `<` or `>` that would
+    /// never balance as a generic.
     #[test]
     fn comma_heading_still_resolves_before_list_parsing() {
         let dir = fixture(
             "heading",
-            &[("doc.md", "# Alpha\n\ntext\n\n## Beta, Gamma\n\nbody\n")],
+            &[(
+                "doc.md",
+                "# Alpha\n\ntext\n\n## Beta, Gamma\n\nbody\n\n## Compare A < B, C\n\nleft\n\n## Compare X > Y, Z\n\nright\n",
+            )],
         );
         let path = dir.join("doc.md");
         let cache = OutlineCache::new();
 
-        let out = read_section(&path, "## Beta, Gamma", None, &cache).unwrap();
-        assert!(out.contains("body"), "{out}");
-        assert!(
-            !out.contains("text"),
-            "heading must win before list parsing:\n{out}"
-        );
+        for (heading, expected) in [
+            ("## Beta, Gamma", "body"),
+            ("## Compare A < B, C", "left"),
+            ("## Compare X > Y, Z", "right"),
+        ] {
+            let out = read_section(&path, heading, None, &cache).unwrap();
+            assert!(out.contains(expected), "{heading}:\n{out}");
+            assert!(
+                !out.contains("text"),
+                "heading must win before list framing: {heading}\n{out}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

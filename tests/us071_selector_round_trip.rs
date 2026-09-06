@@ -466,3 +466,65 @@ fn multi_symbol_discover_round_trips_each_section_target() {
         assert!(!callees.contains("error"), "callees {target}:\n{callees}");
     }
 }
+
+/// US-075: a batch section whose definition is restored by the shared prefilter
+/// must emit the same copyable selector as a single query.
+///
+/// US-076: every emitted target replays, including a generic container whose
+/// selector carries a comma (`Cache<K, V>.get`).
+#[test]
+fn batch_sections_emit_quoted_generic_and_round_trip_all_targets() {
+    let fx = Fixture::new(
+        "batch_generic",
+        &[
+            (
+                "src/cache.rs",
+                "pub struct Cache<K, V>(K, V);\n\nimpl<K, V> Cache<K, V> {\n    pub fn get(&self) -> u8 {\n        0\n    }\n}\n",
+            ),
+            (
+                "src/alpha.rs",
+                "pub struct Alpha;\n\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+            ),
+        ],
+    );
+
+    let discovered = fx.ok(&[
+        "discover",
+        "get,Alpha.run",
+        "--as",
+        "symbol",
+        "--scope",
+        "src",
+    ]);
+    assert!(
+        discovered.contains("> Next: srcwalk show 'src/cache.rs:Cache<K, V>.get'"),
+        "a space/comma selector must stay quoted:\n{discovered}"
+    );
+
+    let emitted = emitted_targets_and_flags_all(&discovered);
+    assert_eq!(
+        emitted.len(),
+        2,
+        "expected one target per term:\n{discovered}"
+    );
+    let targets: Vec<&str> = emitted.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(
+        targets.iter().any(|t| t.ends_with(":Cache<K, V>.get")),
+        "expected the generic selector among {targets:?}:\n{discovered}"
+    );
+    assert!(
+        targets.iter().any(|t| t.ends_with(":Alpha.run")),
+        "expected the qualified selector among {targets:?}:\n{discovered}"
+    );
+
+    // Every emitted target is copied back verbatim and reads its own body.
+    for (target, flags) in &emitted {
+        let shown = fx.ok(&with_flags(&["show"], target, flags));
+        let expected = if target.ends_with(":Cache<K, V>.get") {
+            "pub fn get(&self) -> u8"
+        } else {
+            "pub fn run(&self) {}"
+        };
+        assert!(shown.contains(expected), "show {target}:\n{shown}");
+    }
+}

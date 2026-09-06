@@ -98,7 +98,10 @@ fn normalize_show_target_group(value: &OsStr) -> Option<Vec<String>> {
     let mut normalized = Vec::new();
     let mut shorthand_path = None;
 
-    for part in value.split(',').map(str::trim) {
+    // Same target-list framing as `show` itself, so a hint never rewrites a
+    // generic selector into fragments.
+    let framed = srcwalk::format::split_target_list(value).ok()?;
+    for part in framed.into_iter().map(str::trim) {
         if part.is_empty() {
             return None;
         }

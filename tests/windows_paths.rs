@@ -345,3 +345,178 @@ fn windows_absolute_drive_path_symbol_splits_after_the_file_path() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// US-075: a symbol batch must keep single-query definition semantics on
+/// Windows path surfaces — drive-letter absolute scope, a space-containing
+/// directory, and a relative backslash scope — and the target it emits must
+/// replay from the discovery CWD.
+#[test]
+fn windows_batch_keeps_qualified_and_overlapping_definitions() {
+    let dir = temp_repo("windows batch prefilter");
+    fs::write(
+        dir.join("sample.go"),
+        "package sample\n\ntype Batch struct{}\n\nfunc (b *Batch) Set(v int) {}\n\nfunc helper() {}\n",
+    )
+    .unwrap();
+    let pkg = dir.join("pkg");
+    fs::create_dir_all(&pkg).unwrap();
+    fs::write(
+        pkg.join("overlap.rs"),
+        "pub fn helper_extra() -> u8 {\n    1\n}\n",
+    )
+    .unwrap();
+
+    // Drive-letter absolute scope containing a space.
+    let out = srcwalk()
+        .args(["discover", "Batch.Set,helper", "--as", "symbol", "--scope"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "absolute batch discover failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[fn] Batch.Set"), "{stdout}");
+    assert!(stdout.contains("[fn] helper "), "{stdout}");
+
+    // Relative backslash scope, run from the repo root.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args([
+            "discover",
+            "helper,helper_extra",
+            "--as",
+            "symbol",
+            "--scope",
+        ])
+        .arg(r".\pkg")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "relative backslash batch discover failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[fn] helper_extra"), "{stdout}");
+
+    // The emitted target replays verbatim from the discovery CWD.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "Batch.Set,helper", "--as", "symbol"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let target = "sample.go:Batch.Set";
+    assert!(
+        stdout.contains(&format!("> Next: srcwalk show {target}")),
+        "expected an emitted target for the qualified term:\n{stdout}"
+    );
+    let out = srcwalk()
+        .current_dir(&dir)
+        .arg("show")
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "emitted target replay failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("func (b *Batch) Set(v int) {}"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// US-076: an emitted comma-generic selector must replay on Windows path
+/// surfaces — drive-letter absolute scope, a space-containing directory, and a
+/// relative backslash scope — and combine with a second target.
+#[test]
+fn windows_comma_generic_selector_replays_and_combines() {
+    let dir = temp_repo("windows comma selector");
+    let pkg = dir.join("pkg");
+    fs::create_dir_all(&pkg).unwrap();
+    fs::write(
+        pkg.join("cache.rs"),
+        "pub struct Cache<K, V>(K, V);\n\nimpl<K, V> Cache<K, V> {\n    pub fn get(&self) -> u8 {\n        0\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg.join("alpha.rs"),
+        "pub struct Alpha;\n\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+    )
+    .unwrap();
+
+    // Drive-letter absolute scope containing a space.
+    let out = srcwalk()
+        .args(["discover", "get", "--as", "symbol", "--scope"])
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "absolute discover failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Cache<K, V>.get"), "{stdout}");
+
+    // Relative backslash scope, replayed from the repo root.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "get", "--as", "symbol", "--scope"])
+        .arg(r".\pkg")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "relative backslash discover failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let target = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("> Next: srcwalk show "))
+        .map(|rest| rest.trim().trim_matches('\''))
+        .unwrap_or_else(|| panic!("no emitted target:\n{stdout}"))
+        .to_string();
+    assert!(target.ends_with("Cache<K, V>.get"), "{target}");
+
+    // The emitted target replays verbatim.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .arg("show")
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "emitted comma-generic replay failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("pub fn get(&self) -> u8"), "{stdout}");
+
+    // It combines with a second target in one list.
+    let second = target.replace("cache.rs", "alpha.rs");
+    let second = second.replace("Cache<K, V>.get", "Alpha.run");
+    let out = srcwalk()
+        .current_dir(&dir)
+        .arg("show")
+        .arg(format!("{target},{second}"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "multi-target replay failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Show: 2 locations"), "{stdout}");
+    assert!(stdout.contains("pub fn run(&self) {}"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

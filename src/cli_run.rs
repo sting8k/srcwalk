@@ -865,13 +865,20 @@ fn run_context(
     filter: Option<&str>,
     artifact: ArtifactMode,
 ) -> Result<String, srcwalk::error::SrcwalkError> {
-    if !target.contains(',') {
+    let raw_targets = srcwalk::format::split_target_list(target).map_err(|reason| {
+        srcwalk::error::SrcwalkError::InvalidQuery {
+            query: target.to_string(),
+            reason: reason.to_string(),
+        }
+    })?;
+    // One framed target covers both a comma-free target and a selector whose
+    // only commas are nested in generics.
+    if raw_targets.len() == 1 {
         return srcwalk::run_flow_with_artifact(
             target, scope, budget, cache, depth, filter, artifact,
         );
     }
 
-    let raw_targets: Vec<&str> = target.split(',').collect();
     if raw_targets.iter().any(|part| part.trim().is_empty()) {
         return Err(srcwalk::error::SrcwalkError::InvalidQuery {
             query: target.to_string(),
@@ -1222,7 +1229,15 @@ fn run_show(
     context_lines: Option<usize>,
     cache: &srcwalk::cache::OutlineCache,
 ) -> Result<String, srcwalk::error::SrcwalkError> {
-    if !target.contains(',') {
+    let framed = srcwalk::format::split_target_list(target).map_err(|reason| {
+        srcwalk::error::SrcwalkError::InvalidQuery {
+            query: target.to_string(),
+            reason: reason.to_string(),
+        }
+    })?;
+    // One framed target covers both a comma-free target and a selector whose
+    // only commas are nested in generics.
+    if framed.len() == 1 {
         return srcwalk::run_path_exact_with_artifact_and_context(
             target,
             scope,
@@ -1243,8 +1258,8 @@ fn run_show(
         });
     }
 
-    let targets: Vec<&str> = target
-        .split(',')
+    let targets: Vec<&str> = framed
+        .into_iter()
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .collect();

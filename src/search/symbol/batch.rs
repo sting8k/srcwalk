@@ -12,7 +12,9 @@ use grep_searcher::Searcher;
 
 use super::super::{file_metadata, read_file_bytes, walker};
 use super::comments::tag_comment_matches;
-use super::definitions::{find_defs_from_outline, find_defs_heuristic_buf, find_defs_treesitter};
+use super::definitions::{
+    definition_scan_needle, find_defs_from_outline, find_defs_heuristic_buf, find_defs_treesitter,
+};
 use super::usages::is_word_byte;
 
 /// Multi-symbol batch search.
@@ -35,8 +37,11 @@ pub(super) fn search_batch(
         )?]);
     }
 
-    // Build aho-corasick automaton for byte-level any-of gate.
-    let ac = aho_corasick::AhoCorasick::new(queries).map_err(|e| SrcwalkError::InvalidQuery {
+    // Build aho-corasick automaton for byte-level any-of gate. Needles use the
+    // same derivation as the single definition search, and stay 1:1 with the
+    // queries — duplicates included — so a pattern id is a query index.
+    let needles: Vec<&str> = queries.iter().map(|q| definition_scan_needle(q)).collect();
+    let ac = aho_corasick::AhoCorasick::new(&needles).map_err(|e| SrcwalkError::InvalidQuery {
         query: queries.join(","),
         reason: e.to_string(),
     })?;
@@ -140,7 +145,9 @@ fn find_definitions_batch(
             // Single-pass any-of gate: find which queries hit this file.
             let mut hit_mask = vec![false; queries.len()];
             let mut any_hit = false;
-            for m in ac.find_iter(&bytes[..]) {
+            // Overlapping: a shorter needle must not mask a longer one, and
+            // duplicate needles must each report their own pattern id.
+            for m in ac.find_overlapping_iter(&bytes[..]) {
                 hit_mask[m.pattern().as_usize()] = true;
                 any_hit = true;
             }

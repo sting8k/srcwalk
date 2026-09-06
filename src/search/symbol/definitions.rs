@@ -40,6 +40,16 @@ pub(super) fn outline_def_weight(kind: OutlineKind) -> u16 {
     }
 }
 
+/// Byte pre-scan needle admitting a file to the definition matcher.
+///
+/// US-064: for a `Q.N` query the file may contain `Q` and `N` separately (Go
+/// receiver + method name), so the scan uses the plain name; the original query
+/// still decides qualification in the matcher. Single and batch admission share
+/// this derivation so batching cannot drop definitions (US-075).
+pub(super) fn definition_scan_needle(query: &str) -> &str {
+    split_dot_symbol_query(query).map_or(query, |(_, plain)| plain)
+}
+
 /// Find definitions using tree-sitter structural detection.
 /// For each file containing the query string, parse with tree-sitter and walk
 /// definition nodes to see if any declare the queried symbol.
@@ -59,11 +69,7 @@ pub(super) fn find_definitions_with_artifact(
     // Relaxed is correct: walker.run() joins all threads before we read the final value.
     // Early-quit checks are approximate by design — one extra iteration is harmless.
     let found_count = AtomicUsize::new(0);
-    // US-064: for a `Q.N` query the file may contain `Q` and `N` separately
-    // (Go receiver + method name), so the byte pre-scan uses the plain name.
-    let needle = split_dot_symbol_query(query)
-        .map_or(query, |(_, plain)| plain)
-        .as_bytes();
+    let needle = definition_scan_needle(query).as_bytes();
 
     let walker = if artifact.enabled() {
         super::super::io::walker_with_artifact_dirs(scope, glob)?

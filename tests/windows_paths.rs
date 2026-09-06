@@ -430,3 +430,93 @@ fn windows_batch_keeps_qualified_and_overlapping_definitions() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// US-076: an emitted comma-generic selector must replay on Windows path
+/// surfaces — drive-letter absolute scope, a space-containing directory, and a
+/// relative backslash scope — and combine with a second target.
+#[test]
+fn windows_comma_generic_selector_replays_and_combines() {
+    let dir = temp_repo("windows comma selector");
+    let pkg = dir.join("pkg");
+    fs::create_dir_all(&pkg).unwrap();
+    fs::write(
+        pkg.join("cache.rs"),
+        "pub struct Cache<K, V>(K, V);\n\nimpl<K, V> Cache<K, V> {\n    pub fn get(&self) -> u8 {\n        0\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        pkg.join("alpha.rs"),
+        "pub struct Alpha;\n\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+    )
+    .unwrap();
+
+    // Drive-letter absolute scope containing a space.
+    let out = srcwalk()
+        .args(["discover", "get", "--as", "symbol", "--scope"])
+        .arg(&pkg)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "absolute discover failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Cache<K, V>.get"), "{stdout}");
+
+    // Relative backslash scope, replayed from the repo root.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .args(["discover", "get", "--as", "symbol", "--scope"])
+        .arg(r".\pkg")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "relative backslash discover failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let target = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("> Next: srcwalk show "))
+        .map(|rest| rest.trim().trim_matches('\''))
+        .unwrap_or_else(|| panic!("no emitted target:\n{stdout}"))
+        .to_string();
+    assert!(target.ends_with("Cache<K, V>.get"), "{target}");
+
+    // The emitted target replays verbatim.
+    let out = srcwalk()
+        .current_dir(&dir)
+        .arg("show")
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "emitted comma-generic replay failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("pub fn get(&self) -> u8"), "{stdout}");
+
+    // It combines with a second target in one list.
+    let second = target.replace("cache.rs", "alpha.rs");
+    let second = second.replace("Cache<K, V>.get", "Alpha.run");
+    let out = srcwalk()
+        .current_dir(&dir)
+        .arg("show")
+        .arg(format!("{target},{second}"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "multi-target replay failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# Show: 2 locations"), "{stdout}");
+    assert!(stdout.contains("pub fn run(&self) {}"), "{stdout}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

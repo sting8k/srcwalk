@@ -195,6 +195,55 @@ fn is_shell_safe_path_char(c: char) -> bool {
         || cfg!(windows) && c == '\\'
 }
 
+/// Generic angle brackets in a comma-separated target list are unbalanced, so
+/// the list cannot be framed without guessing a repair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnbalancedAngleBrackets;
+
+impl std::fmt::Display for UnbalancedAngleBrackets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("unbalanced `<...>` in comma-separated target list")
+    }
+}
+
+/// Frame a comma-separated list of exact targets.
+///
+/// A comma inside balanced generic angle brackets is selector data, not a
+/// separator: `cache.rs:Cache<K, V>.get` is one target, while
+/// `cache.rs:Cache<K, V>.get,a.rs:A.run` is two. Slices are returned exactly as
+/// written, so each consumer keeps its own trimming and empty-item policy.
+///
+/// Input without a comma is one target and is returned without bracket
+/// validation: there is no list to frame, so no input that parses today can
+/// start failing here.
+pub fn split_target_list(input: &str) -> Result<Vec<&str>, UnbalancedAngleBrackets> {
+    if !input.contains(',') {
+        return Ok(vec![input]);
+    }
+
+    let mut targets = Vec::new();
+    let mut depth: usize = 0;
+    let mut start = 0;
+    // ASCII `<`, `>` and `,` never occur inside a multi-byte UTF-8 sequence, so
+    // byte offsets are safe slice boundaries.
+    for (offset, byte) in input.bytes().enumerate() {
+        match byte {
+            b'<' => depth += 1,
+            b'>' => depth = depth.checked_sub(1).ok_or(UnbalancedAngleBrackets)?,
+            b',' if depth == 0 => {
+                targets.push(&input[start..offset]);
+                start = offset + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(UnbalancedAngleBrackets);
+    }
+    targets.push(&input[start..]);
+    Ok(targets)
+}
+
 /// Split trailing footer guidance from primary output.
 #[must_use]
 pub fn split_trailing_footer(output: &str) -> Option<(&str, &str)> {
@@ -267,5 +316,75 @@ mod tests {
             search_count_parts(2, counts),
             "2 matches (1 definitions, 1 text matches)"
         );
+    }
+
+    #[test]
+    fn split_target_list_keeps_nested_generic_commas_in_one_target() {
+        assert_eq!(
+            split_target_list("cache.rs:Cache<K, V>.get"),
+            Ok(vec!["cache.rs:Cache<K, V>.get"])
+        );
+        assert_eq!(
+            split_target_list("cache.rs:Outer<K, Inner<V, W>>.get"),
+            Ok(vec!["cache.rs:Outer<K, Inner<V, W>>.get"])
+        );
+    }
+
+    #[test]
+    fn split_target_list_splits_only_at_depth_zero_commas() {
+        assert_eq!(
+            split_target_list("a.rs:A.run,b.rs:B.run"),
+            Ok(vec!["a.rs:A.run", "b.rs:B.run"])
+        );
+        assert_eq!(
+            split_target_list("cache.rs:Cache<K, V>.get,a.rs:A.run"),
+            Ok(vec!["cache.rs:Cache<K, V>.get", "a.rs:A.run"])
+        );
+        assert_eq!(
+            split_target_list("a.rs:A.run,cache.rs:Outer<K, Inner<V, W>>.get"),
+            Ok(vec!["a.rs:A.run", "cache.rs:Outer<K, Inner<V, W>>.get"])
+        );
+    }
+
+    #[test]
+    fn split_target_list_preserves_slices_order_and_duplicates() {
+        // Spacing and empty items survive verbatim; consumers own that policy.
+        assert_eq!(
+            split_target_list("a.rs:A.run, a.rs:A.run,,b.rs:B.run "),
+            Ok(vec!["a.rs:A.run", " a.rs:A.run", "", "b.rs:B.run "])
+        );
+        // A comma path still frames as separate depth-zero pieces; canonical
+        // emission keeps using the path + `--section` form for those.
+        assert_eq!(
+            split_target_list("a,file.rs:run"),
+            Ok(vec!["a", "file.rs:run"])
+        );
+    }
+
+    #[test]
+    fn split_target_list_rejects_unbalanced_angle_brackets() {
+        assert_eq!(
+            split_target_list("cache.rs:Cache<K, V.get,a.rs:A.run"),
+            Err(UnbalancedAngleBrackets)
+        );
+        assert_eq!(
+            split_target_list("cache.rs:Cache K, V>.get,a.rs:A.run"),
+            Err(UnbalancedAngleBrackets)
+        );
+        assert_eq!(
+            UnbalancedAngleBrackets.to_string(),
+            "unbalanced `<...>` in comma-separated target list"
+        );
+    }
+
+    #[test]
+    fn split_target_list_returns_comma_free_input_unvalidated() {
+        // No comma means no list to frame, so today's inputs cannot start failing.
+        assert_eq!(split_target_list("a.rs:A.run"), Ok(vec!["a.rs:A.run"]));
+        assert_eq!(
+            split_target_list("weird>name.rs:run"),
+            Ok(vec!["weird>name.rs:run"])
+        );
+        assert_eq!(split_target_list(""), Ok(vec![""]));
     }
 }

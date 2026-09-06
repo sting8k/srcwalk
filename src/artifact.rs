@@ -50,7 +50,11 @@ pub(crate) fn read_js_ts_symbol_section(
     symbol: &str,
     budget: Option<u64>,
 ) -> Option<Result<String, SrcwalkError>> {
-    if symbol.starts_with('#') || symbol.contains(',') || parse_line_range(symbol).is_some() {
+    // This reader resolves one section. A comma nested in a generic selector is
+    // part of that single symbol, so only a real depth-zero list is out of scope.
+    let is_section_list =
+        crate::format::split_target_list(symbol).is_ok_and(|framed| framed.len() > 1);
+    if symbol.starts_with('#') || is_section_list || parse_line_range(symbol).is_some() {
         return None;
     }
 

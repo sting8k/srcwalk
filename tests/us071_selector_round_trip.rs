@@ -468,14 +468,12 @@ fn multi_symbol_discover_round_trips_each_section_target() {
 }
 
 /// US-075: a batch section whose definition is restored by the shared prefilter
-/// must emit the same copyable selector as a single query, and a restored
-/// qualified target must still round-trip.
+/// must emit the same copyable selector as a single query.
 ///
-/// A generic container whose selector carries a comma (`Cache<K, V>.get`) is
-/// emitted quoted here but does not replay; that defect predates this story and
-/// reproduces identically on a single-symbol query, so it is not asserted.
+/// US-076: every emitted target replays, including a generic container whose
+/// selector carries a comma (`Cache<K, V>.get`).
 #[test]
-fn batch_sections_emit_quoted_generic_and_round_trip_qualified_targets() {
+fn batch_sections_emit_quoted_generic_and_round_trip_all_targets() {
     let fx = Fixture::new(
         "batch_generic",
         &[
@@ -519,14 +517,14 @@ fn batch_sections_emit_quoted_generic_and_round_trip_qualified_targets() {
         "expected the qualified selector among {targets:?}:\n{discovered}"
     );
 
-    // The restored qualified target is copied back verbatim and reads its body.
-    let (qualified, flags) = emitted
-        .iter()
-        .find(|(t, _)| t.ends_with(":Alpha.run"))
-        .unwrap();
-    let shown = fx.ok(&with_flags(&["show"], qualified, flags));
-    assert!(
-        shown.contains("pub fn run(&self) {}"),
-        "show {qualified}:\n{shown}"
-    );
+    // Every emitted target is copied back verbatim and reads its own body.
+    for (target, flags) in &emitted {
+        let shown = fx.ok(&with_flags(&["show"], target, flags));
+        let expected = if target.ends_with(":Cache<K, V>.get") {
+            "pub fn get(&self) -> u8"
+        } else {
+            "pub fn run(&self) {}"
+        };
+        assert!(shown.contains(expected), "show {target}:\n{shown}");
+    }
 }

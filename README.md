@@ -348,6 +348,8 @@ hunks:
 <details>
 <summary><b>Discover — multi-symbol and multi-scope</b></summary>
 
+Symbol batches take 2-5 comma-separated terms and report one section per term. A receiver/container-qualified term keeps the definition semantics it has as a single query, so `srcwalk discover 'NextAction.new,render_next_actions' --as symbol --scope src/evidence` returns the `NextAction.new` method definition rather than name occurrences only.
+
 ```
 $ srcwalk discover "render_next_actions, Anchor" --scope src/evidence --scope src/commands --limit 2
 # Search: "render_next_actions" in 2 scopes — 2 matches (1 definitions, 1 name occurrences)

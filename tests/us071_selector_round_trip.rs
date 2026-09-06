@@ -466,3 +466,67 @@ fn multi_symbol_discover_round_trips_each_section_target() {
         assert!(!callees.contains("error"), "callees {target}:\n{callees}");
     }
 }
+
+/// US-075: a batch section whose definition is restored by the shared prefilter
+/// must emit the same copyable selector as a single query, and a restored
+/// qualified target must still round-trip.
+///
+/// A generic container whose selector carries a comma (`Cache<K, V>.get`) is
+/// emitted quoted here but does not replay; that defect predates this story and
+/// reproduces identically on a single-symbol query, so it is not asserted.
+#[test]
+fn batch_sections_emit_quoted_generic_and_round_trip_qualified_targets() {
+    let fx = Fixture::new(
+        "batch_generic",
+        &[
+            (
+                "src/cache.rs",
+                "pub struct Cache<K, V>(K, V);\n\nimpl<K, V> Cache<K, V> {\n    pub fn get(&self) -> u8 {\n        0\n    }\n}\n",
+            ),
+            (
+                "src/alpha.rs",
+                "pub struct Alpha;\n\nimpl Alpha {\n    pub fn run(&self) {}\n}\n",
+            ),
+        ],
+    );
+
+    let discovered = fx.ok(&[
+        "discover",
+        "get,Alpha.run",
+        "--as",
+        "symbol",
+        "--scope",
+        "src",
+    ]);
+    assert!(
+        discovered.contains("> Next: srcwalk show 'src/cache.rs:Cache<K, V>.get'"),
+        "a space/comma selector must stay quoted:\n{discovered}"
+    );
+
+    let emitted = emitted_targets_and_flags_all(&discovered);
+    assert_eq!(
+        emitted.len(),
+        2,
+        "expected one target per term:\n{discovered}"
+    );
+    let targets: Vec<&str> = emitted.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(
+        targets.iter().any(|t| t.ends_with(":Cache<K, V>.get")),
+        "expected the generic selector among {targets:?}:\n{discovered}"
+    );
+    assert!(
+        targets.iter().any(|t| t.ends_with(":Alpha.run")),
+        "expected the qualified selector among {targets:?}:\n{discovered}"
+    );
+
+    // The restored qualified target is copied back verbatim and reads its body.
+    let (qualified, flags) = emitted
+        .iter()
+        .find(|(t, _)| t.ends_with(":Alpha.run"))
+        .unwrap();
+    let shown = fx.ok(&with_flags(&["show"], qualified, flags));
+    assert!(
+        shown.contains("pub fn run(&self) {}"),
+        "show {qualified}:\n{shown}"
+    );
+}

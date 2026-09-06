@@ -567,3 +567,239 @@ fn split_dot_symbol_query_rejects_multi_dot_and_empty_sides() {
     assert_eq!(split_dot_symbol_query(""), None);
     assert_eq!(split_dot_symbol_query("Set"), None);
 }
+
+/// US-075: the batch definition prefilter must admit every file that the
+/// single-symbol prefilter would admit. Overlapping needles rely on
+/// `find_overlapping_iter` reporting every pattern id, including duplicates.
+#[test]
+fn aho_corasick_overlapping_iter_reports_duplicate_and_contained_patterns() {
+    let ac = aho_corasick::AhoCorasick::new(["Set", "Set", "helper", "helper_extra"]).unwrap();
+    let mut ids: Vec<usize> = ac
+        .find_overlapping_iter(&b"func (b *Batch) Set(v int) {}\nfn helper_extra() {}\n"[..])
+        .map(|m| m.pattern().as_usize())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids, vec![0, 1, 2, 3]);
+}
+
+/// US-075 definition-identity oracle: for every accepted batch term, the batch
+/// must yield the same definition candidates as the single-symbol search.
+#[test]
+fn batch_definitions_match_single_search_for_qualified_and_overlapping_queries() {
+    struct Case {
+        name: &'static str,
+        files: &'static [(&'static str, &'static str)],
+        glob: &'static str,
+        queries: &'static [&'static str],
+        expected_defs: &'static [usize],
+    }
+
+    const GO: &[(&str, &str)] = &[(
+        "sample.go",
+        "package sample\n\ntype Batch struct{}\n\nfunc (b *Batch) Set(v int) {}\n\ntype Other struct{}\n\nfunc (o *Other) Set(v int) {}\n\nfunc helper() {}\n",
+    )];
+    const RUST: &[(&str, &str)] = &[(
+        "sample.rs",
+        "pub struct Batch;\n\nimpl Batch {\n    pub fn set(&self, v: i32) -> i32 {\n        v\n    }\n}\n\npub struct Other;\n\nimpl Other {\n    pub fn set(&self, v: i32) -> i32 {\n        v\n    }\n}\n\npub fn helper() {}\n",
+    )];
+    const PY: &[(&str, &str)] = &[(
+        "sample.py",
+        "class Batch:\n    def set(self, v):\n        return v\n\n\nclass Other:\n    def set(self, v):\n        return v\n\n\ndef helper():\n    return None\n",
+    )];
+    // The long name lives in a file that does not contain the short name, so a
+    // masked needle cannot be rescued by the other query's admission.
+    const OVERLAP: &[(&str, &str)] = &[
+        ("only_extra.rs", "pub fn helper_extra() -> u8 {\n    1\n}\n"),
+        ("short.rs", "pub fn helper() -> u8 {\n    2\n}\n"),
+    ];
+
+    let cases = [
+        Case {
+            name: "go_qualified",
+            files: GO,
+            glob: "*.go",
+            queries: &["Batch.Set", "helper"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "go_qualified_reversed",
+            files: GO,
+            glob: "*.go",
+            queries: &["helper", "Batch.Set"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "rust_qualified",
+            files: RUST,
+            glob: "*.rs",
+            queries: &["Batch.set", "helper"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "python_qualified",
+            files: PY,
+            glob: "*.py",
+            queries: &["Batch.set", "helper"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "prefix_overlap",
+            files: OVERLAP,
+            glob: "*.rs",
+            queries: &["helper", "helper_extra"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "prefix_overlap_reversed",
+            files: OVERLAP,
+            glob: "*.rs",
+            queries: &["helper_extra", "helper"],
+            expected_defs: &[1, 1],
+        },
+        Case {
+            name: "shared_needle",
+            files: GO,
+            glob: "*.go",
+            queries: &["Batch.Set", "Other.Set", "Set"],
+            expected_defs: &[1, 1, 2],
+        },
+        Case {
+            name: "shared_needle_reversed",
+            files: GO,
+            glob: "*.go",
+            queries: &["Set", "Other.Set", "Batch.Set"],
+            expected_defs: &[2, 1, 1],
+        },
+        Case {
+            name: "max_five_terms",
+            files: GO,
+            glob: "*.go",
+            queries: &["Batch.Set", "Other.Set", "Set", "helper", "Nope.Set"],
+            expected_defs: &[1, 1, 2, 1, 0],
+        },
+    ];
+
+    for case in &cases {
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, content) in case.files {
+            std::fs::write(dir.path().join(rel), content).unwrap();
+        }
+
+        let batch = search_batch(case.queries, dir.path(), None, None, Some(case.glob)).unwrap();
+        assert_eq!(batch.len(), case.queries.len());
+
+        for (idx, query) in case.queries.iter().enumerate() {
+            let single = search(query, dir.path(), None, None, Some(case.glob)).unwrap();
+            let batch_defs = definition_keys(&batch[idx], dir.path());
+            let single_defs = definition_keys(&single, dir.path());
+            assert_eq!(
+                batch_defs, single_defs,
+                "{}: batch definitions diverged from single search for '{query}'",
+                case.name
+            );
+            assert_eq!(
+                batch_defs.len(),
+                case.expected_defs[idx],
+                "{}: unexpected definition count for '{query}' (got {batch_defs:?})",
+                case.name
+            );
+        }
+    }
+}
+
+/// US-075 AC-5: a literal comment occurrence may add occurrences but must never
+/// change which definitions the batch finds.
+#[test]
+fn batch_definition_anchors_are_independent_of_comment_occurrences() {
+    const BASE: &str = "package sample\n\ntype Batch struct{}\n\nfunc (b *Batch) Set(v int) {}\n\nfunc helper() {}\n";
+    let queries = ["Batch.Set", "helper"];
+
+    let anchors = |source: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sample.go"), source).unwrap();
+        let batch = search_batch(&queries, dir.path(), None, None, Some("*.go")).unwrap();
+        let single = search(queries[0], dir.path(), None, None, Some("*.go")).unwrap();
+        (
+            definition_keys(&batch[0], dir.path()),
+            definition_keys(&single, dir.path()),
+        )
+    };
+
+    let (without_comment, single_without) = anchors(BASE);
+    let (with_comment, single_with) = anchors(&format!("{BASE}\n// Batch.Set\n"));
+
+    assert_eq!(without_comment.len(), 1, "{without_comment:?}");
+    assert_eq!(without_comment, with_comment);
+    assert_eq!(single_without, single_with);
+    assert_eq!(without_comment, single_without);
+}
+
+/// US-075 AC-6: same-name definitions in different files stay separate, and a
+/// wrong qualifier never acquires a definition because a sibling query admitted
+/// the file.
+#[test]
+fn batch_shared_needle_keeps_qualifier_ownership_and_file_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("a")).unwrap();
+    std::fs::create_dir_all(dir.path().join("b")).unwrap();
+    std::fs::write(
+        dir.path().join("a/sample.go"),
+        "package a\n\ntype Batch struct{}\n\nfunc (b *Batch) Set(v int) {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("b/sample.go"),
+        "package b\n\ntype Other struct{}\n\nfunc (o *Other) Set(v int) {}\n",
+    )
+    .unwrap();
+
+    let queries = ["Batch.Set", "Other.Set", "Nope.Set"];
+    let batch = search_batch(&queries, dir.path(), None, None, Some("*.go")).unwrap();
+
+    let batch_first = definition_keys(&batch[0], dir.path());
+    let batch_second = definition_keys(&batch[1], dir.path());
+    assert_eq!(batch_first.len(), 1, "{batch_first:?}");
+    assert_eq!(batch_second.len(), 1, "{batch_second:?}");
+    assert!(batch_first.iter().all(|k| k.0 == "a/sample.go"));
+    assert!(batch_second.iter().all(|k| k.0 == "b/sample.go"));
+    assert!(
+        definition_keys(&batch[2], dir.path()).is_empty(),
+        "wrong qualifier must not acquire a definition"
+    );
+
+    for (idx, query) in queries.iter().enumerate() {
+        let single = search(query, dir.path(), None, None, Some("*.go")).unwrap();
+        assert_eq!(
+            definition_keys(&batch[idx], dir.path()),
+            definition_keys(&single, dir.path()),
+            "batch definitions diverged from single search for '{query}'"
+        );
+    }
+}
+
+/// Normalized definition identity: scope-relative path, anchor, range, name and
+/// kind weight. Occurrences are excluded so a downgrade cannot pass as a match.
+fn definition_keys(
+    result: &SearchResult,
+    root: &std::path::Path,
+) -> std::collections::BTreeSet<(String, u32, Option<(u32, u32)>, Option<String>, u16)> {
+    result
+        .matches
+        .iter()
+        .filter(|m| m.is_definition)
+        .map(|m| {
+            (
+                m.path
+                    .strip_prefix(root)
+                    .unwrap_or(&m.path)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+                m.line,
+                m.def_range,
+                m.def_name.clone(),
+                m.def_weight,
+            )
+        })
+        .collect()
+}

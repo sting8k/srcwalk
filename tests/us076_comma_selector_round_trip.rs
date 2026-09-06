@@ -251,3 +251,47 @@ fn comma_path_keeps_section_emission_and_its_pre_existing_replay_failure() {
         "pre-existing comma-path replay failure changed shape:\n{stderr}"
     );
 }
+
+/// US-076 AC-10: the emitted-target contract holds for generic containers in
+/// other supported languages. Their outlines currently emit a non-generic
+/// selector, so the assertion is on the actual emitted string rather than on an
+/// assumed generic spelling.
+#[test]
+fn generic_containers_in_other_languages_replay_their_emitted_target() {
+    let fx = Fixture::new(
+        "languages",
+        &[
+            (
+                "src/cache.ts",
+                "export class TsCache<K, V> {\n  get(key: K): V | undefined {\n    return undefined;\n  }\n}\n",
+            ),
+            (
+                "src/Cache.java",
+                "public class JavaCache<K, V> {\n    public V get(K key) {\n        return null;\n    }\n}\n",
+            ),
+            (
+                "src/Cache.cs",
+                "public class CsCache<K, V> {\n    public V Get(K key) {\n        return default(V);\n    }\n}\n",
+            ),
+        ],
+    );
+
+    for (query, expected_target, body) in [
+        (
+            "get",
+            "src/cache.ts:TsCache.get",
+            "get(key: K): V | undefined",
+        ),
+        ("get", "src/Cache.java:JavaCache.get", "public V get(K key)"),
+        ("Get", "src/Cache.cs:CsCache.Get", "public V Get(K key)"),
+    ] {
+        let discovered = fx.ok(&["discover", query, "--as", "symbol", "--scope", "src"]);
+        assert!(
+            discovered.contains(&format!("> Next: srcwalk show {expected_target}")),
+            "expected `{expected_target}` in:\n{discovered}"
+        );
+
+        let shown = fx.ok(&["show", expected_target]);
+        assert!(shown.contains(body), "show {expected_target}:\n{shown}");
+    }
+}

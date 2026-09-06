@@ -45,16 +45,24 @@ pub(crate) fn should_auto_artifact_file(path: &Path) -> bool {
     crate::search::io::looks_minified(&bytes)
 }
 
+/// Section addresses this single-section reader cannot serve: a heading, a line
+/// range, or a real target list.
+///
+/// A comma nested in a generic selector (`TsCache<K, V>.get`) belongs to one
+/// symbol, so only a depth-zero comma marks a list. Malformed input is left to
+/// the shared section framing, which rejects it before any body is read.
+fn is_unsupported_section_address(symbol: &str) -> bool {
+    symbol.starts_with('#')
+        || crate::format::split_target_list(symbol).is_ok_and(|framed| framed.len() > 1)
+        || parse_line_range(symbol).is_some()
+}
+
 pub(crate) fn read_js_ts_symbol_section(
     path: &Path,
     symbol: &str,
     budget: Option<u64>,
 ) -> Option<Result<String, SrcwalkError>> {
-    // This reader resolves one section. A comma nested in a generic selector is
-    // part of that single symbol, so only a real depth-zero list is out of scope.
-    let is_section_list =
-        crate::format::split_target_list(symbol).is_ok_and(|framed| framed.len() > 1);
-    if symbol.starts_with('#') || is_section_list || parse_line_range(symbol).is_some() {
+    if is_unsupported_section_address(symbol) {
         return None;
     }
 
@@ -594,4 +602,36 @@ fn clean_export_name(text: &str) -> Option<String> {
         return None;
     }
     Some(name)
+}
+
+#[cfg(test)]
+mod section_address_tests {
+    use super::is_unsupported_section_address;
+
+    /// US-076: the single-section artifact reader must classify a nested-comma
+    /// selector as one symbol and keep refusing a real target list.
+    #[test]
+    fn nested_generic_comma_is_one_symbol_but_a_target_list_is_refused() {
+        for one_symbol in [
+            "TsCache<K, V>.get",
+            "Outer<K, Inner<V, u8>>.deep",
+            "TsCache.get",
+        ] {
+            assert!(
+                !is_unsupported_section_address(one_symbol),
+                "{one_symbol} must reach symbol lookup"
+            );
+        }
+
+        for unsupported in ["a,b", "TsCache<K, V>.get,other", "#heading", "10-20"] {
+            assert!(
+                is_unsupported_section_address(unsupported),
+                "{unsupported} must not reach symbol lookup"
+            );
+        }
+
+        // Malformed input is deliberately not classified here: the shared
+        // section framing rejects it before any body is read.
+        assert!(!is_unsupported_section_address("TsCache<K, V.get"));
+    }
 }

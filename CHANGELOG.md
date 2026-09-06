@@ -2,7 +2,7 @@
 
 All notable changes to srcwalk are documented here.
 
-## [Unreleased]
+## [1.8.1] - 2026-09-06
 
 ### Fixed
 - Emitted generic selectors carrying a comma (`show 'src/cache.rs:Cache<K, V>.get'`) now replay unchanged through `show`, `context`, `trace callers`, `trace callees`, and `--section`. Target lists split only at a comma outside balanced `<...>`, so such a selector stays one target and can be combined with other targets, while an unbalanced comma-separated target list fails once as an explicit framing error without running any target. Comma-free targets, target lists, and every discover/query comma grammar are unchanged.
